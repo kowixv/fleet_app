@@ -297,6 +297,26 @@ create table if not exists settings (
   updated_at timestamptz not null default now()
 );
 
+-- ---------- Telegram bot: pending AI commands awaiting confirmation / input ----------
+create table if not exists bot_pending_commands (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references organizations (id) on delete cascade,
+  chat_id text not null,
+  intent text not null,
+  payload jsonb not null default '{}',
+  step int not null default 0,          -- 0 = awaiting confirmation; >0 = multi-step wizard
+  awaiting text,                        -- field name being collected (null = confirmation stage)
+  created_at timestamptz not null default now()
+);
+alter table bot_pending_commands enable row level security;
+drop policy if exists bot_pending_commands_rw on bot_pending_commands;
+create policy bot_pending_commands_rw on bot_pending_commands
+  for all to authenticated
+  using (organization_id = (select current_org_id()))
+  with check (organization_id = (select current_org_id()));
+create index if not exists idx_bot_pending_org_chat
+  on bot_pending_commands (organization_id, chat_id);
+
 -- ============================================================================
 -- Row Level Security: every table is scoped to the caller's organization.
 -- ============================================================================
@@ -920,7 +940,11 @@ create or replace function create_settlement_atomic(
   p_external_net_pay numeric,
   p_line_items jsonb,
   p_load_ids uuid[] default '{}'::uuid[],
-  p_expense_ids uuid[] default '{}'::uuid[]
+  p_expense_ids uuid[] default '{}'::uuid[],
+  -- Trusted service-role callers (Telegram bot) have no auth.uid(), so
+  -- current_org_id() is null; they pass the org explicitly. Authenticated
+  -- callers cannot override their own org (coalesce prefers current_org_id()).
+  p_organization_id uuid default null
 )
 returns uuid
 language plpgsql
@@ -928,7 +952,7 @@ security invoker
 set search_path = public
 as $$
 declare
-  v_org_id uuid := current_org_id();
+  v_org_id uuid := coalesce(current_org_id(), p_organization_id);
   v_settlement_id uuid;
   v_expected_loads int := coalesce(array_length(p_load_ids, 1), 0);
   v_expected_expenses int := coalesce(array_length(p_expense_ids, 1), 0);
@@ -1093,10 +1117,10 @@ $$;
 
 revoke execute on function create_settlement_atomic(
   text, uuid, uuid, uuid, uuid, uuid, date, date, jsonb, numeric, numeric,
-  numeric, numeric, numeric, jsonb, uuid[], uuid[]
+  numeric, numeric, numeric, jsonb, uuid[], uuid[], uuid
 ) from public, anon;
 grant execute on function create_settlement_atomic(
   text, uuid, uuid, uuid, uuid, uuid, date, date, jsonb, numeric, numeric,
-  numeric, numeric, numeric, jsonb, uuid[], uuid[]
-) to authenticated;
+  numeric, numeric, numeric, jsonb, uuid[], uuid[], uuid
+) to authenticated, service_role;
 

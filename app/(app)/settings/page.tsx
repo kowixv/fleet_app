@@ -84,6 +84,24 @@ export default async function SettingsPage() {
           Bir gruptaki Chat ID'yi öğrenmek için botu ekleyip gruba mesaj atın; bot yanıtında Chat ID görünür.
         </p>
       </div>
+
+      <div className="card">
+        <h2 className="mb-2 font-semibold">Private Chat (Kişisel Kullanım)</h2>
+        <p className="mb-3 text-sm text-slate-500">
+          Grupsuz, doğrudan bot ile yazışarak yük ekleyebilirsiniz. Her mesajda hangi araç için olduğunu bot sorar.
+        </p>
+        <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-600">
+          <li>
+            Telegram'da bota <code>/myid</code> veya <code>/start</code> yazın — bot size Chat ID'nizi söyler.
+          </li>
+          <li>
+            Yukarıdaki <b>Telegram Grupları</b> tablosuna bu Chat ID'yi ekleyin. Araç seçmeden de kaydedebilirsiniz (her mesajda araç sorar) ya da varsayılan bir araç atayabilirsiniz.
+          </li>
+          <li>
+            Artık bota direkt fotoğraf, PDF veya metin göndererek yük kaydedebilirsiniz.
+          </li>
+        </ol>
+      </div>
     </div>
   );
 }
