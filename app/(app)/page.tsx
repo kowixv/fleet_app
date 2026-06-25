@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { usd } from "@/lib/format";
+import { usd, localISODate } from "@/lib/format";
 import { computePM, PM_BADGE } from "@/lib/maintenance";
 
 export const dynamic = "force-dynamic";
@@ -13,8 +13,7 @@ function weekRange(now = new Date()) {
   start.setHours(0, 0, 0, 0);
   const end = new Date(start);
   end.setDate(start.getDate() + 6);
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return { start: iso(start), end: iso(end) };
+  return { start: localISODate(start), end: localISODate(end) };
 }
 
 export default async function Dashboard() {

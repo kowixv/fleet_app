@@ -25,6 +25,7 @@ export default async function MaintenancePage() {
       name: "interval_type",
       label: "Interval Tipi",
       type: "select",
+      required: true,
       options: [
         { value: "mileage", label: "Mileage" },
         { value: "date", label: "Tarih" },

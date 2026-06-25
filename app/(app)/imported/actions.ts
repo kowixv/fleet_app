@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
+import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
 const EDITABLE = [
@@ -10,7 +10,7 @@ const EDITABLE = [
 ];
 
 export async function updateImported(id: string, values: Record<string, any>) {
-  await requireProfile();
+  await requireWriteRole();
   const supabase = await createClient();
   const patch: Record<string, any> = {};
   for (const k of EDITABLE) if (k in values) patch[k] = values[k] === "" ? null : values[k];
@@ -21,7 +21,7 @@ export async function updateImported(id: string, values: Record<string, any>) {
 }
 
 export async function rejectImported(id: string) {
-  await requireProfile();
+  await requireWriteRole();
   const supabase = await createClient();
   await supabase.from("imported_loads").update({ status: "rejected" }).eq("id", id);
   revalidatePath("/imported");
@@ -29,7 +29,7 @@ export async function rejectImported(id: string) {
 }
 
 export async function approveImported(id: string) {
-  const profile = await requireProfile();
+  const profile = await requireWriteRole();
   const supabase = await createClient();
 
   const { data: imp } = await supabase.from("imported_loads").select("*").eq("id", id).single();
@@ -67,11 +67,11 @@ export async function approveImported(id: string) {
     .select("id")
     .single();
 
-  if (error) return { error: error.message };
+  if (error || !load) return { error: error?.message ?? "Load kaydedilemedi." };
 
   await supabase
     .from("imported_loads")
-    .update({ status: "approved", created_load_id: load?.id ?? null })
+    .update({ status: "approved", created_load_id: load.id })
     .eq("id", id);
   revalidatePath("/imported");
   revalidatePath("/loads");

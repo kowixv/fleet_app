@@ -22,7 +22,7 @@ export default async function SettingsPage() {
     { name: "active", label: "Aktif", type: "checkbox" },
   ];
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://YOUR-APP.vercel.app";
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || "https://fleet-app-olive.vercel.app";
 
   return (
     <div className="space-y-6">

@@ -12,6 +12,7 @@ export default async function VehiclesPage() {
       name: "vehicle_type",
       label: "Tip",
       type: "select",
+      required: true,
       options: [
         { value: "truck", label: "Truck" },
         { value: "box_truck", label: "Box Truck" },
@@ -24,6 +25,7 @@ export default async function VehiclesPage() {
       name: "ownership_type",
       label: "Sahiplik",
       type: "select",
+      required: true,
       options: [
         { value: "company_owned", label: "Company Owned" },
         { value: "owner_operator", label: "Owner Operator" },
@@ -62,6 +64,7 @@ export default async function VehiclesPage() {
       name: "status",
       label: "Durum",
       type: "select",
+      required: true,
       options: [
         { value: "active", label: "Aktif" },
         { value: "in_repair", label: "Tamirde" },

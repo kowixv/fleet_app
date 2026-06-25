@@ -20,8 +20,42 @@ export default function SettlementForm({
 }) {
   const [type, setType] = useState("owner_operator");
   const [open, setOpen] = useState(false);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
   const isExternal = type === "external_carrier_statement";
   const isInvestor = type === "managed_investor";
+  const isDriverType = type === "company_driver" || type === "box_truck_driver";
+
+  async function onSubmit(formData: FormData) {
+    setError("");
+
+    // Tipe göre zorunlu alan doğrulaması
+    if (isExternal) {
+      if (!formData.get("external_net_pay")) {
+        setError("External net pay zorunludur.");
+        return;
+      }
+    } else {
+      if (!formData.get("vehicle_id")) {
+        setError("Araç / Unit seçilmelidir.");
+        return;
+      }
+      if (!formData.get("week_start") || !formData.get("week_end")) {
+        setError("Hafta başı ve hafta sonu tarihleri zorunludur.");
+        return;
+      }
+    }
+    if (isDriverType && !formData.get("driver_id")) {
+      setError("Şoför seçilmelidir.");
+      return;
+    }
+
+    setBusy(true);
+    const res = await createSettlement(formData);
+    setBusy(false);
+    // Başarıda action redirect eder; buraya yalnızca hata dönerse gelinir.
+    if (res?.error) setError(res.error);
+  }
 
   return (
     <div className="card">
@@ -33,7 +67,7 @@ export default function SettlementForm({
         <span className="text-slate-400">{open ? "−" : "+"}</span>
       </button>
       {open && (
-        <form action={createSettlement} className="mt-4 grid grid-cols-3 gap-3">
+        <form action={onSubmit} className="mt-4 grid grid-cols-3 gap-3">
           <div>
             <label className="label">Settlement Tipi</label>
             <select
@@ -139,8 +173,13 @@ export default function SettlementForm({
             </div>
           </div>
 
+          {error && (
+            <p className="col-span-3 text-sm text-red-600">{error}</p>
+          )}
           <div className="col-span-3 flex justify-end">
-            <button type="submit" className="btn-primary">Hesapla &amp; Kaydet</button>
+            <button type="submit" disabled={busy} className="btn-primary">
+              {busy ? "Hesaplanıyor…" : "Hesapla & Kaydet"}
+            </button>
           </div>
         </form>
       )}

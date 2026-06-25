@@ -30,8 +30,7 @@ export const ALLOWED: Record<string, string[]> = {
   ],
   expenses: [
     "date", "company_id", "external_carrier_id", "vehicle_id", "driver_id",
-    "owner_id", "category", "amount", "deduct_from_settlement",
-    "deduct_from_driver", "deduct_from_owner", "deduct_from_investor", "notes",
+    "owner_id", "category", "amount", "deduct_from_settlement", "notes",
   ],
   telegram_groups: ["chat_id", "title", "vehicle_id", "driver_id", "company_id", "active"],
   maintenance_rules: [

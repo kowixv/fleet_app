@@ -9,6 +9,7 @@ const fields: Field[] = [
     name: "type",
     label: "Tip",
     type: "select",
+    required: true,
     options: [
       { value: "company_driver", label: "Company Driver" },
       { value: "owner_operator", label: "Owner Operator" },
@@ -25,6 +26,7 @@ const fields: Field[] = [
     name: "status",
     label: "Durum",
     type: "select",
+    required: true,
     options: [
       { value: "active", label: "Aktif" },
       { value: "inactive", label: "Pasif" },

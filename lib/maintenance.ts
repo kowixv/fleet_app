@@ -1,3 +1,5 @@
+import { localISODate } from "@/lib/format";
+
 export type PMStatus = "ok" | "due_soon" | "due_now" | "overdue";
 
 export interface PMResult {
@@ -57,7 +59,7 @@ export function computePM(
     return {
       status,
       unit: "days",
-      nextDue: next.toISOString().slice(0, 10),
+      nextDue: localISODate(next),
       remaining,
       label: STATUS_LABEL[status],
     };

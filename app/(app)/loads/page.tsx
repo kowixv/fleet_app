@@ -42,6 +42,7 @@ export default async function LoadsPage() {
       name: "status",
       label: "Durum",
       type: "select",
+      required: true,
       options: [
         { value: "pending", label: "Pending" },
         { value: "booked", label: "Booked" },

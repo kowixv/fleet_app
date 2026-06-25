@@ -20,6 +20,7 @@ export default async function ExpensesPage() {
       name: "category",
       label: "Kategori",
       type: "select",
+      required: true,
       options: CATEGORIES.map((c) => ({ value: c, label: c.replace(/_/g, " ") })),
     },
     { name: "amount", label: "Tutar", type: "money", required: true },
@@ -29,9 +30,6 @@ export default async function ExpensesPage() {
     { name: "company_id", label: "Şirket", type: "select", options: opts.companies, hideInTable: true },
     { name: "external_carrier_id", label: "Ext. Carrier", type: "select", options: opts.carriers, hideInTable: true },
     { name: "deduct_from_settlement", label: "Settlement'tan düş", type: "checkbox" },
-    { name: "deduct_from_driver", label: "Şoförden düş", type: "checkbox", hideInTable: true },
-    { name: "deduct_from_owner", label: "Owner'dan düş", type: "checkbox", hideInTable: true },
-    { name: "deduct_from_investor", label: "Investor'dan düş", type: "checkbox", hideInTable: true },
     { name: "notes", label: "Not", type: "textarea", hideInTable: true },
   ];
 

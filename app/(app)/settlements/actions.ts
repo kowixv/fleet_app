@@ -1,7 +1,7 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
+import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { computeSettlement, type LoadInput, type ExpenseInput, type SettlementType } from "@/lib/settlement/engine";
@@ -10,8 +10,10 @@ import { resolveConfig } from "@/lib/settlement/resolve";
 const num = (v: FormDataEntryValue | null) =>
   v === null || v === "" ? null : Number(v);
 
-export async function createSettlement(formData: FormData): Promise<void> {
-  const profile = await requireProfile();
+export async function createSettlement(
+  formData: FormData,
+): Promise<{ error: string } | void> {
+  const profile = await requireWriteRole();
   const supabase = await createClient();
 
   const settlementType = String(formData.get("settlement_type")) as SettlementType;
@@ -75,7 +77,25 @@ export async function createSettlement(formData: FormData): Promise<void> {
       .lte("date", weekEnd)
       .is("settlement_id", null)
       .eq("deduct_from_settlement", true);
-    expenses = expRes.data ?? [];
+    const allExpenses: any[] = expRes.data ?? [];
+
+    // Filter expenses by targeting flags. An expense with none of the targeting
+    // flags set is considered universal (applies to any settlement type).
+    // If at least one targeting flag is set, it only applies to matching types.
+    expenses = allExpenses.filter((e) => {
+      const hasTargeting = e.deduct_from_driver || e.deduct_from_owner || e.deduct_from_investor;
+      if (!hasTargeting) return true;
+      if (settlementType === "company_driver" || settlementType === "box_truck_driver") {
+        return e.deduct_from_driver;
+      }
+      if (settlementType === "owner_operator") {
+        return e.deduct_from_owner;
+      }
+      if (settlementType === "managed_investor") {
+        return e.deduct_from_investor;
+      }
+      return false;
+    });
   }
 
   const loadInputs: LoadInput[] = loads.map((l) => ({
@@ -127,13 +147,15 @@ export async function createSettlement(formData: FormData): Promise<void> {
     p_expense_ids: expenses.map((e) => e.id),
   });
 
-  if (error || !settlementId) throw new Error(error?.message ?? "Settlement could not be created.");
+  if (error || !settlementId) {
+    return { error: error?.message ?? "Settlement oluşturulamadı." };
+  }
   revalidatePath("/settlements");
   redirect(`/settlements/${settlementId}`);
 }
 
 export async function setSettlementStatus(id: string, status: string) {
-  await requireProfile();
+  await requireWriteRole();
   const supabase = await createClient();
   // Lock: a paid settlement can only be voided.
   const { data: cur } = await supabase.from("settlements").select("status").eq("id", id).single();
@@ -147,7 +169,7 @@ export async function setSettlementStatus(id: string, status: string) {
 }
 
 export async function deleteSettlement(id: string) {
-  await requireProfile();
+  await requireWriteRole();
   const supabase = await createClient();
   const { data: s } = await supabase.from("settlements").select("status").eq("id", id).single();
   if (s?.status === "finalized" || s?.status === "paid")

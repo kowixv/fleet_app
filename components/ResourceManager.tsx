@@ -180,7 +180,12 @@ export default function ResourceManager({
                   <div key={f.name} className={span}>
                     <label className="label">{f.label}</label>
                     {f.type === "select" ? (
-                      <select name={f.name} defaultValue={val ?? ""} className="input">
+                      <select
+                        name={f.name}
+                        defaultValue={val ?? ""}
+                        required={f.required}
+                        className="input"
+                      >
                         <option value="">—</option>
                         {f.options?.map((o) => (
                           <option key={o.value} value={o.value}>
@@ -200,7 +205,13 @@ export default function ResourceManager({
                     ) : (
                       <input
                         name={f.name}
-                        type={f.type === "date" ? "date" : f.type === "text" ? "text" : "number"}
+                        type={
+                          f.type === "date"
+                            ? "date"
+                            : f.type === "number" || f.type === "money" || f.type === "percent"
+                              ? "number"
+                              : "text"
+                        }
                         step={f.step ?? (f.type === "money" || f.type === "percent" ? "0.01" : undefined)}
                         defaultValue={val}
                         required={f.required}

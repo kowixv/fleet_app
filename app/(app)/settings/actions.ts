@@ -1,11 +1,11 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
+import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 
 export async function updateSettings(formData: FormData): Promise<void> {
-  const profile = await requireProfile();
+  const profile = await requireWriteRole();
   const supabase = await createClient();
   const num = (k: string) => {
     const v = formData.get(k);

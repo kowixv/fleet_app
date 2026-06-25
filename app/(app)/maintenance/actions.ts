@@ -1,11 +1,12 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
-import { requireProfile } from "@/lib/auth";
+import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
+import { localISODate } from "@/lib/format";
 
 export async function updateMileage(vehicleId: string, mileage: number) {
-  const profile = await requireProfile();
+  const profile = await requireWriteRole();
   const supabase = await createClient();
   await supabase.from("vehicles").update({ current_mileage: mileage }).eq("id", vehicleId);
   await supabase.from("vehicle_mileage_logs").insert({
@@ -21,9 +22,9 @@ export async function updateMileage(vehicleId: string, mileage: number) {
 
 /** Mark a rule serviced now: snapshot mileage/date as the new baseline. */
 export async function markServiced(ruleId: string, mileage: number) {
-  const profile = await requireProfile();
+  const profile = await requireWriteRole();
   const supabase = await createClient();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localISODate();
   await supabase
     .from("maintenance_rules")
     .update({ last_done_mileage: mileage, last_done_date: today })

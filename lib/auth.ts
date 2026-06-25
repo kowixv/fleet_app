@@ -9,6 +9,9 @@ export interface Profile {
   role: string;
 }
 
+/** Roles that are allowed to perform write (create/update/delete) operations. */
+const WRITE_ROLES = new Set(["owner", "admin", "manager"]);
+
 /** Get the current profile (org + role), or redirect to /login. */
 export async function requireProfile(): Promise<Profile> {
   const supabase = await createClient();
@@ -25,4 +28,16 @@ export async function requireProfile(): Promise<Profile> {
 
   if (!profile) redirect("/login");
   return profile as Profile;
+}
+
+/**
+ * Like requireProfile, but additionally throws if the user's role is not
+ * allowed to perform write operations. `viewer` role is read-only.
+ */
+export async function requireWriteRole(): Promise<Profile> {
+  const profile = await requireProfile();
+  if (!WRITE_ROLES.has(profile.role)) {
+    throw new Error("Bu işlem için yetkiniz yok. (Sadece owner, admin veya manager yazabilir.)");
+  }
+  return profile;
 }

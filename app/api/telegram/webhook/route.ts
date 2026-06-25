@@ -188,7 +188,7 @@ async function handleCallback(supabase: any, cb: any) {
     .eq("id", imp.telegram_group_id)
     .maybeSingle();
 
-  const { data: load } = await supabase
+  const { data: load, error: loadError } = await supabase
     .from("loads")
     .insert({
       organization_id: imp.organization_id,
@@ -214,9 +214,17 @@ async function handleCallback(supabase: any, cb: any) {
     .select("id")
     .single();
 
+  if (loadError || !load) {
+    console.error("telegram webhook: load insert failed", loadError);
+    await answerCallbackQuery(cb.id, "Hata: load kaydedilemedi. Lütfen tekrar deneyin.");
+    if (chatId && messageId)
+      await editMessageText(chatId, messageId, "⚠️ Yük kaydedilemedi, lütfen uygulamadan manuel ekleyin.");
+    return;
+  }
+
   await supabase
     .from("imported_loads")
-    .update({ status: "approved", created_load_id: load?.id ?? null })
+    .update({ status: "approved", created_load_id: load.id })
     .eq("id", importId);
 
   await answerCallbackQuery(cb.id, "Onaylandı, load oluşturuldu.");
