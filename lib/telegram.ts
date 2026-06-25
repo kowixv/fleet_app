@@ -55,6 +55,23 @@ export function answerCallbackQuery(id: string, text?: string) {
   return call("answerCallbackQuery", { callback_query_id: id, text });
 }
 
+let cachedUsername: string | null | undefined;
+/**
+ * The bot's @username (without @), via getMe — cached for the process lifetime.
+ * Used to build `https://t.me/<username>?start=<code>` deep links. Returns null
+ * if the token is unset or Telegram doesn't return a username.
+ */
+export async function getBotUsername(): Promise<string | null> {
+  if (cachedUsername !== undefined) return cachedUsername;
+  try {
+    const info = await call("getMe", {});
+    cachedUsername = info?.result?.username ?? null;
+  } catch {
+    cachedUsername = null;
+  }
+  return cachedUsername ?? null;
+}
+
 export function editMessageReplyMarkup(
   chatId: string | number,
   messageId: number,

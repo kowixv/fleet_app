@@ -1,4 +1,5 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
+import TelegramConnect from "@/components/TelegramConnect";
 import { createClient } from "@/lib/supabase/server";
 import { fetchRows, fetchOptions } from "@/lib/data";
 import { updateSettings } from "./actions";
@@ -53,26 +54,29 @@ export default async function SettingsPage() {
         </form>
       </div>
 
+      <TelegramConnect />
+
       <div>
-        <h2 className="mb-2 font-semibold">Telegram Grupları</h2>
+        <h2 className="mb-2 font-semibold">Bağlı Telegram Sohbetleri</h2>
         <p className="mb-3 text-sm text-slate-500">
-          Her grubu bir araç + şoför ile eşleyin. Gruba yazılan yükler o araca atanır.
+          "Telegram'ı Bağla" ile eklenen sohbetler burada görünür. İstersen her birine varsayılan bir
+          araç + şoför atayabilirsin — o sohbete yazılan yükler o araca atanır.
         </p>
         <ResourceManager
           title=""
           table="telegram_groups"
           basePath="/settings"
-          addLabel="Grup Eşle"
+          addLabel="Elle Ekle"
           fields={groupFields}
           rows={groups}
         />
       </div>
 
       <div className="card">
-        <h2 className="mb-2 font-semibold">Telegram Bot Kurulumu</h2>
+        <h2 className="mb-2 font-semibold">İlk Kurulum (tek seferlik)</h2>
         <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-600">
           <li>@BotFather ile bot oluşturun, token'ı <code>TELEGRAM_BOT_TOKEN</code>'a koyun.</li>
-          <li>Botu her şoför grubuna ekleyin (admin yapın ki mesajları görsün).</li>
+          <li>Botu gruba ekleyip <b>admin</b> yapın (mesajları görmesi için).</li>
           <li>Webhook'u bağlayın:</li>
         </ol>
         <pre className="mt-2 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">
@@ -81,26 +85,9 @@ export default async function SettingsPage() {
   -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"`}
         </pre>
         <p className="mt-2 text-sm text-slate-500">
-          Bir gruptaki Chat ID'yi öğrenmek için botu ekleyip gruba mesaj atın; bot yanıtında Chat ID görünür.
+          Kurulumdan sonra bağlama için yukarıdaki <b>Telegram'ı Bağla</b> butonunu kullanın — Chat ID
+          kopyalamaya gerek yok.
         </p>
-      </div>
-
-      <div className="card">
-        <h2 className="mb-2 font-semibold">Private Chat (Kişisel Kullanım)</h2>
-        <p className="mb-3 text-sm text-slate-500">
-          Grupsuz, doğrudan bot ile yazışarak yük ekleyebilirsiniz. Her mesajda hangi araç için olduğunu bot sorar.
-        </p>
-        <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-600">
-          <li>
-            Telegram'da bota <code>/myid</code> veya <code>/start</code> yazın — bot size Chat ID'nizi söyler.
-          </li>
-          <li>
-            Yukarıdaki <b>Telegram Grupları</b> tablosuna bu Chat ID'yi ekleyin. Araç seçmeden de kaydedebilirsiniz (her mesajda araç sorar) ya da varsayılan bir araç atayabilirsiniz.
-          </li>
-          <li>
-            Artık bota direkt fotoğraf, PDF veya metin göndererek yük kaydedebilirsiniz.
-          </li>
-        </ol>
       </div>
     </div>
   );

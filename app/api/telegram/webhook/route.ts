@@ -64,17 +64,110 @@ export async function POST(req: Request) {
   return new Response("ok");
 }
 
-/** /start and /myid commands: reply with the sender's chat_id for Settings registration. */
-async function handleCommand(chatId: string, text: string): Promise<boolean> {
-  const cmd = text.trim().split(" ")[0].toLowerCase();
-  if (cmd === "/start" || cmd === "/myid") {
-    await sendMessage(
-      chatId,
-      `Merhaba! 👋\n\nSizin <b>Chat ID</b>'niz:\n<code>${escapeHtml(chatId)}</code>\n\nBu ID'yi uygulamada <b>Settings → Telegram Grupları → Grup Eşle</b> bölümüne girerek private chat'inizi bir araçla eşleyebilirsiniz.\n\nEşledikten sonra bana fotoğraf, PDF veya metin göndererek yük kaydedebilirsiniz.`,
-    );
+/**
+ * Bot commands. Handled for both private and group chats, and BEFORE the
+ * org-mapping check so `/start <code>` and `/pair <code>` work on a chat that
+ * isn't linked yet. Returns true when the command was handled.
+ */
+async function handleCommand(
+  supabase: any,
+  chatId: string,
+  text: string,
+  _isPrivate: boolean,
+  chatTitle: string | null,
+): Promise<boolean> {
+  const [cmdRaw, ...rest] = text.trim().split(/\s+/);
+  // In groups Telegram sends "/pair@botname"; strip the @mention suffix.
+  const cmd = cmdRaw.toLowerCase().split("@")[0];
+  const arg = rest.join(" ").trim();
+
+  if (cmd === "/start") {
+    if (arg) {
+      await consumePairingCode(supabase, arg, chatId, chatTitle);
+    } else {
+      await sendMessage(
+        chatId,
+        `Merhaba! 👋\n\nBu sohbeti hesabınıza bağlamak için uygulamada <b>Settings → Telegram'ı Bağla</b>'ya gidin; oradaki bağlantıya dokunun veya kodu <code>/pair KOD</code> ile gönderin.\n\nBağladıktan sonra doğal dille komut yazabilir, dosya/metin ile yük ekleyebilirsiniz.\n\n/help — örnek komutlar`,
+      );
+    }
     return true;
   }
+
+  if (cmd === "/pair") {
+    if (!arg) {
+      await sendMessage(chatId, `Kullanım: <code>/pair KOD</code>\nKodu uygulamada <b>Settings → Telegram'ı Bağla</b>'dan alın.`);
+    } else {
+      await consumePairingCode(supabase, arg, chatId, chatTitle);
+    }
+    return true;
+  }
+
+  if (cmd === "/myid") {
+    await sendMessage(chatId, `Chat ID: <code>${escapeHtml(chatId)}</code>`);
+    return true;
+  }
+
+  if (cmd === "/help") {
+    await sendMessage(chatId, helpText());
+    return true;
+  }
+
   return false;
+}
+
+/**
+ * Bind the current chat to an org using a pairing code (created in the web app).
+ * Validates the code is unused + unexpired and protects against rebinding a chat
+ * that already belongs to a different organization.
+ */
+async function consumePairingCode(
+  supabase: any,
+  rawCode: string,
+  chatId: string,
+  chatTitle: string | null,
+): Promise<void> {
+  const code = rawCode.trim().toUpperCase();
+  const { data: pc } = await supabase
+    .from("telegram_pairing_codes")
+    .select("*")
+    .eq("code", code)
+    .maybeSingle();
+
+  if (!pc || pc.used_at || new Date(pc.expires_at) <= new Date()) {
+    await sendMessage(chatId, `❌ Kod geçersiz veya süresi dolmuş.\nUygulamadan yeni bir kod oluşturun (Settings → Telegram'ı Bağla).`);
+    return;
+  }
+
+  const { data: existing } = await supabase
+    .from("telegram_groups")
+    .select("id, organization_id")
+    .eq("chat_id", chatId)
+    .maybeSingle();
+
+  if (existing && existing.organization_id !== pc.organization_id) {
+    await sendMessage(chatId, `⚠️ Bu sohbet zaten başka bir hesaba bağlı.`);
+    return;
+  }
+
+  if (existing) {
+    await supabase
+      .from("telegram_groups")
+      .update({ active: true, ...(chatTitle ? { title: chatTitle } : {}) })
+      .eq("id", existing.id);
+  } else {
+    await supabase.from("telegram_groups").insert({
+      organization_id: pc.organization_id,
+      chat_id: chatId,
+      title: chatTitle,
+      active: true,
+    });
+  }
+
+  await supabase.from("telegram_pairing_codes").update({ used_at: new Date().toISOString() }).eq("code", pc.code);
+  await sendMessage(
+    chatId,
+    `✅ <b>Bağlandı!</b>\nArtık doğal dille komut yazabilir, dosya/metin göndererek yük ekleyebilirsiniz.\n\n/help — örnek komutlar`,
+  );
 }
 
 async function handleMessage(supabase: any, message: any) {
@@ -82,9 +175,12 @@ async function handleMessage(supabase: any, message: any) {
   const isPrivate = message.chat.type === "private";
   const text: string | undefined = message.caption || message.text || undefined;
 
-  // Handle bot commands (/start, /myid) in private chats.
-  if (isPrivate && text) {
-    const handled = await handleCommand(chatId, text);
+  const chatTitle: string | null = message.chat.title ?? message.chat.username ?? null;
+
+  // Bot commands (/start, /pair, /myid, /help) — handled for BOTH private and
+  // group chats, before the mapping check, so pairing works on an unmapped chat.
+  if (text && text.trim().startsWith("/")) {
+    const handled = await handleCommand(supabase, chatId, text, isPrivate, chatTitle);
     if (handled) return;
   }
 
@@ -95,28 +191,21 @@ async function handleMessage(supabase: any, message: any) {
     .maybeSingle();
 
   if (!group || !group.active) {
-    if (isPrivate) {
-      await sendMessage(
-        chatId,
-        `Bu private chat henüz kaydedilmemiş.\n\nChat ID'niz: <code>${escapeHtml(chatId)}</code>\n\nUygulamada <b>Settings → Telegram Grupları → Grup Eşle</b> bölümüne bu ID'yi girin. Araç seçmeden kaydedebilirsiniz — her mesajda hangi araç için olduğunu sorarım.`,
-      );
-    } else {
-      await sendMessage(
-        chatId,
-        `Bu grup henüz bir araç/şoför ile eşlenmemiş. Chat ID: <code>${escapeHtml(chatId)}</code> — uygulamadan Settings → Telegram ile eşleyin.`,
-      );
-    }
+    await sendMessage(
+      chatId,
+      `Bu sohbet henüz hesabınıza bağlı değil.\n\nUygulamada <b>Settings → Telegram'ı Bağla</b>'dan bir kod alın; özelde bağlantıya dokunun ya da burada <code>/pair KOD</code> yazın.`,
+    );
     return;
   }
 
   const hasFile = !!(message.document || message.photo?.length);
 
-  // Private chats: natural-language management commands. A file is always a
+  // Natural-language management commands (private + group). A file is always a
   // load, so only text (no file) is routed to intent detection. Returns true
   // when fully handled; false means fall through to the load pipeline below
-  // (e.g. add_load, or when the AI backend is unavailable).
-  if (isPrivate && !hasFile && text) {
-    const handled = await handlePrivateIntent(supabase, group, chatId, text);
+  // (add_load, unknown-in-group, or when the AI backend is unavailable).
+  if (!hasFile && text) {
+    const handled = await handleChatIntent(supabase, group, chatId, text, isPrivate);
     if (handled) return;
   }
 
@@ -224,21 +313,24 @@ function buildSummary(parsed: any, withApprovePrompt: boolean): string {
 }
 
 // ============================================================================
-// AI management commands (private chats only)
+// AI management commands (private + group chats)
 // ============================================================================
 
 /** Ignore pending rows older than this when looking for an open command. */
 const PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Route a private-chat text message through AI intent detection.
- * Returns true when fully handled; false to fall through to the load pipeline.
+ * Route a chat text message through AI intent detection. Works in both private
+ * and group chats. Returns true when fully handled; false to fall through to the
+ * load pipeline. In groups an `unknown` message is treated as a load (returns
+ * false) so broker confirmations still import; in private it shows help.
  */
-async function handlePrivateIntent(
+async function handleChatIntent(
   supabase: any,
   group: any,
   chatId: string,
   text: string,
+  isPrivate: boolean,
 ): Promise<boolean> {
   const orgId = group.organization_id;
 
@@ -255,6 +347,7 @@ async function handlePrivateIntent(
   if (result.intent === "add_load") return false; // delegate to existing flow.
 
   if (result.intent === "unknown") {
+    if (!isPrivate) return false; // group: treat as a load (preserve import).
     await sendMessage(chatId, helpText());
     return true;
   }
