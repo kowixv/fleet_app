@@ -8,8 +8,9 @@ const securityHeaders = [
   { key: "X-Content-Type-Options", value: "nosniff" },
   // Don't leak full URLs to other origins.
   { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-  // Drop legacy browser feature access.
-  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
+  // Drop camera/microphone; allow geolocation for same-origin so the /drive
+  // driver page can read GPS (navigator.geolocation). Other pages simply don't request it.
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(self)" },
 ];
 
 const nextConfig = {
