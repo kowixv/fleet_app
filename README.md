@@ -8,6 +8,9 @@
 - **Esnek settlement motoru** — hiçbir ödeme modeli sabit değil. Her araç için company fee %12/%10/yok, $250 komisyon, driver %, dış carrier fee ayrı ayrı tanımlanır. 5 modeli destekler (company driver, box truck, owner operator, managed/investor, external carrier statement).
 - **Bilingual PDF statement** — EN/TR settlement statement üretir (imza bloğunda logo/MC/DOT/telefon/email/adres yok).
 - **Preventive maintenance** — mileage/tarih bazlı bakım takibi, dashboard uyarısı + günlük Telegram uyarısı (Vercel Cron).
+- **Canlı GPS takip** — sürücünün telefonu/tableti `/drive?token=…` sayfasından konum gönderir; harita
+  üzerinde araçlar, geofence (pickup/delivery), ETA, risk skoru ve alertler canlı görünür. Detay:
+  [docs/11-tracking.md](docs/11-tracking.md).
 - **Dashboard** — haftalık gross/masraf/net, bekleyen yükler, komisyon, bakım uyarıları.
 
 Settlement motoru `lib/settlement/engine.ts` içinde; brief'teki 5 örnek rakam birim testleriyle doğrulanır (`npm test`).
@@ -43,6 +46,7 @@ TELEGRAM_BOT_TOKEN=...
 TELEGRAM_WEBHOOK_SECRET=uzun-rastgele-bir-string
 CRON_SECRET=baska-uzun-bir-string
 NEXT_PUBLIC_APP_URL=https://uygulaman.vercel.app
+GOOGLE_ROUTES_API_KEY=...                 # opsiyonel; gerçek yol-bazlı ETA (yoksa haversine tahmini)
 ```
 
 > Yük okuma (Telegram → load) tamamen **fal.ai** ile yapılır (`FAL_KEY`). Detay: [docs/05-fal-ai.md](docs/05-fal-ai.md).

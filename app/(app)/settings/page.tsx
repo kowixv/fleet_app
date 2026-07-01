@@ -1,5 +1,6 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
 import TelegramConnect from "@/components/TelegramConnect";
+import TabletManagement from "@/components/TabletManagement";
 import { createClient } from "@/lib/supabase/server";
 import { fetchRows, fetchOptions } from "@/lib/data";
 import { updateSettings } from "./actions";
@@ -13,6 +14,12 @@ export default async function SettingsPage() {
     fetchRows("telegram_groups"),
     fetchOptions(),
   ]);
+
+  const { data: vehicles } = await supabase
+    .from("vehicles")
+    .select("id, unit_number")
+    .eq("status", "active")
+    .order("unit_number");
 
   const groupFields: Field[] = [
     { name: "chat_id", label: "Telegram Chat ID", required: true },
@@ -55,6 +62,10 @@ export default async function SettingsPage() {
       </div>
 
       <TelegramConnect />
+
+      <div className="card">
+        <TabletManagement vehicles={vehicles ?? []} />
+      </div>
 
       <div>
         <h2 className="mb-2 font-semibold">Bağlı Telegram Sohbetleri</h2>

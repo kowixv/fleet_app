@@ -1,8 +1,10 @@
 "use server";
 
 import { createClient } from "@/lib/supabase/server";
+import { createServiceClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
+import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
 
 const EDITABLE = [
   "load_number", "broker_name", "driver_name", "pickup_date", "pickup_location",
@@ -73,6 +75,13 @@ export async function approveImported(id: string) {
     .from("imported_loads")
     .update({ status: "approved", created_load_id: load.id })
     .eq("id", id);
+
+  // Geocode pickup/delivery addresses and activate tracking.
+  // Awaited so the work isn't killed when a serverless response returns;
+  // the function has internal try/catch and never throws.
+  const serviceClient = createServiceClient();
+  await geocodeAndActivateTracking(serviceClient, load.id, profile.organization_id);
+
   revalidatePath("/imported");
   revalidatePath("/loads");
   return { ok: true };

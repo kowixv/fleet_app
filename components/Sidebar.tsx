@@ -7,6 +7,7 @@ const NAV: { href: string; label: string; group?: string }[] = [
   { href: "/", label: "Dashboard" },
   { href: "/imported", label: "Telegram Yükleri", group: "Operasyon" },
   { href: "/loads", label: "Loads" },
+  { href: "/tracking", label: "🗺 Tracking" },
   { href: "/expenses", label: "Expenses" },
   { href: "/settlements", label: "Settlements" },
   { href: "/vehicles", label: "Vehicles / Units", group: "Kayıtlar" },

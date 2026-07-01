@@ -17,6 +17,7 @@ varsayılmaz. Sıralı okuman önerilir.
 | 08 | [Deploy](08-deploy.md) | GitHub → Vercel → env → webhook → cron |
 | 09 | [Kullanım Akışı](09-kullanim-akisi.md) | Haftalık operasyon adımları |
 | 10 | [Maliyet & Limitler](10-maliyet-ve-limitler.md) | Ücretsiz katman sınırları, fal maliyeti, v2 kapsamı |
+| 11 | [Canlı Takip (GPS)](11-tracking.md) | Tablet token → sürücü sayfası → canlı harita, geofence, ETA, alert |
 
 ## Hızlı başlangıç sırası
 1. **03** Supabase kur → **07** env doldur → **02**'ye göz at (şemayı anla).

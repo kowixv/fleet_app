@@ -19,20 +19,29 @@ interface Row {
 function MileageCell({ vehicleId, mileage }: { vehicleId: string; mileage: number }) {
   const [val, setVal] = useState(String(mileage ?? 0));
   const [pending, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
   return (
-    <div className="flex items-center gap-1">
-      <input
-        className="input w-24 py-1"
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-      />
-      <button
-        onClick={() => start(async () => void (await updateMileage(vehicleId, Number(val))))}
-        disabled={pending}
-        className="text-xs text-brand hover:underline"
-      >
-        Kaydet
-      </button>
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center gap-1">
+        <input
+          className="input w-24 py-1"
+          value={val}
+          onChange={(e) => setVal(e.target.value)}
+        />
+        <button
+          onClick={() =>
+            start(async () => {
+              const res = await updateMileage(vehicleId, Number(val));
+              setErr(res.ok ? null : res.error);
+            })
+          }
+          disabled={pending}
+          className="text-xs text-brand hover:underline"
+        >
+          Kaydet
+        </button>
+      </div>
+      {err && <span className="text-xs text-red-600">{err}</span>}
     </div>
   );
 }
@@ -45,9 +54,13 @@ export default function MaintenanceTable({
   dueSoonMiles: number;
 }) {
   const [pending, start] = useTransition();
+  const [err, setErr] = useState<string | null>(null);
 
   return (
     <div className="card overflow-x-auto p-0">
+      {err && (
+        <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{err}</p>
+      )}
       <table className="w-full">
         <thead className="border-b border-slate-200 bg-slate-50">
           <tr>
@@ -86,7 +99,12 @@ export default function MaintenanceTable({
                   </td>
                   <td className="td text-right">
                     <button
-                      onClick={() => start(async () => void (await markServiced(r.id, cur)))}
+                      onClick={() =>
+                        start(async () => {
+                          const res = await markServiced(r.id, cur);
+                          setErr(res.ok ? null : res.error);
+                        })
+                      }
                       disabled={pending}
                       className="text-xs text-brand hover:underline"
                     >

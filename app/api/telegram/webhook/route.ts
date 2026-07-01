@@ -23,6 +23,7 @@ import {
   prepareSettlement,
   type PendingCommand,
 } from "@/lib/bot-executor";
+import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
 
 export const runtime = "nodejs";
 
@@ -766,6 +767,11 @@ async function handleCallback(supabase: any, cb: any) {
     .from("imported_loads")
     .update({ status: "approved", created_load_id: load.id })
     .eq("id", importId);
+
+  // Geocode pickup/delivery addresses and activate tracking.
+  // Awaited so the work isn't killed when a serverless response returns;
+  // the function has internal try/catch and never throws.
+  await geocodeAndActivateTracking(supabase, load.id, imp.organization_id);
 
   await answerCallbackQuery(cb.id, "Onaylandı, load oluşturuldu.");
   if (chatId && messageId)

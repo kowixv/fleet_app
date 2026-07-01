@@ -8,9 +8,10 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Match all paths except static assets and the Telegram/cron API routes,
-     * which authenticate themselves with their own secrets.
+     * Match all paths except static assets, the Telegram/cron/tracking API
+     * routes (which authenticate themselves with their own secrets), and the
+     * public /drive driver page (tablet-token auth, no app session).
      */
-    "/((?!_next/static|_next/image|favicon.ico|api/telegram|api/cron|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/telegram|api/cron|api/tracking|drive|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)",
   ],
 };
