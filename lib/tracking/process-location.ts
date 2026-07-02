@@ -10,12 +10,8 @@ import { computeTrackingMode, computeParkedSince, updateConsecutivePositions, up
 import { checkGeofence, distanceToCurrentTarget, isRouteDeviation } from './geofence';
 import { filterNewAlerts, getRestEvents } from './alert-manager';
 import { calculateRiskScore, calculateAppointmentStatus } from './risk-score';
+import { resolvePosition, MAX_PLAUSIBLE_SPEED_MPH, MAX_RELIABLE_ACCURACY_M } from './position-filter';
 import type { LocationPayload, LoadTracking, UnitLocation, TrackingMode, TrackingEventType } from './types';
-
-/** Speed > this in mph is considered physically impossible (GPS error) */
-const MAX_PLAUSIBLE_SPEED_MPH = 150;
-/** GPS accuracy > this in meters is considered unreliable for mode decisions */
-const MAX_RELIABLE_ACCURACY_M = 100;
 
 export interface ProcessLocationResult {
   ok: boolean;
@@ -69,16 +65,35 @@ export async function processLocation(
   // ── Fetch previous unit_location for context ──────────────────────────────
   const { data: prevLocation } = await supabase
     .from('unit_locations')
-    .select('tracking_mode')
+    .select('tracking_mode, latitude, longitude, accuracy, last_update_at')
     .eq('unit_id', unitId)
     .maybeSingle();
 
   const previousMode = prevLocation?.tracking_mode ?? null;
 
+  // ── Resolve position (reject implausible low-accuracy jumps) ─────────────
+  // A single low-accuracy fix (e.g. cell/Wi-Fi based, before GPS locks) that
+  // implies an impossible jump from the last known position is discarded in
+  // favor of the last known-good position, so it can't "teleport" the unit
+  // on the dispatcher's map. Everything downstream (mode engine, geofence,
+  // events, and the persisted row) uses this resolved position.
+  const resolved = resolvePosition(
+    prevLocation
+      ? {
+          latitude: prevLocation.latitude,
+          longitude: prevLocation.longitude,
+          last_update_at: prevLocation.last_update_at,
+        }
+      : null,
+    { latitude: payload.latitude, longitude: payload.longitude, accuracy: payload.accuracy, timestamp: payload.timestamp },
+  );
+  const lat = resolved.latitude;
+  const lng = resolved.longitude;
+
   // ── Distance to current target ────────────────────────────────────────────
   const dToTarget = activeLoad && loadTracking
     ? distanceToCurrentTarget(
-        payload.latitude, payload.longitude,
+        lat, lng,
         loadTracking.geofence_status,
         activeLoad.pickup_lat, activeLoad.pickup_lng,
         activeLoad.delivery_lat, activeLoad.delivery_lng,
@@ -95,8 +110,8 @@ export async function processLocation(
 
   const consecutivePositions = loadTracking?.consecutive_positions ?? [];
   const newSnapshot = {
-    lat: payload.latitude,
-    lng: payload.longitude,
+    lat,
+    lng,
     ts: payload.timestamp,
     speed: payload.speed,
   };
@@ -126,8 +141,8 @@ export async function processLocation(
 
   if (activeLoad && loadTracking && accuracyReliable) {
     const gfResult = checkGeofence({
-      lat: payload.latitude,
-      lng: payload.longitude,
+      lat,
+      lng,
       pickupLat: activeLoad.pickup_lat,
       pickupLng: activeLoad.pickup_lng,
       deliveryLat: activeLoad.delivery_lat,
@@ -156,10 +171,10 @@ export async function processLocation(
     finalMode = applyGeofenceToMode(
       modeResult.mode,
       activeLoad.pickup_lat !== null && activeLoad.pickup_lng !== null
-        ? distanceToCurrentTarget(payload.latitude, payload.longitude, 'en_route_to_pickup', activeLoad.pickup_lat, activeLoad.pickup_lng, null, null)
+        ? distanceToCurrentTarget(lat, lng, 'en_route_to_pickup', activeLoad.pickup_lat, activeLoad.pickup_lng, null, null)
         : null,
       activeLoad.delivery_lat !== null && activeLoad.delivery_lng !== null
-        ? distanceToCurrentTarget(payload.latitude, payload.longitude, 'en_route_to_delivery', null, null, activeLoad.delivery_lat, activeLoad.delivery_lng)
+        ? distanceToCurrentTarget(lat, lng, 'en_route_to_delivery', null, null, activeLoad.delivery_lat, activeLoad.delivery_lng)
         : null,
       gfResult.newStatus,
     );
@@ -219,8 +234,8 @@ export async function processLocation(
         load_id: activeLoad.id,
         event_type,
         metadata: {
-          lat: payload.latitude,
-          lng: payload.longitude,
+          lat,
+          lng,
           speed: payload.speed,
           tracking_mode: finalMode,
         },
@@ -239,8 +254,8 @@ export async function processLocation(
       {
         organization_id: orgId,
         unit_id: unitId,
-        latitude: payload.latitude,
-        longitude: payload.longitude,
+        latitude: lat,
+        longitude: lng,
         speed: payload.speed,
         heading: payload.heading ?? null,
         accuracy: payload.accuracy ?? null,

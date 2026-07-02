@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
+import { Fragment, useEffect, useRef } from "react";
+import { MapContainer, TileLayer, Marker, Popup, Circle, useMap } from "react-leaflet";
 import type { Map as LeafletMapType } from "leaflet";
 import type { MapUnit } from "./TrackingMap";
 import type { TrackingMode } from "@/lib/tracking/types";
+import { MAX_RELIABLE_ACCURACY_M } from "@/lib/tracking/position-filter";
 import "leaflet/dist/leaflet.css";
+
+/** Below this, the accuracy circle is visually negligible — skip drawing it. */
+const MIN_ACCURACY_TO_DRAW_M = 30;
 
 // Markers use custom divIcons (createTruckIcon) — no default marker images,
 // so the usual Leaflet/webpack icon-path patch isn't needed.
@@ -80,22 +84,45 @@ export default function LeafletMapInner({
         attribution='&copy; <a href="https://openstreetmap.org">OpenStreetMap</a>'
       />
       <FlyToSelected units={units} selectedUnitId={selectedUnitId} />
-      {units.map((unit) => (
-        <Marker
-          key={unit.unit_id}
-          position={[unit.latitude, unit.longitude]}
-          icon={createTruckIcon(unit.tracking_mode, unit.unit_id === selectedUnitId)}
-          eventHandlers={{ click: () => onSelectUnit(unit.unit_id) }}
-        >
-          <Popup>
-            <div className="text-sm">
-              <div className="font-semibold">Unit {unit.unit_number}</div>
-              {unit.load_number && <div>Load #{unit.load_number}</div>}
-              <div className="capitalize text-gray-500">{unit.tracking_mode.replace("_", " ")}</div>
-            </div>
-          </Popup>
-        </Marker>
-      ))}
+      {units.map((unit) => {
+        const accuracy = unit.accuracy ?? null;
+        const accuracyPoor = accuracy !== null && accuracy > MAX_RELIABLE_ACCURACY_M;
+        return (
+          <Fragment key={unit.unit_id}>
+            {accuracy !== null && accuracy > MIN_ACCURACY_TO_DRAW_M && (
+              <Circle
+                center={[unit.latitude, unit.longitude]}
+                radius={accuracy}
+                pathOptions={{
+                  color: accuracyPoor ? "#f59e0b" : "#3b82f6",
+                  fillColor: accuracyPoor ? "#f59e0b" : "#3b82f6",
+                  fillOpacity: 0.12,
+                  weight: 1,
+                }}
+              />
+            )}
+            <Marker
+              position={[unit.latitude, unit.longitude]}
+              icon={createTruckIcon(unit.tracking_mode, unit.unit_id === selectedUnitId)}
+              eventHandlers={{ click: () => onSelectUnit(unit.unit_id) }}
+            >
+              <Popup>
+                <div className="text-sm">
+                  <div className="font-semibold">Unit {unit.unit_number}</div>
+                  {unit.load_number && <div>Load #{unit.load_number}</div>}
+                  <div className="capitalize text-gray-500">{unit.tracking_mode.replace("_", " ")}</div>
+                  {accuracy !== null && (
+                    <div className={accuracyPoor ? "mt-1 text-amber-600" : "mt-1 text-gray-400"}>
+                      ~{Math.round(accuracy)} m hassasiyet
+                      {accuracyPoor && " — konum kesin olmayabilir"}
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </Marker>
+          </Fragment>
+        );
+      })}
     </MapContainer>
   );
 }

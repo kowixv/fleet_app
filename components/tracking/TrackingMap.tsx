@@ -11,6 +11,7 @@ export interface MapUnit {
   unit_number: string;
   latitude: number;
   longitude: number;
+  accuracy?: number | null;
   tracking_mode: TrackingMode;
   last_update_at: string;
   load_number?: string | null;

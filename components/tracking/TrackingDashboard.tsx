@@ -138,6 +138,7 @@ export default function TrackingDashboard() {
       unit_number: u.vehicles?.unit_number ?? u.unit_id,
       latitude: u.latitude,
       longitude: u.longitude,
+      accuracy: u.accuracy,
       tracking_mode: u.tracking_mode,
       last_update_at: u.last_update_at,
       load_number: activeLoad?.loads?.load_number ?? null,
