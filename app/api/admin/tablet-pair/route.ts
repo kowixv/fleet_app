@@ -2,7 +2,8 @@
  * Admin API — tablet token management
  * POST: Create a new tablet token for a unit
  * GET: List all tablet tokens for the org
- * DELETE: Revoke a tablet token
+ * DELETE: Revoke a tablet token (default), or permanently delete it
+ *         (body.hard === true — only allowed once it's already revoked)
  */
 
 import { createClient, createServiceClient } from "@/lib/supabase/server";
@@ -111,7 +112,7 @@ export async function DELETE(req: Request) {
     return new Response("Forbidden", { status: 403 });
   }
 
-  let body: { token_id: string };
+  let body: { token_id: string; hard?: boolean };
   try {
     body = await req.json();
   } catch {
@@ -119,6 +120,28 @@ export async function DELETE(req: Request) {
   }
 
   const serviceClient = createServiceClient();
+
+  if (body.hard) {
+    // Permanent delete — only for tokens already revoked, so a token can't
+    // be removed (and its tablet silently cut off with no trace) without
+    // going through the revoke step first.
+    const { error, count } = await serviceClient
+      .from("tablet_tokens")
+      .delete({ count: "exact" })
+      .eq("id", body.token_id)
+      .eq("organization_id", profile.organization_id)
+      .eq("is_active", false);
+
+    if (error) return Response.json({ error: error.message }, { status: 500 });
+    if (!count) {
+      return Response.json(
+        { error: "Token not found, or still active — revoke it first" },
+        { status: 409 },
+      );
+    }
+    return Response.json({ ok: true });
+  }
+
   const { error } = await serviceClient
     .from("tablet_tokens")
     .update({ is_active: false })

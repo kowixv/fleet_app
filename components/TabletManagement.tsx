@@ -87,6 +87,21 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
     await fetchTokens();
   }
 
+  async function handleDelete(tokenId: string) {
+    if (!confirm("Bu token kalıcı olarak silinecek, geri alınamaz. Devam edilsin mi?")) return;
+    const res = await fetch("/api/admin/tablet-pair", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token_id: tokenId, hard: true }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      alert(data?.error ?? "Token silinemedi.");
+      return;
+    }
+    await fetchTokens();
+  }
+
   function timeAgo(ts: string | null) {
     if (!ts) return "never";
     const min = Math.round((Date.now() - new Date(ts).getTime()) / 60_000);
@@ -189,12 +204,19 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
                   </td>
                   <td className="px-4 py-2 text-slate-500 text-xs">{timeAgo(t.last_seen_at)}</td>
                   <td className="px-4 py-2">
-                    {t.is_active && (
+                    {t.is_active ? (
                       <button
                         onClick={() => handleRevoke(t.id)}
                         className="text-xs text-red-500 hover:text-red-700"
                       >
                         Revoke
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleDelete(t.id)}
+                        className="text-xs text-red-500 hover:text-red-700"
+                      >
+                        Sil
                       </button>
                     )}
                   </td>
