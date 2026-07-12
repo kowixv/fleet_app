@@ -1,10 +1,18 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import { fetchRows, fetchOptions } from "@/lib/data";
+import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
-export default async function VehiclesPage() {
-  const [rows, opts] = await Promise.all([fetchRows("vehicles"), fetchOptions()]);
+export default async function VehiclesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const [paged, opts] = await Promise.all([
+    fetchRowsPaged("vehicles", { page: parsePage(page) }),
+    fetchOptions(),
+  ]);
 
   const fields: Field[] = [
     { name: "unit_number", label: "Unit #", required: true },
@@ -81,7 +89,8 @@ export default async function VehiclesPage() {
       basePath="/vehicles"
       addLabel="Araç"
       fields={fields}
-      rows={rows}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
     />
   );
 }

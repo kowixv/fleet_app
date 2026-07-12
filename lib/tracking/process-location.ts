@@ -11,6 +11,7 @@ import { checkGeofence, distanceToCurrentTarget, isRouteDeviation } from './geof
 import { filterNewAlerts, getRestEvents } from './alert-manager';
 import { calculateRiskScore, calculateAppointmentStatus } from './risk-score';
 import { resolvePosition, MAX_PLAUSIBLE_SPEED_MPH, MAX_RELIABLE_ACCURACY_M } from './position-filter';
+import { resolveActiveLoad } from './resolve-active-load';
 import type { LocationPayload, LoadTracking, UnitLocation, TrackingMode, TrackingEventType } from './types';
 
 export interface ProcessLocationResult {
@@ -33,22 +34,18 @@ export async function processLocation(
   const accuracyReliable = !payload.accuracy || payload.accuracy <= MAX_RELIABLE_ACCURACY_M;
 
   // ── Fetch active load for this unit ───────────────────────────────────────
-  const { data: loads } = await supabase
-    .from('loads')
-    .select(`
+  const { load: activeLoad } = await resolveActiveLoad(
+    supabase,
+    orgId,
+    unitId,
+    `
       id, organization_id,
       pickup_lat, pickup_lng,
       delivery_lat, delivery_lng,
       pickup_date, delivery_date,
       status
-    `)
-    .eq('organization_id', orgId)
-    .eq('vehicle_id', unitId)
-    .in('status', ['booked', 'delivered'])
-    .order('pickup_date', { ascending: false })
-    .limit(1);
-
-  const activeLoad = loads?.[0] ?? null;
+    `,
+  );
   const hasActiveLoad = !!activeLoad;
 
   // ── Fetch current load_tracking (if active load exists) ──────────────────
@@ -66,6 +63,7 @@ export async function processLocation(
   const { data: prevLocation } = await supabase
     .from('unit_locations')
     .select('tracking_mode, latitude, longitude, accuracy, last_update_at')
+    .eq('organization_id', orgId)
     .eq('unit_id', unitId)
     .maybeSingle();
 
@@ -211,10 +209,15 @@ export async function processLocation(
       appointment_status: appointmentStatus,
     };
 
+    // Optimistic lock: updated_at is touched by trigger on every update, so
+    // matching on it makes overlapping location POSTs lose cleanly (the loser
+    // skips this buffer patch) instead of silently clobbering each other's
+    // consecutive_positions / distance_history entries.
     await supabase
       .from('load_tracking')
       .update(ltPatch)
-      .eq('id', loadTracking.id);
+      .eq('id', loadTracking.id)
+      .eq('updated_at', loadTracking.updated_at);
 
     // Dedup alerts: fetch existing events for this load
     const { data: existingEvents } = await supabase

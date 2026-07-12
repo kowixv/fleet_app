@@ -26,13 +26,19 @@ export async function geocodeAndActivateTracking(
       return;
     }
 
-    // Geocode both addresses in parallel
-    const [pickupCoords, deliveryCoords] = await Promise.all([
-      load.pickup_location ? geocodeAddress(load.pickup_location) : null,
-      load.delivery_location ? geocodeAddress(load.delivery_location) : null,
-    ]);
+    // Geocode sequentially — Nominatim's usage policy is 1 request/second and
+    // a parallel pair can get rate-limited into null results.
+    const pickupCoords = load.pickup_location ? await geocodeAddress(load.pickup_location) : null;
+    const deliveryCoords = load.delivery_location ? await geocodeAddress(load.delivery_location) : null;
 
-    // Update loads table with coordinates
+    // Stamp geocoded_at only when every provided address resolved. A failed
+    // attempt leaves it null so the next create/update of the load retries —
+    // otherwise one transient Nominatim error would disable geofencing for
+    // this load forever.
+    const fullyGeocoded =
+      (!load.pickup_location || pickupCoords !== null) &&
+      (!load.delivery_location || deliveryCoords !== null);
+
     await supabase
       .from('loads')
       .update({
@@ -40,7 +46,7 @@ export async function geocodeAndActivateTracking(
         pickup_lng: pickupCoords?.lng ?? null,
         delivery_lat: deliveryCoords?.lat ?? null,
         delivery_lng: deliveryCoords?.lng ?? null,
-        geocoded_at: new Date().toISOString(),
+        geocoded_at: fullyGeocoded ? new Date().toISOString() : null,
       })
       .eq('id', loadId);
 

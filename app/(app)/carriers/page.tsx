@@ -1,5 +1,5 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import { fetchRows } from "@/lib/data";
+import { fetchRowsPaged, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -9,8 +9,13 @@ const fields: Field[] = [
   { name: "notes", label: "Not", type: "textarea", hideInTable: true },
 ];
 
-export default async function CarriersPage() {
-  const rows = await fetchRows("external_carriers");
+export default async function CarriersPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const paged = await fetchRowsPaged("external_carriers", { page: parsePage(page) });
   return (
     <ResourceManager
       title="External Carriers"
@@ -18,7 +23,8 @@ export default async function CarriersPage() {
       basePath="/carriers"
       addLabel="Carrier"
       fields={fields}
-      rows={rows}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
     />
   );
 }

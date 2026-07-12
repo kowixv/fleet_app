@@ -25,7 +25,7 @@ export async function GET(req: Request) {
   const [{ data: rules }, { data: settingsRows }, { data: groups }] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("*, vehicles(id, unit_number, current_mileage)")
+      .select("*, vehicles!maintenance_rules_vehicle_id_fkey(id, unit_number, current_mileage)")
       .eq("active", true),
     supabase.from("settings").select("organization_id, pm_due_soon_miles"),
     supabase.from("telegram_groups").select("chat_id, vehicle_id, active"),

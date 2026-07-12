@@ -6,7 +6,9 @@
  *         (body.hard === true — only allowed once it's already revoked)
  */
 
+import { randomBytes } from "node:crypto";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { hashTabletToken } from "@/lib/tracking/tablet-auth";
 
 export const runtime = "nodejs";
 
@@ -49,23 +51,28 @@ export async function POST(req: Request) {
     return Response.json({ error: "Unit not found" }, { status: 404 });
   }
 
+  // Generate here and store only the hash; the raw token is returned exactly
+  // once in this response and can never be read back from the DB.
+  const rawToken = randomBytes(32).toString("hex");
+
   const { data: token, error } = await serviceClient
     .from("tablet_tokens")
     .insert({
       organization_id: profile.organization_id,
       unit_id: body.unit_id,
+      token_hash: hashTabletToken(rawToken),
       device_label: body.device_label ?? `Tablet – Unit ${vehicle.unit_number}`,
       device_id: body.device_id ?? null,
       created_by: user.id,
     })
-    .select("id, token, unit_id, device_label, is_active, created_at")
+    .select("id, unit_id, device_label, is_active, created_at")
     .single();
 
   if (error) {
     return Response.json({ error: error.message }, { status: 500 });
   }
 
-  return Response.json({ token });
+  return Response.json({ token: { ...token, token: rawToken } });
 }
 
 export async function GET() {

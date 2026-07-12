@@ -1,6 +1,8 @@
 import { createClient } from "@/lib/supabase/server";
 
-/** Fetch all rows of a table for the current org (RLS scopes it). */
+/** Fetch all rows of a table for the current org (RLS scopes it).
+ *  Only for small, bounded tables — unbounded lists silently truncate at
+ *  PostgREST's 1000-row cap; use fetchRowsPaged for those. */
 export async function fetchRows(
   table: string,
   opts?: { order?: string; ascending?: boolean },
@@ -11,6 +13,31 @@ export async function fetchRows(
     .select("*")
     .order(opts?.order ?? "created_at", { ascending: opts?.ascending ?? false });
   return data ?? [];
+}
+
+export const DEFAULT_PAGE_SIZE = 50;
+
+/** Paged fetch with exact total count for list pages. `page` is 1-based. */
+export async function fetchRowsPaged(
+  table: string,
+  opts?: { order?: string; ascending?: boolean; page?: number; pageSize?: number },
+): Promise<{ rows: Record<string, any>[]; total: number; page: number; pageSize: number }> {
+  const pageSize = opts?.pageSize ?? DEFAULT_PAGE_SIZE;
+  const page = Math.max(1, opts?.page ?? 1);
+  const from = (page - 1) * pageSize;
+  const supabase = await createClient();
+  const { data, count } = await supabase
+    .from(table)
+    .select("*", { count: "exact" })
+    .order(opts?.order ?? "created_at", { ascending: opts?.ascending ?? false })
+    .range(from, from + pageSize - 1);
+  return { rows: data ?? [], total: count ?? 0, page, pageSize };
+}
+
+/** Parse a 1-based page number from a searchParams value. */
+export function parsePage(value: string | string[] | undefined): number {
+  const n = Number(Array.isArray(value) ? value[0] : value);
+  return Number.isInteger(n) && n > 0 ? n : 1;
 }
 
 /** Build select <option> lists for relation fields. */

@@ -16,7 +16,7 @@ export default async function SettlementDetail({
 
   const { data: st } = await supabase
     .from("settlements")
-    .select("*, vehicles(unit_number), companies(name)")
+    .select("*, vehicles!settlements_vehicle_id_fkey(unit_number), companies!settlements_company_id_fkey(name)")
     .eq("id", id)
     .single();
   if (!st) notFound();

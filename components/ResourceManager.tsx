@@ -24,13 +24,20 @@ export interface Field {
   hideInTable?: boolean;
 }
 
+export interface Pagination {
+  page: number; // 1-based
+  pageSize: number;
+  total: number;
+}
+
 interface Props {
   title: string;
   table: string;
-  basePath: string; // for revalidation
+  basePath: string; // for revalidation + pagination links
   fields: Field[];
   rows: Record<string, any>[];
   addLabel?: string;
+  pagination?: Pagination;
 }
 
 function toFormValue(field: Field, raw: any): any {
@@ -54,6 +61,7 @@ export default function ResourceManager({
   fields,
   rows,
   addLabel = "Ekle",
+  pagination,
 }: Props) {
   const [editing, setEditing] = useState<Record<string, any> | null>(null);
   const [open, setOpen] = useState(false);
@@ -88,7 +96,8 @@ export default function ResourceManager({
 
   async function onDelete(id: string) {
     if (!confirm("Silinsin mi?")) return;
-    await deleteRow(table, id, basePath);
+    const res = await deleteRow(table, id, basePath);
+    if (res?.error) alert(`Silinemedi: ${res.error}`);
   }
 
   function renderCell(f: Field, row: Record<string, any>) {
@@ -160,6 +169,32 @@ export default function ResourceManager({
           </tbody>
         </table>
       </div>
+
+      {pagination && pagination.total > pagination.pageSize && (
+        <div className="flex items-center justify-between text-sm text-slate-500">
+          <span>
+            {(pagination.page - 1) * pagination.pageSize + 1}
+            –{Math.min(pagination.page * pagination.pageSize, pagination.total)}
+            {" / "}Toplam {pagination.total}
+          </span>
+          <span className="flex gap-2">
+            {pagination.page > 1 ? (
+              <a href={`${basePath}?page=${pagination.page - 1}`} className="btn-ghost">
+                ← Önceki
+              </a>
+            ) : (
+              <span className="btn-ghost opacity-40">← Önceki</span>
+            )}
+            {pagination.page * pagination.pageSize < pagination.total ? (
+              <a href={`${basePath}?page=${pagination.page + 1}`} className="btn-ghost">
+                Sonraki →
+              </a>
+            ) : (
+              <span className="btn-ghost opacity-40">Sonraki →</span>
+            )}
+          </span>
+        </div>
+      )}
 
       {open && (
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4">

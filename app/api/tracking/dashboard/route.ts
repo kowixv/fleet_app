@@ -16,11 +16,13 @@ export async function GET() {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("id", user.id)
     .maybeSingle();
 
-  if (!profile) return new Response("Forbidden", { status: 403 });
+  if (!profile || !["owner", "admin", "manager"].includes(profile.role)) {
+    return new Response("Forbidden", { status: 403 });
+  }
   const orgId = profile.organization_id;
 
   // Run all queries in parallel
@@ -39,7 +41,9 @@ export async function GET() {
       .eq("organization_id", orgId),
 
     // Active load tracking with load + vehicle info.
-    // Explicit FK hint on people disambiguates the loads→people relationship.
+    // Explicit FK hints disambiguate: loads→people and loads→vehicles both
+    // have a second composite (organization_id, …) same-org FK, and PostgREST
+    // rejects the embed as ambiguous (PGRST201) without the hint.
     supabase
       .from("load_tracking")
       .select(`
@@ -53,7 +57,7 @@ export async function GET() {
           pickup_lat, pickup_lng,
           delivery_lat, delivery_lng,
           vehicle_id,
-          vehicles (unit_number),
+          vehicles!loads_vehicle_id_fkey (unit_number),
           people!loads_driver_same_org_fk (full_name)
         )
       `)

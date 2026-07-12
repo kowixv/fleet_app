@@ -1,5 +1,5 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import { fetchRows } from "@/lib/data";
+import { fetchRowsPaged, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -35,8 +35,13 @@ const fields: Field[] = [
   { name: "notes", label: "Not", type: "textarea", hideInTable: true },
 ];
 
-export default async function PeoplePage() {
-  const rows = await fetchRows("people");
+export default async function PeoplePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const paged = await fetchRowsPaged("people", { page: parsePage(page) });
   return (
     <ResourceManager
       title="Drivers / Owners / Investors"
@@ -44,7 +49,8 @@ export default async function PeoplePage() {
       basePath="/people"
       addLabel="Kişi"
       fields={fields}
-      rows={rows}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
     />
   );
 }

@@ -5,6 +5,7 @@
  * multiple signals without requiring an ETA for every calculation.
  */
 
+import { endOfDayTs } from '@/lib/tz';
 import type { RiskScore, RiskResult, TrackingMode, GeofenceStatus, AppointmentStatus } from './types';
 
 interface RiskInput {
@@ -69,9 +70,9 @@ export function calculateRiskScore(input: RiskInput): RiskResult {
     reasons.push('Vehicle is deviating from route');
   }
 
-  // 5. ETA exceeds delivery date
+  // 5. ETA exceeds delivery date (end of day in the fleet timezone, not UTC)
   if (input.etaMinutes !== null && input.deliveryDate) {
-    const deliveryTs = new Date(input.deliveryDate + 'T23:59:00').getTime();
+    const deliveryTs = endOfDayTs(input.deliveryDate);
     const etaTs = now + input.etaMinutes * 60_000;
     if (etaTs > deliveryTs) {
       points += 2;
@@ -108,13 +109,14 @@ export function calculateAppointmentStatus(input: {
 
   if (!deliveryDate) return 'unknown';
 
-  const deliveryTs = new Date(deliveryDate + 'T23:59:00').getTime();
+  const deliveryTs = endOfDayTs(deliveryDate);
   const now = Date.now();
   const hoursUntilDelivery = (deliveryTs - now) / (60 * 60 * 1000);
 
-  // Already delivered or departed
+  // Already at/through delivery — the load is complete; don't flip it to
+  // "late" just because the calendar day has since rolled over.
   if (geofenceStatus === 'arrived_delivery' || geofenceStatus === 'departed_delivery') {
-    return hoursUntilDelivery > 0 ? 'on_time' : 'late';
+    return 'on_time';
   }
 
   if (hoursUntilDelivery < 0) return 'late';

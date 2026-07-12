@@ -1,6 +1,6 @@
 import Link from "next/link";
 import SettlementForm from "@/components/SettlementForm";
-import { fetchOptions } from "@/lib/data";
+import { fetchOptions, parsePage, DEFAULT_PAGE_SIZE } from "@/lib/data";
 import { createClient } from "@/lib/supabase/server";
 import { usd, shortDate } from "@/lib/format";
 
@@ -14,13 +14,24 @@ const STATUS_COLORS: Record<string, string> = {
   void: "bg-red-100 text-red-600",
 };
 
-export default async function SettlementsPage() {
-  const opts = await fetchOptions();
+export default async function SettlementsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page: pageParam } = await searchParams;
+  const page = parsePage(pageParam);
+  const from = (page - 1) * DEFAULT_PAGE_SIZE;
   const supabase = await createClient();
-  const { data: rows } = await supabase
-    .from("settlements")
-    .select("*, vehicles(unit_number)")
-    .order("created_at", { ascending: false });
+  const [opts, { data: rows, count }] = await Promise.all([
+    fetchOptions(),
+    supabase
+      .from("settlements")
+      .select("*, vehicles!settlements_vehicle_id_fkey(unit_number)", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(from, from + DEFAULT_PAGE_SIZE - 1),
+  ]);
+  const total = count ?? 0;
 
   return (
     <div className="space-y-4">
@@ -75,6 +86,26 @@ export default async function SettlementsPage() {
           </tbody>
         </table>
       </div>
+
+      {total > DEFAULT_PAGE_SIZE && (
+        <div className="flex items-center justify-between text-sm text-slate-500">
+          <span>
+            {from + 1}–{Math.min(from + DEFAULT_PAGE_SIZE, total)} / Toplam {total}
+          </span>
+          <span className="flex gap-2">
+            {page > 1 ? (
+              <Link href={`/settlements?page=${page - 1}`} className="btn-ghost">← Önceki</Link>
+            ) : (
+              <span className="btn-ghost opacity-40">← Önceki</span>
+            )}
+            {from + DEFAULT_PAGE_SIZE < total ? (
+              <Link href={`/settlements?page=${page + 1}`} className="btn-ghost">Sonraki →</Link>
+            ) : (
+              <span className="btn-ghost opacity-40">Sonraki →</span>
+            )}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

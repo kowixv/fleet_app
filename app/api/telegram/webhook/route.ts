@@ -663,13 +663,7 @@ async function handleCallback(supabase: any, cb: any) {
     if (messageId) {
       await editMessageText(chatId, messageId, `${summary}\n\n🚛 Araç seçildi. Onaylıyor musunuz?`);
     }
-    // Edit message to show approve/reject keyboard now that vehicle is chosen.
-    await supabase
-      .from("imported_loads")
-      .update({ extracted: { ...(imp.extracted ?? {}), selected_vehicle_id: vehicleId, selected_driver_id: vehicle?.assigned_driver_id ?? null } })
-      .eq("id", importId);
 
-    // Re-fetch and send approve keyboard by editing the message.
     await answerCallbackQuery(cb.id, `Araç seçildi.`);
     if (chatId && messageId) {
       // Replace vehicle selection keyboard with approve/reject keyboard.
@@ -709,13 +703,37 @@ async function handleCallback(supabase: any, cb: any) {
   }
 
   if (action === "reject") {
-    await supabase.from("imported_loads").update({ status: "rejected" }).eq("id", importId);
+    // Atomic claim: only the request that flips pending→rejected proceeds.
+    const { data: claimed } = await supabase
+      .from("imported_loads")
+      .update({ status: "rejected" })
+      .eq("id", importId)
+      .eq("status", "pending")
+      .select("id");
+    if (!claimed?.length) {
+      await answerCallbackQuery(cb.id, "Zaten işlendi.");
+      return;
+    }
     await answerCallbackQuery(cb.id, "Reddedildi.");
     if (chatId && messageId) await editMessageText(chatId, messageId, "❌ Yük reddedildi.");
     return;
   }
 
   // approve -> create load
+  // Atomic claim BEFORE the insert: a double-tap (or a duplicate Telegram
+  // callback delivery) previously passed the status check twice and created
+  // two loads. Whoever flips pending→approved wins; everyone else stops here.
+  const { data: claimed } = await supabase
+    .from("imported_loads")
+    .update({ status: "approved" })
+    .eq("id", importId)
+    .eq("status", "pending")
+    .select("id");
+  if (!claimed?.length) {
+    await answerCallbackQuery(cb.id, "Zaten işlendi.");
+    return;
+  }
+
   // Resolve vehicle/driver: prefer vehicle selected via private chat, then group defaults.
   const selectedVehicleId = imp.extracted?.selected_vehicle_id ?? null;
   const selectedDriverId = imp.extracted?.selected_driver_id ?? null;
@@ -757,15 +775,17 @@ async function handleCallback(supabase: any, cb: any) {
 
   if (loadError || !load) {
     console.error("telegram webhook: load insert failed", loadError);
+    // Release the claim so the operator can retry.
+    await supabase.from("imported_loads").update({ status: "pending" }).eq("id", importId);
     await answerCallbackQuery(cb.id, "Hata: load kaydedilemedi. Lütfen tekrar deneyin.");
     if (chatId && messageId)
-      await editMessageText(chatId, messageId, "⚠️ Yük kaydedilemedi, lütfen uygulamadan manuel ekleyin.");
+      await editMessageText(chatId, messageId, "⚠️ Yük kaydedilemedi, lütfen tekrar deneyin.");
     return;
   }
 
   await supabase
     .from("imported_loads")
-    .update({ status: "approved", created_load_id: load.id })
+    .update({ created_load_id: load.id })
     .eq("id", importId);
 
   // Geocode pickup/delivery addresses and activate tracking.
@@ -811,9 +831,19 @@ async function handleCommandCallback(
     return;
   }
 
-  // confirm_cmd
+  // confirm_cmd — atomic claim: whoever deletes the row executes the command;
+  // a duplicate tap deletes zero rows and stops (no double execution).
+  const { data: claimed } = await supabase
+    .from("bot_pending_commands")
+    .delete()
+    .eq("id", commandId)
+    .select("id");
+  if (!claimed?.length) {
+    await answerCallbackQuery(cb.id, "Komut zaten işlendi.");
+    return;
+  }
+
   const result = await executeCommand(supabase, pending as PendingCommand);
-  await supabase.from("bot_pending_commands").delete().eq("id", commandId);
   await answerCallbackQuery(cb.id, result.ok ? "Tamam." : "Hata.");
   if (chatId && messageId) await editMessageText(chatId, messageId, result.message);
 }

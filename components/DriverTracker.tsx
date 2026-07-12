@@ -56,12 +56,20 @@ export default function DriverTracker() {
 
   // Resolve token from URL (?token=) or localStorage on mount.
   useEffect(() => {
-    const fromUrl = new URLSearchParams(window.location.search).get("token");
+    const params = new URLSearchParams(window.location.search);
+    const fromUrl = params.get("token");
     const stored = localStorage.getItem(TOKEN_KEY);
     const t = fromUrl?.trim() || stored;
     if (t) {
       setToken(t);
       localStorage.setItem(TOKEN_KEY, t);
+    }
+    if (fromUrl) {
+      // Scrub the secret from the address bar/history once it's stored —
+      // shared screenshots and browser history shouldn't carry the token.
+      params.delete("token");
+      const rest = params.toString();
+      window.history.replaceState(null, "", window.location.pathname + (rest ? `?${rest}` : ""));
     }
   }, []);
 

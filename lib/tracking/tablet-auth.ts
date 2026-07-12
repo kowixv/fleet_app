@@ -4,7 +4,13 @@
  * Resolves unit_id and organization_id from the tablet_tokens table.
  */
 
+import { createHash } from 'node:crypto';
 import { createServiceClient } from '@/lib/supabase/server';
+
+/** Tokens are stored hashed — a DB read never exposes live tablet credentials. */
+export function hashTabletToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken).digest('hex');
+}
 
 export type TabletAuthResult =
   | {
@@ -35,7 +41,7 @@ export async function authenticateTablet(req: Request): Promise<TabletAuthResult
   const { data, error } = await supabase
     .from('tablet_tokens')
     .select('id, unit_id, organization_id, is_active')
-    .eq('token', token)
+    .eq('token_hash', hashTabletToken(token))
     .maybeSingle();
 
   if (error || !data) {
@@ -46,12 +52,13 @@ export async function authenticateTablet(req: Request): Promise<TabletAuthResult
     return { ok: false, status: 403, error: 'Token revoked' };
   }
 
-  // Update last_seen_at without blocking the response
-  supabase
+  // Awaited on purpose: a floating promise gets dropped when the serverless
+  // function freezes after the response, leaving "Son Aktiflik" stuck at
+  // "never". A single indexed UPDATE is cheap enough to wait for.
+  await supabase
     .from('tablet_tokens')
     .update({ last_seen_at: new Date().toISOString() })
-    .eq('id', data.id)
-    .then(() => {});
+    .eq('id', data.id);
 
   return {
     ok: true,

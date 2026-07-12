@@ -1,20 +1,10 @@
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
-import { usd, localISODate } from "@/lib/format";
+import { usd } from "@/lib/format";
 import { computePM, PM_BADGE } from "@/lib/maintenance";
+import { weekRange } from "@/lib/tz";
 
 export const dynamic = "force-dynamic";
-
-function weekRange(now = new Date()) {
-  const day = now.getDay(); // 0 Sun..6 Sat
-  const diffToMon = (day + 6) % 7;
-  const start = new Date(now);
-  start.setDate(now.getDate() - diffToMon);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  return { start: localISODate(start), end: localISODate(end) };
-}
 
 export default async function Dashboard() {
   const supabase = await createClient();
@@ -27,7 +17,7 @@ export default async function Dashboard() {
       supabase.from("imported_loads").select("id", { count: "exact", head: true }).eq("status", "pending"),
       supabase.from("vehicles").select("status"),
       supabase.from("settlements").select("status, our_commission_earned"),
-      supabase.from("maintenance_rules").select("*, vehicles(unit_number, current_mileage)").eq("active", true),
+      supabase.from("maintenance_rules").select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)").eq("active", true),
       supabase.from("settings").select("pm_due_soon_miles").single(),
     ]);
 

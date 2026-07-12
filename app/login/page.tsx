@@ -3,7 +3,7 @@
 import { useActionState, useState } from "react";
 import { signIn, signUp } from "./actions";
 
-const initial = { error: "" } as { error?: string };
+const initial = { error: "" } as { error?: string; message?: string };
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"in" | "up">("in");
@@ -34,6 +34,9 @@ export default function LoginPage() {
           </div>
           {state?.error ? (
             <p className="text-sm text-red-600">{state.error}</p>
+          ) : null}
+          {state?.message ? (
+            <p className="text-sm text-green-700">{state.message}</p>
           ) : null}
           <button type="submit" className="btn-primary w-full">
             {mode === "in" ? "Giriş" : "Kayıt ol"}

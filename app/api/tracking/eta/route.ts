@@ -17,11 +17,13 @@ export async function POST(req: Request) {
 
   const { data: profile } = await supabase
     .from("profiles")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("id", user.id)
     .maybeSingle();
 
-  if (!profile) return new Response("Forbidden", { status: 403 });
+  if (!profile || !["owner", "admin", "manager"].includes(profile.role)) {
+    return new Response("Forbidden", { status: 403 });
+  }
 
   let body: { load_id: string };
   try {

@@ -35,7 +35,23 @@ export async function approveImported(id: string) {
   const supabase = await createClient();
 
   const { data: imp } = await supabase.from("imported_loads").select("*").eq("id", id).single();
-  if (!imp || imp.status !== "pending") return { error: "Kayıt uygun değil." };
+  if (!imp || imp.status !== "pending") {
+    revalidatePath("/imported");
+    return { error: "Kayıt uygun değil (muhtemelen zaten işlendi)." };
+  }
+
+  // Atomic claim before the insert — a double-click sees zero rows and stops
+  // (same pattern as the Telegram webhook approve path).
+  const { data: claimed } = await supabase
+    .from("imported_loads")
+    .update({ status: "approved" })
+    .eq("id", id)
+    .eq("status", "pending")
+    .select("id");
+  if (!claimed?.length) {
+    revalidatePath("/imported");
+    return { error: "Kayıt zaten işlendi." };
+  }
 
   let group: any = null;
   if (imp.telegram_group_id) {
@@ -69,11 +85,16 @@ export async function approveImported(id: string) {
     .select("id")
     .single();
 
-  if (error || !load) return { error: error?.message ?? "Load kaydedilemedi." };
+  if (error || !load) {
+    // Release the claim so the operator can retry.
+    await supabase.from("imported_loads").update({ status: "pending" }).eq("id", id);
+    revalidatePath("/imported");
+    return { error: error?.message ?? "Load kaydedilemedi." };
+  }
 
   await supabase
     .from("imported_loads")
-    .update({ status: "approved", created_load_id: load.id })
+    .update({ created_load_id: load.id })
     .eq("id", id);
 
   // Geocode pickup/delivery addresses and activate tracking.

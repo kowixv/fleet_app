@@ -5,6 +5,10 @@
 
 create extension if not exists "pgcrypto";
 
+-- Supabase preinstalls pgcrypto into `extensions`; a plain Postgres gets it in `public`
+-- from the line above. Keep both reachable so digest()/gen_random_uuid() resolve either way.
+set search_path = public, extensions;
+
 -- ---------- Tenancy ----------
 create table if not exists organizations (
   id uuid primary key default gen_random_uuid(),
@@ -1315,3 +1319,131 @@ alter table tracking_events add constraint tracking_events_org_id_id_key unique 
 alter table tablet_tokens drop constraint if exists tablet_tokens_org_id_id_key;
 alter table tablet_tokens add constraint tablet_tokens_org_id_id_key unique (organization_id, id);
 
+
+-- =============================================================================
+-- 2026-07-03 — Role-aware RLS, hashed tablet tokens, integrity indexes
+-- Mirrors: 20260703100000_rls_roles.sql, 20260703100001_tablet_token_hash.sql,
+--          20260703100002_constraints_indexes.sql
+-- Appended last on purpose: it drops and replaces the permissive %_rw policies
+-- defined earlier in this file, so a fresh install ends in the same state as a
+-- migrated database.
+-- =============================================================================
+
+-- ---------- Role helpers ----------
+create or replace function current_user_role()
+returns text
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select role from profiles where id = auth.uid()
+$$;
+
+revoke execute on function current_user_role() from public, anon;
+grant execute on function current_user_role() to authenticated, service_role;
+
+create or replace function is_org_writer()
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce(
+    (select role from profiles where id = auth.uid()) in ('owner','admin','manager'),
+    false
+  )
+$$;
+
+revoke execute on function is_org_writer() from public, anon;
+grant execute on function is_org_writer() to authenticated, service_role;
+
+-- ---------- profiles: read-only for members ----------
+drop policy if exists profiles_rw on profiles;
+drop policy if exists profiles_select on profiles;
+create policy profiles_select on profiles
+  for select to authenticated
+  using (organization_id = (select current_org_id()));
+
+-- ---------- organizations: read for members, update for owner/admin ----------
+drop policy if exists org_rw on organizations;
+drop policy if exists org_select on organizations;
+drop policy if exists org_update on organizations;
+create policy org_select on organizations
+  for select to authenticated
+  using (id = (select current_org_id()));
+create policy org_update on organizations
+  for update to authenticated
+  using (id = (select current_org_id()) and (select current_user_role()) in ('owner','admin'))
+  with check (id = (select current_org_id()));
+
+-- ---------- All other org tables: select = member, write = writer role ----------
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'companies','external_carriers','people','vehicles','loads','expenses',
+    'settlements','settlement_items','telegram_groups','imported_loads',
+    'maintenance_rules','maintenance_records','vehicle_mileage_logs','settings',
+    'telegram_pairing_codes','bot_pending_commands',
+    'unit_locations','load_tracking','tracking_events','tablet_tokens'
+  ] loop
+    execute format('drop policy if exists %I_rw on %I;', t, t);
+    execute format('drop policy if exists %I_select on %I;', t, t);
+    execute format('drop policy if exists %I_insert on %I;', t, t);
+    execute format('drop policy if exists %I_update on %I;', t, t);
+    execute format('drop policy if exists %I_delete on %I;', t, t);
+
+    execute format(
+      'create policy %I_select on %I for select to authenticated
+         using (organization_id = (select current_org_id()));', t, t);
+    execute format(
+      'create policy %I_insert on %I for insert to authenticated
+         with check (organization_id = (select current_org_id()) and (select is_org_writer()));', t, t);
+    execute format(
+      'create policy %I_update on %I for update to authenticated
+         using (organization_id = (select current_org_id()) and (select is_org_writer()))
+         with check (organization_id = (select current_org_id()) and (select is_org_writer()));', t, t);
+    execute format(
+      'create policy %I_delete on %I for delete to authenticated
+         using (organization_id = (select current_org_id()) and (select is_org_writer()));', t, t);
+  end loop;
+end $$;
+
+-- ---------- Tablet tokens: SHA-256 hash instead of plaintext ----------
+alter table tablet_tokens add column if not exists token_hash text;
+
+-- Backfill only while the legacy plaintext column still exists (fresh installs
+-- and first migration); on an already-migrated DB `token` is gone.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'tablet_tokens' and column_name = 'token') then
+    update tablet_tokens
+       set token_hash = encode(digest(token, 'sha256'), 'hex')
+     where token_hash is null;
+  end if;
+end $$;
+
+alter table tablet_tokens alter column token_hash set not null;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'tablet_tokens_token_hash_key') then
+    alter table tablet_tokens add constraint tablet_tokens_token_hash_key unique (token_hash);
+  end if;
+end $$;
+
+drop index if exists tablet_tokens_token_idx;
+create index if not exists tablet_tokens_token_hash_idx
+  on tablet_tokens (token_hash) where is_active = true;
+
+alter table tablet_tokens drop column if exists token;
+
+-- ---------- Integrity index + dashboard index ----------
+create unique index if not exists imported_loads_created_load_key
+  on imported_loads (created_load_id) where created_load_id is not null;
+
+create index if not exists tracking_events_org_created_idx
+  on tracking_events (organization_id, created_at desc);

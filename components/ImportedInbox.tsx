@@ -21,11 +21,25 @@ function Card({ imp }: { imp: Imp }) {
   const [edit, setEdit] = useState(false);
   const [pending, start] = useTransition();
   const [vals, setVals] = useState<Imp>(imp);
+  const [error, setError] = useState<string | null>(null);
 
   function save() {
     start(async () => {
-      await updateImported(imp.id, vals);
+      setError(null);
+      const res = await updateImported(imp.id, vals);
+      if (res?.error) {
+        setError(res.error);
+        return;
+      }
       setEdit(false);
+    });
+  }
+
+  function run(action: (id: string) => Promise<{ error?: string; ok?: boolean } | void>) {
+    start(async () => {
+      setError(null);
+      const res = await action(imp.id);
+      if (res?.error) setError(res.error);
     });
   }
 
@@ -86,7 +100,7 @@ function Card({ imp }: { imp: Imp }) {
         ) : (
           <>
             <button
-              onClick={() => start(async () => void (await approveImported(imp.id)))}
+              onClick={() => run(approveImported)}
               disabled={pending}
               className="btn-primary text-sm"
             >
@@ -94,7 +108,7 @@ function Card({ imp }: { imp: Imp }) {
             </button>
             <button onClick={() => setEdit(true)} className="btn-ghost text-sm">Düzenle</button>
             <button
-              onClick={() => start(async () => void (await rejectImported(imp.id)))}
+              onClick={() => run(rejectImported)}
               disabled={pending}
               className="btn-ghost text-sm text-red-600"
             >
@@ -103,6 +117,12 @@ function Card({ imp }: { imp: Imp }) {
           </>
         )}
       </div>
+
+      {error && (
+        <p className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

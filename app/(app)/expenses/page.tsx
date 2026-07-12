@@ -1,5 +1,5 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import { fetchRows, fetchOptions } from "@/lib/data";
+import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
@@ -8,9 +8,14 @@ const CATEGORIES = [
   "maintenance", "advance", "trailer_rental", "chargeback", "comcheck", "misc", "other",
 ];
 
-export default async function ExpensesPage() {
-  const [rows, opts] = await Promise.all([
-    fetchRows("expenses", { order: "date" }),
+export default async function ExpensesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const [paged, opts] = await Promise.all([
+    fetchRowsPaged("expenses", { order: "date", page: parsePage(page) }),
     fetchOptions(),
   ]);
 
@@ -40,7 +45,8 @@ export default async function ExpensesPage() {
       basePath="/expenses"
       addLabel="Masraf"
       fields={fields}
-      rows={rows}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
     />
   );
 }

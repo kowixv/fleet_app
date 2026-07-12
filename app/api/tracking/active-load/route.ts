@@ -6,6 +6,7 @@
  */
 
 import { authenticateTablet } from "@/lib/tracking/tablet-auth";
+import { resolveActiveLoad } from "@/lib/tracking/resolve-active-load";
 import { createServiceClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -19,9 +20,11 @@ export async function GET(req: Request) {
 
   const supabase = createServiceClient();
 
-  const { data: load } = await supabase
-    .from("loads")
-    .select(`
+  const { load, error } = await resolveActiveLoad(
+    supabase,
+    auth.orgId,
+    auth.unitId,
+    `
       id, load_number, status,
       pickup_date, delivery_date,
       pickup_location, delivery_location,
@@ -31,13 +34,21 @@ export async function GET(req: Request) {
         tracking_status,
         geofence_status
       )
-    `)
-    .eq("organization_id", auth.orgId)
-    .eq("vehicle_id", auth.unitId)
-    .in("status", ["booked", "delivered"])
-    .order("pickup_date", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    `,
+  );
 
-  return Response.json({ load: load ?? null });
+  if (error) {
+    console.error("tracking/active-load: query failed", error);
+    return Response.json({ error: "Query failed" }, { status: 500 });
+  }
+
+  if (!load) return Response.json({ load: null });
+
+  // PostgREST returns load_tracking as an array (its unique key is the
+  // composite (organization_id, load_id), so the embed counts as to-many).
+  // Clients expect a single object or null — normalize here.
+  const lt = load.load_tracking;
+  return Response.json({
+    load: { ...load, load_tracking: Array.isArray(lt) ? (lt[0] ?? null) : lt },
+  });
 }

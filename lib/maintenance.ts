@@ -37,8 +37,11 @@ export function computePM(
   dueSoonMiles = 2500,
   now: Date = new Date(),
 ): PMResult {
-  if (rule.interval_type === "mileage" && rule.interval_miles) {
-    const nextDue = (rule.last_done_mileage ?? 0) + rule.interval_miles;
+  // Both branches require a known baseline; a missing last_done value would
+  // otherwise fabricate a due date (e.g. a 150k-mile truck instantly "overdue"
+  // against a 0-mile baseline) — fall through to the neutral "—" result.
+  if (rule.interval_type === "mileage" && rule.interval_miles && rule.last_done_mileage != null) {
+    const nextDue = rule.last_done_mileage + rule.interval_miles;
     const remaining = nextDue - (currentMileage || 0);
     let status: PMStatus = "ok";
     if (remaining <= 0) status = "overdue";

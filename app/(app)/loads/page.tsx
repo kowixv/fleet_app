@@ -1,11 +1,16 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import { fetchRows, fetchOptions } from "@/lib/data";
+import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
 
-export default async function LoadsPage() {
-  const [rows, opts] = await Promise.all([
-    fetchRows("loads", { order: "delivery_date" }),
+export default async function LoadsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ page?: string }>;
+}) {
+  const { page } = await searchParams;
+  const [paged, opts] = await Promise.all([
+    fetchRowsPaged("loads", { order: "delivery_date", page: parsePage(page) }),
     fetchOptions(),
   ]);
 
@@ -62,7 +67,8 @@ export default async function LoadsPage() {
       basePath="/loads"
       addLabel="Load"
       fields={fields}
-      rows={rows}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
     />
   );
 }

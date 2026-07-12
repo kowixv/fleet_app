@@ -116,11 +116,16 @@ export default function TrackingDashboard() {
   }
 
   async function handleAcknowledge(ids: string[]) {
-    await fetch("/api/tracking/acknowledge", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ event_ids: ids }),
-    });
+    try {
+      const res = await fetch("/api/tracking/acknowledge", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ event_ids: ids }),
+      });
+      if (!res.ok) return; // keep alerts visible; next poll reflects reality
+    } catch {
+      return;
+    }
     setEvents((prev) =>
       prev.map((e) =>
         ids.includes(e.id)

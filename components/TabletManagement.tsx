@@ -26,6 +26,7 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
   const [selectedUnit, setSelectedUnit] = useState("");
   const [deviceLabel, setDeviceLabel] = useState("");
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // Base URL for the driver page link. Prefer the configured public app URL
   // (HTTPS — works on a phone); fall back to the current origin.
@@ -45,10 +46,16 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
   }
 
   async function fetchTokens() {
-    const res = await fetch("/api/admin/tablet-pair");
-    if (res.ok) {
-      const data = await res.json();
-      setTokens(data.tokens ?? []);
+    try {
+      const res = await fetch("/api/admin/tablet-pair");
+      if (res.ok) {
+        const data = await res.json();
+        setTokens(data.tokens ?? []);
+      } else {
+        setError(`Token listesi alınamadı (HTTP ${res.status}).`);
+      }
+    } catch {
+      setError("Token listesi alınamadı — bağlantıyı kontrol edin.");
     }
     setLoading(false);
   }
@@ -59,6 +66,7 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
     if (!selectedUnit) return;
     setCreating(true);
     setNewToken(null);
+    setError(null);
     try {
       const res = await fetch("/api/admin/tablet-pair", {
         method: "POST",
@@ -71,7 +79,12 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
         setSelectedUnit("");
         setDeviceLabel("");
         await fetchTokens();
+      } else {
+        const data = await res.json().catch(() => null);
+        setError(data?.error ?? `Token oluşturulamadı (HTTP ${res.status}).`);
       }
+    } catch {
+      setError("Token oluşturulamadı — bağlantıyı kontrol edin.");
     } finally {
       setCreating(false);
     }
@@ -79,11 +92,16 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
 
   async function handleRevoke(tokenId: string) {
     if (!confirm("Revoke this tablet token? The tablet will stop sending updates.")) return;
-    await fetch("/api/admin/tablet-pair", {
+    setError(null);
+    const res = await fetch("/api/admin/tablet-pair", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token_id: tokenId }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => null);
+      setError(data?.error ?? `Token iptal edilemedi (HTTP ${res.status}).`);
+    }
     await fetchTokens();
   }
 
@@ -147,6 +165,12 @@ export default function TabletManagement({ vehicles }: { vehicles: Vehicle[] }) 
             {creating ? "Oluşturuluyor…" : "Token Oluştur"}
           </button>
         </div>
+
+        {error && (
+          <p className="rounded-lg bg-red-50 border border-red-200 px-3 py-2 text-xs text-red-700">
+            {error}
+          </p>
+        )}
 
         {newToken && (
           <div className="rounded-lg bg-green-50 border border-green-200 p-3">

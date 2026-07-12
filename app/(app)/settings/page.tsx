@@ -9,17 +9,16 @@ export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
   const supabase = await createClient();
-  const [{ data: settings }, groups, opts] = await Promise.all([
+  const [{ data: settings }, groups, opts, { data: vehicles }] = await Promise.all([
     supabase.from("settings").select("*").single(),
     fetchRows("telegram_groups"),
     fetchOptions(),
+    supabase
+      .from("vehicles")
+      .select("id, unit_number")
+      .eq("status", "active")
+      .order("unit_number"),
   ]);
-
-  const { data: vehicles } = await supabase
-    .from("vehicles")
-    .select("id, unit_number")
-    .eq("status", "active")
-    .order("unit_number");
 
   const groupFields: Field[] = [
     { name: "chat_id", label: "Telegram Chat ID", required: true },

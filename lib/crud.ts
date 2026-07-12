@@ -1,9 +1,23 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { clean, isAllowedTable } from "@/lib/crud-allowlist";
+import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
+
+type LoadRow = { id: string; status: string | null; vehicle_id: string | null };
+
+/**
+ * Booked loads with a vehicle get geocoding + a load_tracking row, so the
+ * tracking pipeline also covers manually entered loads (imported loads get
+ * this at approval). Idempotent; errors are logged inside geocodeAndActivate-
+ * Tracking and never break the CRUD flow.
+ */
+async function activateLoadTracking(load: LoadRow | null, orgId: string) {
+  if (!load || load.status !== "booked" || !load.vehicle_id) return;
+  await geocodeAndActivateTracking(createServiceClient(), load.id, orgId);
+}
 
 /**
  * Generic CRUD server actions. Security: the table must be in the allowlist,
@@ -21,8 +35,18 @@ export async function createRow(
   const profile = await requireWriteRole();
   const supabase = await createClient();
   const row = { ...clean(table, values), organization_id: profile.organization_id };
-  const { error } = await supabase.from(table).insert(row);
-  if (error) return { error: error.message };
+  if (table === "loads") {
+    const { data, error } = await supabase
+      .from(table)
+      .insert(row)
+      .select("id, status, vehicle_id")
+      .single();
+    if (error) return { error: error.message };
+    await activateLoadTracking(data, profile.organization_id);
+  } else {
+    const { error } = await supabase.from(table).insert(row);
+    if (error) return { error: error.message };
+  }
   if (revalidate) revalidatePath(revalidate);
   return { ok: true };
 }
@@ -33,10 +57,21 @@ export async function updateRow(
   values: Record<string, unknown>,
   revalidate?: string,
 ) {
-  await requireWriteRole();
+  const profile = await requireWriteRole();
   const supabase = await createClient();
-  const { error } = await supabase.from(table).update(clean(table, values)).eq("id", id);
-  if (error) return { error: error.message };
+  if (table === "loads") {
+    const { data, error } = await supabase
+      .from(table)
+      .update(clean(table, values))
+      .eq("id", id)
+      .select("id, status, vehicle_id")
+      .maybeSingle();
+    if (error) return { error: error.message };
+    await activateLoadTracking(data, profile.organization_id);
+  } else {
+    const { error } = await supabase.from(table).update(clean(table, values)).eq("id", id);
+    if (error) return { error: error.message };
+  }
   if (revalidate) revalidatePath(revalidate);
   return { ok: true };
 }

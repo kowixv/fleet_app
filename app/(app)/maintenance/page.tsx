@@ -10,7 +10,7 @@ export default async function MaintenancePage() {
   const [{ data: rules }, { data: settings }, opts] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("*, vehicles(unit_number, current_mileage)")
+      .select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
       .order("created_at", { ascending: false }),
     supabase.from("settings").select("pm_due_soon_miles").single(),
     fetchOptions(),
