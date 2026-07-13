@@ -1,4 +1,5 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
+import VehicleMileageManager from "@/components/VehicleMileageManager";
 import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
 
 export const dynamic = "force-dynamic";
@@ -68,6 +69,14 @@ export default async function VehiclesPage({
     { name: "model", label: "Model", hideInTable: true },
     { name: "plate", label: "Plaka", hideInTable: true },
     {
+      name: "current_mileage",
+      label: "Initial Mileage",
+      type: "number",
+      step: "1",
+      hideInTable: true,
+      createOnly: true,
+    },
+    {
       name: "status",
       label: "Durum",
       type: "select",
@@ -82,14 +91,23 @@ export default async function VehiclesPage({
   ];
 
   return (
-    <ResourceManager
-      title="Vehicles / Units"
-      table="vehicles"
-      basePath="/vehicles"
+    <div className="space-y-4">
+      <VehicleMileageManager
+        vehicles={paged.rows.map((row) => ({
+          id: row.id,
+          unit_number: row.unit_number,
+          current_mileage: row.current_mileage,
+        }))}
+      />
+      <ResourceManager
+        title="Vehicles / Units"
+        table="vehicles"
+        basePath="/vehicles"
       addLabel="Araç"
-      fields={fields}
-      rows={paged.rows}
-      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
-    />
+        fields={fields}
+        rows={paged.rows}
+        pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
+      />
+    </div>
   );
 }

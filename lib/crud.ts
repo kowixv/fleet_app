@@ -5,6 +5,7 @@ import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { clean, isAllowedTable } from "@/lib/crud-allowlist";
 import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
+import { mileageRpcErrorMessage, validateOptionalInitialMileage } from "@/lib/vehicle-mileage";
 
 type LoadRow = { id: string; status: string | null; vehicle_id: string | null };
 
@@ -34,6 +35,10 @@ export async function createRow(
 ) {
   const profile = await requireWriteRole();
   const supabase = await createClient();
+  const initialMileage =
+    table === "vehicles" ? validateOptionalInitialMileage(values.current_mileage) : null;
+  if (initialMileage && !initialMileage.ok) return { error: initialMileage.error };
+
   const row = { ...clean(table, values), organization_id: profile.organization_id };
   if (table === "loads") {
     const { data, error } = await supabase
@@ -43,6 +48,19 @@ export async function createRow(
       .single();
     if (error) return { error: error.message };
     await activateLoadTracking(data, profile.organization_id);
+  } else if (table === "vehicles") {
+    const { data, error } = await supabase.from(table).insert(row).select("id").single();
+    if (error) return { error: error.message };
+
+    if (initialMileage?.ok) {
+      const { error: mileageError } = await supabase.rpc("set_vehicle_mileage", {
+        p_vehicle_id: data.id,
+        p_mileage: initialMileage.mileage,
+        p_source: "initial",
+        p_organization_id: null,
+      });
+      if (mileageError) return { error: mileageRpcErrorMessage(mileageError.message) };
+    }
   } else {
     const { error } = await supabase.from(table).insert(row);
     if (error) return { error: error.message };

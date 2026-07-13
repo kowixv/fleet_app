@@ -22,6 +22,7 @@ export interface Field {
   required?: boolean;
   step?: string;
   hideInTable?: boolean;
+  createOnly?: boolean;
 }
 
 export interface Pagination {
@@ -69,6 +70,7 @@ export default function ResourceManager({
   const [busy, setBusy] = useState(false);
 
   const tableFields = fields.filter((f) => !f.hideInTable);
+  const formFields = fields.filter((f) => !editing || !f.createOnly);
 
   function startAdd() {
     setEditing(null);
@@ -85,7 +87,7 @@ export default function ResourceManager({
     setBusy(true);
     setError("");
     const values: Record<string, any> = {};
-    for (const f of fields) values[f.name] = fromFormValue(f, formData.get(f.name));
+    for (const f of formFields) values[f.name] = fromFormValue(f, formData.get(f.name));
     const res = editing
       ? await updateRow(table, editing.id, values, basePath)
       : await createRow(table, values, basePath);
@@ -208,7 +210,7 @@ export default function ResourceManager({
               </button>
             </div>
             <form action={onSubmit} className="grid grid-cols-2 gap-3">
-              {fields.map((f) => {
+              {formFields.map((f) => {
                 const val = toFormValue(f, editing?.[f.name]);
                 const span = f.type === "textarea" ? "col-span-2" : "";
                 return (
