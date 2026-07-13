@@ -16,6 +16,14 @@ export interface MaintenanceInvoiceInboxRow {
   vehicles: { unit_number: string } | null;
 }
 
+const STATUS_LABEL: Record<MaintenanceInvoiceInboxRow["status"], string> = {
+  pending_review: "İnceleme bekliyor",
+  completed: "Tamamlandı",
+  duplicate: "Tekrar yüklenmiş",
+  failed: "Hatalı",
+  cancelled: "İptal edildi",
+};
+
 export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInvoiceInboxRow[] }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -97,7 +105,7 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
       >
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="font-semibold">Maintenance Invoice Review Inbox</h2>
+            <h2 className="font-semibold">Invoice İnceleme Inbox</h2>
             <p className="mt-1 text-sm text-slate-500">PDF yükleyin; kayıtlar ancak inceleme ve son onaydan sonra yazılır.</p>
           </div>
           <button type="button" className="btn-primary" onClick={() => inputRef.current?.click()}>
@@ -125,23 +133,23 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
           <thead className="border-b border-slate-200 bg-slate-50">
             <tr>
               <th className="th">Vendor</th>
-              <th className="th">Invoice Date</th>
-              <th className="th">Unit</th>
-              <th className="th">Service Count</th>
-              <th className="th">Status</th>
+              <th className="th">Invoice tarihi</th>
+              <th className="th">Araç</th>
+              <th className="th">Servis sayısı</th>
+              <th className="th">Durum</th>
               <th className="th text-right">İşlem</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
             {sorted.length === 0 ? (
-              <tr><td className="td text-slate-400" colSpan={6}>Invoice taslağı yok.</td></tr>
+              <tr><td className="td text-slate-400" colSpan={6}>İnceleme bekleyen invoice yok.</td></tr>
             ) : sorted.map((row) => (
               <tr key={row.id} className={row.status === "pending_review" ? "bg-amber-50/40" : ""}>
                 <td className="td">{row.shop_name ?? row.file_name}</td>
                 <td className="td">{row.invoice_date ?? "—"}</td>
                 <td className="td">{row.vehicles?.unit_number ?? "—"}</td>
                 <td className="td">{row.parsed_data?.review?.services?.length ?? 0}</td>
-                <td className="td"><span className="badge bg-slate-100 text-slate-700">{row.status}</span></td>
+                <td className="td"><span className="badge bg-slate-100 text-slate-700">{STATUS_LABEL[row.status]}</span></td>
                 <td className="td text-right">
                   <Link className="mr-3 text-brand hover:underline" href={`/api/maintenance/invoices/${row.id}`} target="_blank">PDF</Link>
                   <Link className="mr-3 text-brand hover:underline" href={`/maintenance/invoices/${row.id}`}>İncele</Link>
@@ -149,7 +157,7 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
                     <button disabled={busyId === row.id} type="button" className="mr-3 text-red-600 hover:underline" onClick={() => cancel(row.id)}>İptal</button>
                   )}
                   {row.status === "completed" && (
-                    <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => undo(row.id)}>Undo</button>
+                    <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => undo(row.id)}>Geri al</button>
                   )}
                 </td>
               </tr>

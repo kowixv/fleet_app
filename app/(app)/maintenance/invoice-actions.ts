@@ -6,6 +6,9 @@ import { createClient } from "@/lib/supabase/server";
 
 function revalidateMaintenanceInvoicePaths(id?: string) {
   revalidatePath("/maintenance");
+  revalidatePath("/maintenance/invoices");
+  revalidatePath("/maintenance/costs");
+  revalidatePath("/maintenance/units");
   if (id) revalidatePath(`/maintenance/invoices/${id}`);
   revalidatePath("/");
 }

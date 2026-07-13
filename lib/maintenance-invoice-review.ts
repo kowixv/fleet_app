@@ -1,3 +1,5 @@
+import { suggestMaintenanceCostCategory, type MaintenanceCostCategory } from "@/lib/maintenance-cost";
+
 export type MaintenanceImportMode = "plan" | "history" | "skip";
 
 export interface ParsedInvoiceServiceForReview {
@@ -30,6 +32,24 @@ export interface NormalizedMaintenanceService {
   default_action: "plan" | "history";
 }
 
+export interface MaintenanceCostAllocationFields {
+  category: MaintenanceCostCategory;
+  planned: boolean;
+  parts_cost: number;
+  labor_cost: number;
+  shop_fees: number;
+  tax_cost: number;
+  towing_cost: number;
+  road_service_cost: number;
+  hotel_travel_cost: number;
+  other_cost: number;
+  warranty_recovery: number;
+  total_cost: number;
+  downtime_start: string | null;
+  downtime_end: string | null;
+  status: string;
+}
+
 export interface MaintenanceInvoiceParserMeta {
   source: "text" | "vision";
   confidence: number;
@@ -49,6 +69,21 @@ export interface MaintenanceImportRecord {
   next_due_mileage: number | null;
   next_due_date: string | null;
   resolution: "overwrite" | "history";
+  category: MaintenanceCostCategory;
+  planned: boolean;
+  parts_cost: number;
+  labor_cost: number;
+  shop_fees: number;
+  tax_cost: number;
+  towing_cost: number;
+  road_service_cost: number;
+  hotel_travel_cost: number;
+  other_cost: number;
+  warranty_recovery: number;
+  total_cost: number;
+  downtime_start: string | null;
+  downtime_end: string | null;
+  status: string;
 }
 
 export type InvoiceImportStatus = "pending_review" | "completed" | "duplicate" | "failed" | "cancelled";
@@ -69,7 +104,7 @@ export interface ServiceDefault {
   interval_days: number | null;
 }
 
-export interface ReviewServiceRow extends NormalizedMaintenanceService {
+export interface ReviewServiceRow extends NormalizedMaintenanceService, MaintenanceCostAllocationFields {
   id: string;
   mode: MaintenanceImportMode;
   next_due_mileage: number | null;
@@ -77,6 +112,29 @@ export interface ReviewServiceRow extends NormalizedMaintenanceService {
   existing_rule_id: string | null;
   existing_rule_summary: string | null;
   existing_rule_decision: ExistingRuleDecision | null;
+}
+
+export function defaultCostAllocationForService(
+  service: Pick<NormalizedMaintenanceService, "service_type" | "cost" | "default_action">,
+): MaintenanceCostAllocationFields {
+  const total = Number(service.cost ?? 0);
+  return {
+    category: suggestMaintenanceCostCategory(service.service_type),
+    planned: service.default_action === "plan",
+    parts_cost: 0,
+    labor_cost: 0,
+    shop_fees: 0,
+    tax_cost: 0,
+    towing_cost: 0,
+    road_service_cost: 0,
+    hotel_travel_cost: 0,
+    other_cost: total,
+    warranty_recovery: 0,
+    total_cost: total,
+    downtime_start: null,
+    downtime_end: null,
+    status: "completed",
+  };
 }
 
 export interface ReviewDraftData {
@@ -184,6 +242,7 @@ export function applyServiceDefaults(
     const mode = saved?.default_mode ?? service.default_action;
     return {
       ...service,
+      ...defaultCostAllocationForService(service),
       id: `svc-${index + 1}`,
       mode,
       next_due_mileage:
@@ -196,6 +255,33 @@ export function applyServiceDefaults(
       existing_rule_decision: null,
     };
   });
+}
+
+export function normalizeReviewServiceRow(row: ReviewServiceRow): ReviewServiceRow {
+  const allocation = defaultCostAllocationForService(row);
+  const totalCost = Number(row.total_cost ?? row.cost ?? allocation.total_cost);
+  return {
+    ...row,
+    category: row.category ?? allocation.category,
+    planned: row.planned ?? allocation.planned,
+    parts_cost: Number(row.parts_cost ?? allocation.parts_cost),
+    labor_cost: Number(row.labor_cost ?? allocation.labor_cost),
+    shop_fees: Number(row.shop_fees ?? allocation.shop_fees),
+    tax_cost: Number(row.tax_cost ?? allocation.tax_cost),
+    towing_cost: Number(row.towing_cost ?? allocation.towing_cost),
+    road_service_cost: Number(row.road_service_cost ?? allocation.road_service_cost),
+    hotel_travel_cost: Number(row.hotel_travel_cost ?? allocation.hotel_travel_cost),
+    other_cost: Number(row.other_cost ?? row.cost ?? allocation.other_cost),
+    warranty_recovery: Number(row.warranty_recovery ?? allocation.warranty_recovery),
+    total_cost: Number.isFinite(totalCost) ? totalCost : allocation.total_cost,
+    downtime_start: row.downtime_start ?? allocation.downtime_start,
+    downtime_end: row.downtime_end ?? allocation.downtime_end,
+    status: row.status ?? allocation.status,
+  };
+}
+
+export function normalizeReviewServiceRows(rows: ReviewServiceRow[]): ReviewServiceRow[] {
+  return rows.map(normalizeReviewServiceRow);
 }
 
 export function createReviewDraftData({
@@ -248,6 +334,9 @@ export function mergeServiceRows(rows: ReviewServiceRow[], sourceId: string, tar
         ...row,
         parts_used: parts,
         cost: Number(row.cost ?? 0) + Number(source.cost ?? 0),
+        other_cost: Number(row.other_cost ?? 0) + Number(source.other_cost ?? 0),
+        total_cost: Number(row.total_cost ?? 0) + Number(source.total_cost ?? 0),
+        warranty_recovery: Number(row.warranty_recovery ?? 0) + Number(source.warranty_recovery ?? 0),
         notes: [row.notes, source.notes].filter(Boolean).join(" | ") || null,
       };
     });
@@ -346,6 +435,10 @@ export function buildReviewImportRecord({
   if (mode === "skip") return { record: null, zeroMileageRuleWarning: false };
   const mileage = service.mileage ?? invoiceMileage ?? vehicleCurrentMileage;
   const shouldPlan = mode === "plan" && (nextDue.next_due_mileage != null || nextDue.next_due_date != null);
+  const allocation = {
+    ...defaultCostAllocationForService(service),
+    ...(service as Partial<MaintenanceCostAllocationFields>),
+  };
   return {
     zeroMileageRuleWarning: shouldPlan && nextDue.next_due_mileage != null && Number(vehicleCurrentMileage ?? 0) === 0,
     record: {
@@ -361,6 +454,21 @@ export function buildReviewImportRecord({
       next_due_mileage: shouldPlan ? nextDue.next_due_mileage : null,
       next_due_date: shouldPlan ? nextDue.next_due_date : null,
       resolution: shouldPlan ? "overwrite" : "history",
+      category: allocation.category,
+      planned: shouldPlan || allocation.planned,
+      parts_cost: allocation.parts_cost,
+      labor_cost: allocation.labor_cost,
+      shop_fees: allocation.shop_fees,
+      tax_cost: allocation.tax_cost,
+      towing_cost: allocation.towing_cost,
+      road_service_cost: allocation.road_service_cost,
+      hotel_travel_cost: allocation.hotel_travel_cost,
+      other_cost: allocation.other_cost,
+      warranty_recovery: allocation.warranty_recovery,
+      total_cost: allocation.total_cost,
+      downtime_start: allocation.downtime_start,
+      downtime_end: allocation.downtime_end,
+      status: allocation.status,
     },
   };
 }

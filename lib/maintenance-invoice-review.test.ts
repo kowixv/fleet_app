@@ -6,10 +6,12 @@ import {
   buildFinalImportRecords,
   canCreateExpenseForInvoice,
   createReviewDraftData,
+  defaultCostAllocationForService,
   deleteServiceRow,
   detectDuplicateHash,
   mergeServiceRows,
   mileageWarnings,
+  normalizeReviewServiceRows,
   serviceKey,
   undoIsolatedIds,
   type ReviewServiceRow,
@@ -30,6 +32,11 @@ const parsed = {
 };
 
 function row(id: string, service_type: string): ReviewServiceRow {
+  const allocation = defaultCostAllocationForService({
+    service_type,
+    cost: 100,
+    default_action: "history",
+  });
   return {
     id,
     service_type,
@@ -37,6 +44,7 @@ function row(id: string, service_type: string): ReviewServiceRow {
     performed_date: "2026-07-12",
     mileage: 150_000,
     cost: 100,
+    ...allocation,
     notes: null,
     default_action: "history",
     mode: "history",
@@ -80,6 +88,32 @@ describe("maintenance invoice review flow", () => {
     expect(merged[0].parts_used).toEqual(["tender spring", "shock absorbers"]);
     expect(merged[0].cost).toBe(300);
     expect(deleteServiceRow(merged, "a")).toHaveLength(0);
+  });
+
+  it("normalizes legacy draft rows missing cost analytics fields", () => {
+    const [normalized] = normalizeReviewServiceRows([
+      {
+        id: "legacy",
+        service_type: "Electrical System Repair",
+        parts_used: ["wire harness"],
+        performed_date: "2026-07-12",
+        mileage: 150_000,
+        cost: 450,
+        notes: null,
+        default_action: "history",
+        mode: "history",
+        next_due_mileage: null,
+        next_due_date: null,
+        existing_rule_id: null,
+        existing_rule_summary: null,
+        existing_rule_decision: null,
+      } as ReviewServiceRow,
+    ]);
+    expect(normalized.category).toBe("electrical");
+    expect(normalized.planned).toBe(false);
+    expect(normalized.other_cost).toBe(450);
+    expect(normalized.total_cost).toBe(450);
+    expect(normalized.status).toBe("completed");
   });
 
   it("builds plan/history/skip records correctly", () => {

@@ -35,7 +35,26 @@ export const ALLOWED: Record<string, string[]> = {
   telegram_groups: ["chat_id", "title", "vehicle_id", "driver_id", "company_id", "active"],
   maintenance_rules: [
     "vehicle_id", "service_type", "interval_type", "interval_miles",
-    "interval_days", "last_done_mileage", "last_done_date", "active",
+    "interval_days", "interval_engine_hours", "last_done_mileage",
+    "last_done_date", "last_done_engine_hours", "active",
+    "service_category", "description", "checklist_reference",
+  ],
+  maintenance_templates: [
+    "name", "description", "warning",
+  ],
+  inspection_templates: [
+    "name", "inspection_type", "description", "version", "source_template_id", "active",
+  ],
+  inspection_template_items: [
+    "template_id", "section", "label", "input_type", "unit_of_measure",
+    "required", "warning_threshold", "critical_threshold", "axle_position",
+    "select_options", "instructions", "sort_order", "active",
+  ],
+  maintenance_template_items: [
+    "default_inspection_template_id",
+  ],
+  inspection_findings: [
+    "status", "notes", "recommended_action", "work_order_status", "work_order_notes",
   ],
 };
 

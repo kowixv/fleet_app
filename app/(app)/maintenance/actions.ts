@@ -8,6 +8,8 @@ import { revalidatePath } from "next/cache";
 
 function maintenanceRevalidate() {
   revalidatePath("/maintenance");
+  revalidatePath("/maintenance/units");
+  revalidatePath("/maintenance/costs");
   revalidatePath("/vehicles");
   revalidatePath("/");
 }

@@ -1,6 +1,8 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
+import VehicleMaintenanceProfileManager from "@/components/VehicleMaintenanceProfileManager";
 import VehicleMileageManager from "@/components/VehicleMileageManager";
 import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
+import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
@@ -10,10 +12,37 @@ export default async function VehiclesPage({
   searchParams: Promise<{ page?: string }>;
 }) {
   const { page } = await searchParams;
-  const [paged, opts] = await Promise.all([
+  const supabase = await createClient();
+  const [paged, opts, profilesRes, templatesRes, rulesRes] = await Promise.all([
     fetchRowsPaged("vehicles", { page: parsePage(page) }),
     fetchOptions(),
+    supabase.from("vehicle_maintenance_profiles").select("*"),
+    supabase
+      .from("maintenance_templates")
+      .select(`
+        id,
+        name,
+        warning,
+        items:maintenance_template_items (
+          id,
+          service_type,
+          service_category,
+          description,
+          default_checklist_reference,
+          interval_miles,
+          interval_days,
+          interval_engine_hours,
+          duty_cycle_adjusted,
+          configurable,
+          warning,
+          sort_order
+        )
+      `)
+      .order("name"),
+    supabase.from("maintenance_rules").select("id, vehicle_id, service_type, active").eq("active", true),
   ]);
+  const queryError = profilesRes.error ?? templatesRes.error ?? rulesRes.error;
+  if (queryError) throw new Error(`Vehicle maintenance data failed to load: ${queryError.message}`);
 
   const fields: Field[] = [
     { name: "unit_number", label: "Unit #", required: true },
@@ -98,6 +127,25 @@ export default async function VehiclesPage({
           unit_number: row.unit_number,
           current_mileage: row.current_mileage,
         }))}
+      />
+      <VehicleMaintenanceProfileManager
+        vehicles={paged.rows.map((row) => ({
+          id: row.id,
+          unit_number: row.unit_number,
+          current_mileage: row.current_mileage,
+          vin: row.vin,
+          year: row.year,
+          make: row.make,
+          model: row.model,
+        }))}
+        profiles={(profilesRes.data ?? []) as any}
+        templates={(templatesRes.data ?? []).map((template: any) => ({
+          id: template.id,
+          name: template.name,
+          warning: template.warning,
+          items: template.items ?? [],
+        }))}
+        activeRules={(rulesRes.data ?? []) as any}
       />
       <ResourceManager
         title="Vehicles / Units"
