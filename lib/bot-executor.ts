@@ -185,27 +185,23 @@ async function addExpense(supabase: any, orgId: string, data: Record<string, unk
 
 async function updateMileage(supabase: any, orgId: string, data: Record<string, unknown>): Promise<Result> {
   const mileage = num(data.mileage);
-  if (mileage === null) return { ok: false, message: "Geçerli bir kilometre değeri gerekli." };
+  if (mileage === null || !Number.isInteger(mileage)) {
+    return { ok: false, message: "Geçerli bir tam sayı mileage değeri gerekli." };
+  }
   const veh = await findVehicle(supabase, orgId, data.unit_number);
   if (!veh.row) return { ok: false, message: `Araç bulunamadı: ${escapeHtml(str(data.unit_number) ?? "")}` };
   if (veh.count > 1) return { ok: false, message: "Birden fazla araç eşleşti; lütfen belirginleştirin." };
 
-  const { error } = await supabase
-    .from("vehicles")
-    .update({ current_mileage: mileage })
-    .eq("id", veh.row.id)
-    .eq("organization_id", orgId);
-  if (error) return { ok: false, message: `⚠️ Güncellenemedi: ${escapeHtml(error.message)}` };
-
-  await supabase.from("vehicle_mileage_logs").insert({
-    organization_id: orgId,
-    vehicle_id: veh.row.id,
-    mileage,
-    source: "telegram",
+  const { error } = await supabase.rpc("set_vehicle_mileage", {
+    p_vehicle_id: veh.row.id,
+    p_mileage: mileage,
+    p_source: "telegram",
+    p_organization_id: orgId,
   });
+  if (error) return { ok: false, message: `⚠️ Güncellenemedi: ${escapeHtml(error.message)}` };
   return {
     ok: true,
-    message: `✅ Unit <b>${escapeHtml(veh.row.unit_number)}</b> kilometresi ${mileage.toLocaleString("en-US")} olarak güncellendi.`,
+    message: `✅ Unit <b>${escapeHtml(veh.row.unit_number)}</b> mileage değeri ${mileage.toLocaleString("en-US")} mi olarak güncellendi.`,
   };
 }
 

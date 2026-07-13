@@ -1,0 +1,4163 @@
+diff --git a/.env.example b/.env.example
+index decef07..4fddc3d 100644
+--- a/.env.example
++++ b/.env.example
+@@ -25,3 +25,6 @@ NEXT_PUBLIC_APP_URL=http://localhost:3000
+ # Free tier: $200/month credit (~20,000 ETA requests) — sufficient for most fleets
+ GOOGLE_ROUTES_API_KEY=
+ 
++
++# Fleet calendar timezone for maintenance dates and week boundaries
++FLEET_TIMEZONE=America/Chicago
+diff --git a/README.md b/README.md
+index c444544..02cca81 100644
+--- a/README.md
++++ b/README.md
+@@ -7,7 +7,7 @@
+ - **Telegram otomasyonu** — her şoför grubuna düşen Rate Confirmation PDF / Amazon Relay ekran görüntüsü / mesaj otomatik okunur (fal.ai vision), güzergah–mil–tutar çıkarılır, **onaya** düşer. Hem Telegram'dan (Onayla/Reddet butonu) hem web'den onaylanır → resmi Load kaydı oluşur.
+ - **Esnek settlement motoru** — hiçbir ödeme modeli sabit değil. Her araç için company fee %12/%10/yok, $250 komisyon, driver %, dış carrier fee ayrı ayrı tanımlanır. 5 modeli destekler (company driver, box truck, owner operator, managed/investor, external carrier statement).
+ - **Bilingual PDF statement** — EN/TR settlement statement üretir (imza bloğunda logo/MC/DOT/telefon/email/adres yok).
+-- **Preventive maintenance** — mileage/tarih bazlı bakım takibi, dashboard uyarısı + günlük Telegram uyarısı (Vercel Cron).
++- **Preventive maintenance** — mileage/tarih planları, PDF invoice analizi, bakım geçmişi, dashboard + günlük Telegram uyarısı.
+ - **Canlı GPS takip** — sürücünün telefonu/tableti `/drive?token=…` sayfasından konum gönderir; harita
+   üzerinde araçlar, geofence (pickup/delivery), ETA, risk skoru ve alertler canlı görünür. Detay:
+   [docs/11-tracking.md](docs/11-tracking.md).
+@@ -22,7 +22,7 @@ Settlement motoru `lib/settlement/engine.ts` içinde; brief'teki 5 örnek rakam
+ ### 1) Supabase (veritabanı + auth + storage)
+ 1. [supabase.com](https://supabase.com) → ücretsiz proje oluştur.
+ 2. **SQL Editor** → `supabase/schema.sql` dosyasının tamamını yapıştır ve çalıştır (tablolar, RLS, signup trigger).
+-3. **Storage** → `imports` adında bir **private bucket** oluştur (Telegram dosyaları buraya yüklenir).
++3. `schema.sql`, private `imports` ve `maintenance-invoices` Storage bucket’larını otomatik oluşturur.
+ 4. **Project Settings → API**'den şu değerleri al: `Project URL`, `anon key`, `service_role key`.
+ 
+ ### 2) fal.ai (yük okuma)
+@@ -55,7 +55,7 @@ GOOGLE_ROUTES_API_KEY=...                 # opsiyonel; gerçek yol-bazlı ETA (y
+ ```
+ npm install
+ npm run dev        # http://localhost:3000
+-npm test           # settlement motoru testleri (7/7)
++npm test           # tüm birim testleri (60 test)
+ npm run lint       # eslint
+ npm run smoke:fal  # fal.ai key testi (FAL_KEY gerekir)
+ ```
+@@ -84,7 +84,7 @@ Sonra uygulamada **Settings → Telegram Grupları**'ndan her grubu araç+şofö
+ 2. Hafta sonu **Settlements → Yeni Settlement** → tip + araç + hafta seç → motor loadları/masrafları toplar, net hesaplar.
+ 3. Settlement detayında **PDF İndir** → bilingual statement.
+ 4. **Finalize → Paid** ile kilitle (Paid düzenlenemez).
+-5. **Maintenance**'ta mileage gir; eşiği aşınca dashboard + Telegram uyarısı.
++5. **Maintenance**’ta mileage gir veya `npm run maintenance:invoice -- "C:\\Invoices\\invoice.pdf"` ile PDF invoice işle; dashboard + Telegram uyarılarını takip et.
+ 
+ ## Ücretsiz katman notları
+ - Supabase free DB ~7 gün hiç istek almazsa duraklar; düzenli bot/cron kullanımı canlı tutar.
+@@ -92,4 +92,4 @@ Sonra uygulamada **Settings → Telegram Grupları**'ndan her grubu araç+şofö
+ - Tek ücretli parça: fal.ai (yük başına birkaç cent). `AI_MODEL`'i daha ucuz bir modele çekerek düşürebilirsin.
+ 
+ ## v2 (kapsam dışı)
+-Repairs, driver scorecard, unit profitability, fuel efficiency, repair-cost warning, gelişmiş raporlar/CSV, rol bazlı yetki.
++Tam repair work-order modülü, driver scorecard, unit profitability, fuel efficiency ve gelişmiş raporlar/CSV.
+diff --git a/app/(app)/maintenance/actions.ts b/app/(app)/maintenance/actions.ts
+index d4b95b2..b9bd691 100644
+--- a/app/(app)/maintenance/actions.ts
++++ b/app/(app)/maintenance/actions.ts
+@@ -3,55 +3,59 @@
+ import { createClient } from "@/lib/supabase/server";
+ import { requireWriteRole } from "@/lib/auth";
+ import { revalidatePath } from "next/cache";
+-import { localISODate } from "@/lib/format";
++import { todayISO } from "@/lib/tz";
+ 
+-export async function updateMileage(vehicleId: string, mileage: number) {
+-  const profile = await requireWriteRole();
+-  const supabase = await createClient();
+-  const { error: updErr } = await supabase
+-    .from("vehicles")
+-    .update({ current_mileage: mileage })
+-    .eq("id", vehicleId);
+-  if (updErr) return { ok: false as const, error: updErr.message };
+-  const { error: logErr } = await supabase.from("vehicle_mileage_logs").insert({
+-    organization_id: profile.organization_id,
+-    vehicle_id: vehicleId,
+-    mileage,
+-    source: "manual",
+-  });
+-  if (logErr) return { ok: false as const, error: logErr.message };
++function maintenanceRevalidate() {
+   revalidatePath("/maintenance");
++  revalidatePath("/vehicles");
+   revalidatePath("/");
+-  return { ok: true as const };
+ }
+ 
+-/** Mark a rule serviced now: snapshot mileage/date as the new baseline. */
+-export async function markServiced(ruleId: string, mileage: number) {
+-  const profile = await requireWriteRole();
++export async function updateMileage(vehicleId: string, mileage: number) {
++  await requireWriteRole();
++  if (!vehicleId) return { ok: false as const, error: "Araç gerekli." };
++  if (!Number.isFinite(mileage) || mileage < 0 || !Number.isInteger(mileage)) {
++    return { ok: false as const, error: "Mileage sıfır veya daha büyük tam sayı olmalı." };
++  }
++
+   const supabase = await createClient();
+-  const today = localISODate();
+-  const { error: updErr } = await supabase
+-    .from("maintenance_rules")
+-    .update({ last_done_mileage: mileage, last_done_date: today })
+-    .eq("id", ruleId);
+-  if (updErr) return { ok: false as const, error: updErr.message };
+-  const { data: rule, error: ruleErr } = await supabase
+-    .from("maintenance_rules")
+-    .select("vehicle_id, service_type")
+-    .eq("id", ruleId)
+-    .single();
+-  if (ruleErr) return { ok: false as const, error: ruleErr.message };
+-  if (rule) {
+-    const { error: recErr } = await supabase.from("maintenance_records").insert({
+-      organization_id: profile.organization_id,
+-      vehicle_id: rule.vehicle_id,
+-      rule_id: ruleId,
+-      service_type: rule.service_type,
+-      performed_date: today,
+-      mileage,
+-    });
+-    if (recErr) return { ok: false as const, error: recErr.message };
++  const { error } = await supabase.rpc("set_vehicle_mileage", {
++    p_vehicle_id: vehicleId,
++    p_mileage: mileage,
++    p_source: "manual",
++    p_organization_id: null,
++  });
++  if (error) return { ok: false as const, error: error.message };
++  maintenanceRevalidate();
++  return { ok: true as const, mileage };
++}
++
++export interface ServiceDetails {
++  cost?: number;
++  shopName?: string;
++  partName?: string;
++  notes?: string;
++}
++
++/** Atomic and idempotent: DB re-reads the authoritative vehicle mileage. */
++export async function markServiced(ruleId: string, details: ServiceDetails = {}) {
++  await requireWriteRole();
++  const cost = Number(details.cost ?? 0);
++  if (!ruleId) return { ok: false as const, error: "Bakım kuralı gerekli." };
++  if (!Number.isFinite(cost) || cost < 0) {
++    return { ok: false as const, error: "Maliyet negatif olamaz." };
+   }
+-  revalidatePath("/maintenance");
+-  return { ok: true as const };
++
++  const supabase = await createClient();
++  const { data, error } = await supabase.rpc("mark_maintenance_serviced", {
++    p_rule_id: ruleId,
++    p_performed_date: todayISO(),
++    p_cost: cost,
++    p_shop_name: details.shopName?.trim() || null,
++    p_part_name: details.partName?.trim() || null,
++    p_notes: details.notes?.trim() || null,
++  });
++  if (error) return { ok: false as const, error: error.message };
++  maintenanceRevalidate();
++  return { ok: true as const, recordId: data as string };
+ }
+diff --git a/app/(app)/maintenance/page.tsx b/app/(app)/maintenance/page.tsx
+index 38f788d..bb4a7fc 100644
+--- a/app/(app)/maintenance/page.tsx
++++ b/app/(app)/maintenance/page.tsx
+@@ -1,59 +1,114 @@
+-import MaintenanceTable from "@/components/MaintenanceTable";
+-import ResourceManager, { Field } from "@/components/ResourceManager";
++import MaintenanceHistory, { type MaintenanceHistoryRow } from "@/components/MaintenanceHistory";
++import MaintenanceRuleManager, { type RuleManagerRow } from "@/components/MaintenanceRuleManager";
++import MaintenanceTable, { type MaintenanceRuleRow } from "@/components/MaintenanceTable";
+ import { createClient } from "@/lib/supabase/server";
+ import { fetchOptions } from "@/lib/data";
+ 
+ export const dynamic = "force-dynamic";
+ 
++interface MileageLogRow {
++  id: string;
++  mileage: number;
++  logged_at: string;
++  source: string | null;
++  vehicles: { unit_number: string } | null;
++}
++
+ export default async function MaintenancePage() {
+   const supabase = await createClient();
+-  const [{ data: rules }, { data: settings }, opts] = await Promise.all([
++  const [rulesResult, settingsResult, historyResult, logsResult, options] = await Promise.all([
+     supabase
+       .from("maintenance_rules")
+       .select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
+       .order("created_at", { ascending: false }),
+-    supabase.from("settings").select("pm_due_soon_miles").single(),
++    supabase
++      .from("settings")
++      .select("pm_due_soon_miles, pm_due_soon_days, repair_warning_amount")
++      .single(),
++    supabase
++      .from("maintenance_records")
++      .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)")
++      .order("performed_date", { ascending: false })
++      .order("created_at", { ascending: false })
++      .limit(100),
++    supabase
++      .from("vehicle_mileage_logs")
++      .select("id, mileage, logged_at, source, vehicles!vehicle_mileage_logs_vehicle_id_fkey(unit_number)")
++      .order("logged_at", { ascending: false })
++      .limit(50),
+     fetchOptions(),
+   ]);
+ 
+-  const dueSoon = settings?.pm_due_soon_miles ?? 2500;
+-
+-  const ruleFields: Field[] = [
+-    { name: "vehicle_id", label: "Araç", type: "select", options: opts.vehicles, required: true },
+-    { name: "service_type", label: "Servis Tipi", required: true },
+-    {
+-      name: "interval_type",
+-      label: "Interval Tipi",
+-      type: "select",
+-      required: true,
+-      options: [
+-        { value: "mileage", label: "Mileage" },
+-        { value: "date", label: "Tarih" },
+-      ],
+-    },
+-    { name: "interval_miles", label: "Her X mil", type: "number" },
+-    { name: "interval_days", label: "Her X gün", type: "number" },
+-    { name: "last_done_mileage", label: "Son yapılan mileage", type: "number" },
+-    { name: "last_done_date", label: "Son yapılan tarih", type: "date" },
+-  ];
++  const firstError = rulesResult.error ?? settingsResult.error ?? historyResult.error ?? logsResult.error;
++  if (firstError) throw new Error(`Maintenance verisi yüklenemedi: ${firstError.message}`);
++
++  const rules = (rulesResult.data ?? []) as unknown as RuleManagerRow[];
++  const activeRules = rules.filter((rule) => rule.active) as unknown as MaintenanceRuleRow[];
++  const settings = settingsResult.data;
++  const thresholds = {
++    dueSoonMiles: Number(settings?.pm_due_soon_miles ?? 2_000),
++    dueSoonDays: Number(settings?.pm_due_soon_days ?? 7),
++  };
+ 
+   return (
+-    <div className="space-y-5">
+-      <h1 className="text-xl font-bold">Preventive Maintenance</h1>
++    <div className="space-y-7">
++      <div>
++        <h1 className="text-xl font-bold">Preventive Maintenance</h1>
++        <p className="mt-1 text-sm text-slate-500">
++          Aktif bakım planları, servis geçmişi, invoice kayıtları ve odometre değişiklikleri.
++        </p>
++      </div>
++
++      <div className="card">
++        <h2 className="font-semibold">PDF Invoice İçe Aktarma</h2>
++        <p className="mt-1 text-sm text-slate-500">
++          Proje klasöründe terminal açıp aşağıdaki komutu çalıştırın. Araç, servis ve sonraki bakım soruları terminalde sorulur.
++        </p>
++        <pre className="mt-3 overflow-x-auto rounded-lg bg-slate-900 p-3 text-xs text-slate-100">{`npm run maintenance:invoice -- "C:\\Invoices\\invoice.pdf"`}</pre>
++      </div>
+ 
+-      <MaintenanceTable rows={(rules as any) ?? []} dueSoonMiles={dueSoon} />
++      <section className="space-y-3">
++        <h2 className="font-semibold">Aktif Bakım Planları</h2>
++        <MaintenanceTable rows={activeRules} thresholds={thresholds} />
++      </section>
+ 
+-      <div>
+-        <h2 className="mb-2 font-semibold">Bakım Kuralları</h2>
+-        <ResourceManager
+-          title=""
+-          table="maintenance_rules"
+-          basePath="/maintenance"
+-          addLabel="Kural"
+-          fields={ruleFields}
+-          rows={(rules as any) ?? []}
++      <MaintenanceRuleManager rows={rules} vehicles={options.vehicles} />
++
++      <section className="space-y-3">
++        <h2 className="font-semibold">Bakım Geçmişi</h2>
++        <MaintenanceHistory
++          rows={(historyResult.data ?? []) as unknown as MaintenanceHistoryRow[]}
++          repairWarningAmount={Number(settings?.repair_warning_amount ?? 5_000)}
+         />
+-      </div>
++      </section>
++
++      <section className="space-y-3">
++        <h2 className="font-semibold">Son Mileage Değişiklikleri</h2>
++        <div className="card overflow-x-auto p-0">
++          <table className="w-full">
++            <thead className="border-b border-slate-200 bg-slate-50">
++              <tr>
++                <th className="th">Zaman</th>
++                <th className="th">Unit</th>
++                <th className="th">Mileage</th>
++                <th className="th">Kaynak</th>
++              </tr>
++            </thead>
++            <tbody className="divide-y divide-slate-100">
++              {(logsResult.data ?? []).length === 0 ? (
++                <tr><td className="td text-slate-400" colSpan={4}>Mileage logu yok.</td></tr>
++              ) : ((logsResult.data ?? []) as unknown as MileageLogRow[]).map((log) => (
++                <tr key={log.id}>
++                  <td className="td whitespace-nowrap">{new Date(log.logged_at).toLocaleString("en-US")}</td>
++                  <td className="td font-medium">{log.vehicles?.unit_number ?? "—"}</td>
++                  <td className="td">{Number(log.mileage).toLocaleString("en-US")} mi</td>
++                  <td className="td">{log.source ?? "manual"}</td>
++                </tr>
++              ))}
++            </tbody>
++          </table>
++        </div>
++      </section>
+     </div>
+   );
+ }
+diff --git a/app/(app)/page.tsx b/app/(app)/page.tsx
+index cf3c0b6..61315f6 100644
+--- a/app/(app)/page.tsx
++++ b/app/(app)/page.tsx
+@@ -1,43 +1,91 @@
+ import Link from "next/link";
+ import { createClient } from "@/lib/supabase/server";
+ import { usd } from "@/lib/format";
+-import { computePM, PM_BADGE } from "@/lib/maintenance";
+-import { weekRange } from "@/lib/tz";
++import {
++  comparePMAlerts,
++  computePM,
++  formatPMRemaining,
++  PM_BADGE,
++  type PMResult,
++} from "@/lib/maintenance";
++import { todayISO, weekRange } from "@/lib/tz";
+ 
+ export const dynamic = "force-dynamic";
+ 
++interface DashboardRule {
++  id: string;
++  service_type: string;
++  interval_type: "mileage" | "date";
++  interval_miles: number | null;
++  interval_days: number | null;
++  last_done_mileage: number | null;
++  last_done_date: string | null;
++  vehicles: { unit_number: string; current_mileage: number | null } | null;
++}
++
++interface PMAlert { rule: DashboardRule; pm: PMResult }
++
+ export default async function Dashboard() {
+   const supabase = await createClient();
+   const { start, end } = weekRange();
+ 
+-  const [loadsRes, expRes, importedRes, vehiclesRes, settleRes, rulesRes, settingsRes] =
++  const [loadsRes, expRes, importedRes, vehiclesRes, settleRes, rulesRes, settingsRes, maintenanceCostRes] =
+     await Promise.all([
+       supabase.from("loads").select("gross_amount").gte("delivery_date", start).lte("delivery_date", end),
+       supabase.from("expenses").select("amount").gte("date", start).lte("date", end),
+       supabase.from("imported_loads").select("id", { count: "exact", head: true }).eq("status", "pending"),
+       supabase.from("vehicles").select("status"),
+       supabase.from("settlements").select("status, our_commission_earned"),
+-      supabase.from("maintenance_rules").select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)").eq("active", true),
+-      supabase.from("settings").select("pm_due_soon_miles").single(),
++      supabase
++        .from("maintenance_rules")
++        .select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
++        .eq("active", true),
++      supabase
++        .from("settings")
++        .select("pm_due_soon_miles, pm_due_soon_days, repair_warning_amount")
++        .single(),
++      supabase
++        .from("maintenance_records")
++        .select("id, service_type, performed_date, cost, vehicles!maintenance_records_vehicle_id_fkey(unit_number)")
++        .order("performed_date", { ascending: false })
++        .limit(30),
+     ]);
+ 
+-  const gross = (loadsRes.data ?? []).reduce((s, l) => s + Number(l.gross_amount || 0), 0);
+-  const expenses = (expRes.data ?? []).reduce((s, e) => s + Number(e.amount || 0), 0);
++  const queryError = loadsRes.error ?? expRes.error ?? vehiclesRes.error ?? settleRes.error ?? rulesRes.error ?? settingsRes.error ?? maintenanceCostRes.error;
++  if (queryError) throw new Error(`Dashboard verisi yüklenemedi: ${queryError.message}`);
++
++  const gross = (loadsRes.data ?? []).reduce((sum, load) => sum + Number(load.gross_amount || 0), 0);
++  const expenses = (expRes.data ?? []).reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
+   const pendingImported = importedRes.count ?? 0;
+-  const activeVehicles = (vehiclesRes.data ?? []).filter((v) => v.status === "active").length;
+-  const inRepair = (vehiclesRes.data ?? []).filter((v) => v.status === "in_repair").length;
++  const activeVehicles = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "active").length;
++  const inRepair = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "in_repair").length;
+   const pendingSettlements = (settleRes.data ?? []).filter(
+-    (s) => s.status === "draft" || s.status === "pending_review",
++    (settlement) => settlement.status === "draft" || settlement.status === "pending_review",
+   ).length;
+   const commission = (settleRes.data ?? [])
+-    .filter((s) => s.status === "finalized" || s.status === "paid")
+-    .reduce((s, r) => s + Number(r.our_commission_earned || 0), 0);
++    .filter((settlement) => settlement.status === "finalized" || settlement.status === "paid")
++    .reduce((sum, settlement) => sum + Number(settlement.our_commission_earned || 0), 0);
++
++  const thresholds = {
++    dueSoonMiles: Number(settingsRes.data?.pm_due_soon_miles ?? 2_000),
++    dueSoonDays: Number(settingsRes.data?.pm_due_soon_days ?? 7),
++  };
++  const pmAlerts: PMAlert[] = ((rulesRes.data ?? []) as unknown as DashboardRule[])
++    .map((rule) => ({
++      rule,
++      pm: computePM(rule, Number(rule.vehicles?.current_mileage ?? 0), thresholds, todayISO()),
++    }))
++    .filter(({ pm }) => pm.status !== "ok")
++    .sort((a, b) => comparePMAlerts(a.pm, b.pm));
+ 
+-  const dueSoon = settingsRes.data?.pm_due_soon_miles ?? 2500;
+-  const pmAlerts = (rulesRes.data ?? [])
+-    .map((r: any) => ({ r, pm: computePM(r, r.vehicles?.current_mileage ?? 0, dueSoon) }))
+-    .filter((x) => x.pm.status !== "ok")
+-    .sort((a, b) => (a.pm.remaining ?? 0) - (b.pm.remaining ?? 0));
++  const repairWarningAmount = Number(settingsRes.data?.repair_warning_amount ?? 5_000);
++  const expensiveMaintenance = ((maintenanceCostRes.data ?? []) as unknown as Array<{
++    id: string;
++    service_type: string | null;
++    performed_date: string | null;
++    cost: number | null;
++    vehicles: { unit_number: string } | null;
++  }>).filter((record) => Number(record.cost ?? 0) >= repairWarningAmount);
+ 
+   return (
+     <div className="space-y-6">
+@@ -60,24 +108,20 @@ export default async function Dashboard() {
+       <div className="card">
+         <div className="mb-3 flex items-center justify-between">
+           <h2 className="font-semibold">Bakım Uyarıları</h2>
+-          <Link href="/maintenance" className="text-sm text-brand hover:underline">
+-            Tümü →
+-          </Link>
++          <Link href="/maintenance" className="text-sm text-brand hover:underline">Tümü →</Link>
+         </div>
+         {pmAlerts.length === 0 ? (
+           <p className="text-sm text-slate-400">Yaklaşan bakım yok. 👍</p>
+         ) : (
+           <div className="space-y-2">
+-            {pmAlerts.slice(0, 8).map(({ r, pm }) => (
+-              <div key={r.id} className="flex items-center justify-between border-b border-slate-100 pb-2 text-sm">
++            {pmAlerts.slice(0, 8).map(({ rule, pm }) => (
++              <div key={rule.id} className="flex items-center justify-between border-b border-slate-100 pb-2 text-sm">
+                 <div>
+-                  <span className="font-medium">Unit {r.vehicles?.unit_number}</span>
+-                  <span className="text-slate-500"> · {r.service_type}</span>
++                  <span className="font-medium">Unit {rule.vehicles?.unit_number}</span>
++                  <span className="text-slate-500"> · {rule.service_type}</span>
+                 </div>
+                 <div className="flex items-center gap-3">
+-                  <span className="text-slate-500">
+-                    {pm.remaining ?? "?"} {pm.unit === "miles" ? "mi" : "gün"} kaldı
+-                  </span>
++                  <span className="text-slate-500">{formatPMRemaining(pm)}</span>
+                   <span className={`badge ${PM_BADGE[pm.status]}`}>{pm.label}</span>
+                 </div>
+               </div>
+@@ -85,6 +129,23 @@ export default async function Dashboard() {
+           </div>
+         )}
+       </div>
++
++      {expensiveMaintenance.length > 0 && (
++        <div className="card border-red-200">
++          <div className="mb-3 flex items-center justify-between">
++            <h2 className="font-semibold text-red-800">Yüksek Bakım Masrafları</h2>
++            <Link href="/maintenance" className="text-sm text-brand hover:underline">Geçmiş →</Link>
++          </div>
++          <div className="space-y-2 text-sm">
++            {expensiveMaintenance.slice(0, 5).map((record) => (
++              <div key={record.id} className="flex justify-between border-b border-red-100 pb-2">
++                <span>Unit {record.vehicles?.unit_number ?? "—"} · {record.service_type ?? "Bakım"} · {record.performed_date ?? "—"}</span>
++                <span className="font-semibold text-red-700">{usd(Number(record.cost ?? 0))}</span>
++              </div>
++            ))}
++          </div>
++        </div>
++      )}
+     </div>
+   );
+ }
+@@ -93,9 +154,7 @@ function Stat({ label, value, big, accent }: { label: string; value: string; big
+   return (
+     <div className="card">
+       <p className="text-xs text-slate-500">{label}</p>
+-      <p className={`mt-1 font-bold ${big ? "text-2xl text-brand" : "text-lg"} ${accent ? "text-emerald-700" : ""}`}>
+-        {value}
+-      </p>
++      <p className={`mt-1 font-bold ${big ? "text-2xl text-brand" : "text-lg"} ${accent ? "text-emerald-700" : ""}`}>{value}</p>
+     </div>
+   );
+ }
+diff --git a/app/(app)/settings/actions.ts b/app/(app)/settings/actions.ts
+index bf5406f..a55b713 100644
+--- a/app/(app)/settings/actions.ts
++++ b/app/(app)/settings/actions.ts
+@@ -14,16 +14,32 @@ export async function updateSettings(formData: FormData): Promise<void> {
+     return v === null || v === "" ? null : Number(v);
+   };
+ 
++  const defaultCommission = num("default_commission");
++  const dueSoonMiles = num("pm_due_soon_miles");
++  const dueSoonDays = num("pm_due_soon_days");
++  const repairWarning = num("repair_warning_amount");
++  const fuelPct = num("fuel_warning_pct");
++  const values = [defaultCommission, dueSoonMiles, dueSoonDays, repairWarning, fuelPct];
++  if (values.some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
++    throw new Error("Ayar değerleri geçersiz.");
++  }
++  if (dueSoonDays == null || !Number.isInteger(dueSoonDays) || dueSoonDays < 1) {
++    throw new Error("Tarih uyarı eşiği pozitif tam sayı olmalı.");
++  }
++  if (fuelPct != null && fuelPct > 100) throw new Error("Fuel yüzdesi 0-100 arasında olmalı.");
++
+   const patch = {
+     organization_id: profile.organization_id,
+-    default_commission: num("default_commission"),
+-    pm_due_soon_miles: num("pm_due_soon_miles"),
+-    repair_warning_amount: num("repair_warning_amount"),
+-    fuel_warning_pct: num("fuel_warning_pct") != null ? Number(num("fuel_warning_pct")) / 100 : null,
++    default_commission: defaultCommission,
++    pm_due_soon_miles: dueSoonMiles,
++    pm_due_soon_days: dueSoonDays,
++    repair_warning_amount: repairWarning,
++    fuel_warning_pct: fuelPct != null ? fuelPct / 100 : null,
+     updated_at: new Date().toISOString(),
+   };
+ 
+-  await supabase.from("settings").upsert(patch, { onConflict: "organization_id" });
++  const { error } = await supabase.from("settings").upsert(patch, { onConflict: "organization_id" });
++  if (error) throw new Error(error.message);
+   revalidatePath("/settings");
+ }
+ 
+diff --git a/app/(app)/settings/page.tsx b/app/(app)/settings/page.tsx
+index 2ce10a2..7c91b91 100644
+--- a/app/(app)/settings/page.tsx
++++ b/app/(app)/settings/page.tsx
+@@ -44,7 +44,11 @@ export default async function SettingsPage() {
+           </div>
+           <div>
+             <label className="label">PM "Due Soon" eşiği (mil)</label>
+-            <input name="pm_due_soon_miles" type="number" defaultValue={settings?.pm_due_soon_miles ?? 2500} className="input" />
++            <input name="pm_due_soon_miles" type="number" defaultValue={settings?.pm_due_soon_miles ?? 2000} className="input" />
++          </div>
++          <div>
++            <label className="label">PM "Due Soon" eşiği (gün)</label>
++            <input name="pm_due_soon_days" type="number" min="1" step="1" defaultValue={settings?.pm_due_soon_days ?? 7} className="input" />
+           </div>
+           <div>
+             <label className="label">Repair uyarı tutarı ($)</label>
+diff --git a/app/(app)/vehicles/page.tsx b/app/(app)/vehicles/page.tsx
+index 0986839..6918d06 100644
+--- a/app/(app)/vehicles/page.tsx
++++ b/app/(app)/vehicles/page.tsx
+@@ -67,7 +67,6 @@ export default async function VehiclesPage({
+     { name: "make", label: "Make", hideInTable: true },
+     { name: "model", label: "Model", hideInTable: true },
+     { name: "plate", label: "Plaka", hideInTable: true },
+-    { name: "current_mileage", label: "Mileage", type: "number" },
+     {
+       name: "status",
+       label: "Durum",
+diff --git a/app/api/cron/pm-check/route.ts b/app/api/cron/pm-check/route.ts
+index de3c94e..6a1b6b8 100644
+--- a/app/api/cron/pm-check/route.ts
++++ b/app/api/cron/pm-check/route.ts
+@@ -1,73 +1,97 @@
+ import { createServiceClient } from "@/lib/supabase/server";
+-import { computePM } from "@/lib/maintenance";
++import { computePM, formatPMRemaining } from "@/lib/maintenance";
+ import { sendMessage, escapeHtml } from "@/lib/telegram";
+ import { safeEqual, secretMisconfigured } from "@/lib/secure";
++import { todayISO } from "@/lib/tz";
+ 
+ export const runtime = "nodejs";
+ 
+ /** Daily PM check. Vercel Cron sends `Authorization: Bearer <CRON_SECRET>`. */
+ export async function GET(req: Request) {
+   const secret = process.env.CRON_SECRET;
+-  // Fail closed in production if the secret is not configured.
+-  if (secretMisconfigured(secret)) {
+-    return new Response("server misconfigured", { status: 500 });
+-  }
++  if (secretMisconfigured(secret)) return new Response("server misconfigured", { status: 500 });
+   if (secret) {
+     const header = req.headers.get("authorization") ?? "";
+     const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+-    if (!safeEqual(token, secret)) {
+-      return new Response("unauthorized", { status: 401 });
+-    }
++    if (!safeEqual(token, secret)) return new Response("unauthorized", { status: 401 });
+   }
+ 
+   const supabase = createServiceClient();
+-
+-  const [{ data: rules }, { data: settingsRows }, { data: groups }] = await Promise.all([
++  const [rulesResult, settingsResult, groupsResult] = await Promise.all([
+     supabase
+       .from("maintenance_rules")
+       .select("*, vehicles!maintenance_rules_vehicle_id_fkey(id, unit_number, current_mileage)")
+       .eq("active", true),
+-    supabase.from("settings").select("organization_id, pm_due_soon_miles"),
+-    supabase.from("telegram_groups").select("chat_id, vehicle_id, active"),
++    supabase.from("settings").select("organization_id, pm_due_soon_miles, pm_due_soon_days"),
++    supabase.from("telegram_groups").select("organization_id, chat_id, vehicle_id, active"),
+   ]);
+ 
+-  const dueSoonByOrg = new Map<string, number>();
+-  for (const s of settingsRows ?? [])
+-    dueSoonByOrg.set(s.organization_id, s.pm_due_soon_miles ?? 2500);
++  const queryError = rulesResult.error ?? settingsResult.error ?? groupsResult.error;
++  if (queryError) {
++    console.error("pm-check query failed", queryError);
++    return Response.json({ ok: false, error: queryError.message }, { status: 500 });
++  }
++
++  const thresholdsByOrg = new Map<string, { dueSoonMiles: number; dueSoonDays: number }>();
++  for (const settings of settingsResult.data ?? []) {
++    thresholdsByOrg.set(settings.organization_id, {
++      dueSoonMiles: Number(settings.pm_due_soon_miles ?? 2_000),
++      dueSoonDays: Number(settings.pm_due_soon_days ?? 7),
++    });
++  }
+ 
+-  const chatsByVehicle = new Map<string, string[]>();
+-  for (const g of groups ?? []) {
+-    if (!g.active || !g.vehicle_id) continue;
+-    const arr = chatsByVehicle.get(g.vehicle_id) ?? [];
+-    arr.push(g.chat_id);
+-    chatsByVehicle.set(g.vehicle_id, arr);
++  const chatsByOrgVehicle = new Map<string, string[]>();
++  for (const group of groupsResult.data ?? []) {
++    if (!group.active || !group.vehicle_id) continue;
++    const key = `${group.organization_id}:${group.vehicle_id}`;
++    const chats = chatsByOrgVehicle.get(key) ?? [];
++    if (!chats.includes(group.chat_id)) chats.push(group.chat_id);
++    chatsByOrgVehicle.set(key, chats);
+   }
+ 
+-  // Aggregate alert lines per chat
+-  const linesByChat = new Map<string, string[]>();
+-  let alerts = 0;
++  const linesByChat = new Map<string, { chatId: string; lines: string[] }>();
++  let alertsFound = 0;
++  let alertsMapped = 0;
+ 
+-  for (const r of rules ?? []) {
+-    const vehicle = (r as any).vehicles;
++  for (const rule of rulesResult.data ?? []) {
++    const vehicle = rule.vehicles as { id: string; unit_number: string; current_mileage: number | null } | null;
+     if (!vehicle) continue;
+-    const dueSoon = dueSoonByOrg.get(r.organization_id) ?? 2500;
+-    const pm = computePM(r, vehicle.current_mileage ?? 0, dueSoon);
++    const thresholds = thresholdsByOrg.get(rule.organization_id) ?? { dueSoonMiles: 2_000, dueSoonDays: 7 };
++    const pm = computePM(rule, Number(vehicle.current_mileage ?? 0), thresholds, todayISO());
+     if (pm.status === "ok") continue;
++    alertsFound++;
+ 
+-    const unitTxt = pm.unit === "miles" ? "mi" : "gun";
+-    const line = `• Unit ${escapeHtml(vehicle.unit_number)} — ${escapeHtml(r.service_type)}: ${escapeHtml(pm.label)} (${pm.remaining ?? "?"} ${unitTxt} kaldi)`;
+-    alerts++;
+-
+-    for (const chat of chatsByVehicle.get(vehicle.id) ?? []) {
+-      const arr = linesByChat.get(chat) ?? [];
+-      arr.push(line);
+-      linesByChat.set(chat, arr);
++    const chats = chatsByOrgVehicle.get(`${rule.organization_id}:${vehicle.id}`) ?? [];
++    if (chats.length === 0) continue;
++    alertsMapped++;
++    const line = `• Unit ${escapeHtml(vehicle.unit_number)} — ${escapeHtml(rule.service_type)}: ${escapeHtml(pm.label)} (${escapeHtml(formatPMRemaining(pm))})`;
++    for (const chatId of chats) {
++      const key = `${rule.organization_id}:${chatId}`;
++      const group = linesByChat.get(key) ?? { chatId, lines: [] };
++      group.lines.push(line);
++      linesByChat.set(key, group);
+     }
+   }
+ 
+-  for (const [chat, lines] of linesByChat) {
+-    await sendMessage(chat, `🔧 <b>Bakim Uyarisi</b>\n${lines.join("\n")}`);
++  let messagesSent = 0;
++  const failures: Array<{ chatId: string; error: string }> = [];
++  for (const { chatId, lines } of linesByChat.values()) {
++    try {
++      await sendMessage(chatId, `🔧 <b>Bakım Uyarısı</b>\n${lines.join("\n")}`);
++      messagesSent++;
++    } catch (error) {
++      const message = error instanceof Error ? error.message : String(error);
++      failures.push({ chatId, error: message });
++      console.error("pm-check Telegram delivery failed", { chatId, message });
++    }
+   }
+ 
+-  return Response.json({ ok: true, alerts, chatsNotified: linesByChat.size });
++  const payload = {
++    ok: failures.length === 0,
++    alertsFound,
++    alertsMapped,
++    messagesSent,
++    failures,
++  };
++  return Response.json(payload, { status: failures.length > 0 ? 502 : 200 });
+ }
+diff --git a/app/api/maintenance/invoices/[id]/route.ts b/app/api/maintenance/invoices/[id]/route.ts
+new file mode 100644
+index 0000000..0a4d5b1
+--- /dev/null
++++ b/app/api/maintenance/invoices/[id]/route.ts
+@@ -0,0 +1,21 @@
++import { NextResponse } from "next/server";
++import { createClient } from "@/lib/supabase/server";
++import { requireProfile } from "@/lib/auth";
++
++export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
++  await requireProfile();
++  const { id } = await params;
++  const supabase = await createClient();
++  const { data: invoice, error } = await supabase
++    .from("maintenance_invoices")
++    .select("storage_path")
++    .eq("id", id)
++    .single();
++  if (error || !invoice) return new Response("Invoice not found", { status: 404 });
++
++  const { data, error: signedError } = await supabase.storage
++    .from("maintenance-invoices")
++    .createSignedUrl(invoice.storage_path, 60);
++  if (signedError || !data?.signedUrl) return new Response("Invoice unavailable", { status: 500 });
++  return NextResponse.redirect(data.signedUrl);
++}
+diff --git a/components/MaintenanceHistory.tsx b/components/MaintenanceHistory.tsx
+new file mode 100644
+index 0000000..b195155
+--- /dev/null
++++ b/components/MaintenanceHistory.tsx
+@@ -0,0 +1,88 @@
++import { usd } from "@/lib/format";
++
++export interface MaintenanceHistoryRow {
++  id: string;
++  service_type: string | null;
++  part_name: string | null;
++  performed_date: string | null;
++  mileage: number | null;
++  cost: number | null;
++  shop_name: string | null;
++  next_due_mileage: number | null;
++  next_due_date: string | null;
++  notes: string | null;
++  source: string;
++  invoice_id: string | null;
++  vehicles: { unit_number: string } | null;
++  maintenance_invoices: { file_name: string; invoice_number: string | null } | null;
++}
++
++export default function MaintenanceHistory({
++  rows,
++  repairWarningAmount,
++}: {
++  rows: MaintenanceHistoryRow[];
++  repairWarningAmount: number;
++}) {
++  return (
++    <div className="card overflow-x-auto p-0">
++      <table className="w-full">
++        <thead className="border-b border-slate-200 bg-slate-50">
++          <tr>
++            <th className="th">Tarih</th>
++            <th className="th">Unit</th>
++            <th className="th">Servis / Parça</th>
++            <th className="th">Mileage</th>
++            <th className="th">Sonraki</th>
++            <th className="th">Shop</th>
++            <th className="th">Maliyet</th>
++            <th className="th">Invoice</th>
++          </tr>
++        </thead>
++        <tbody className="divide-y divide-slate-100">
++          {rows.length === 0 ? (
++            <tr>
++              <td className="td text-slate-400" colSpan={8}>Henüz bakım geçmişi yok.</td>
++            </tr>
++          ) : (
++            rows.map((row) => {
++              const cost = Number(row.cost ?? 0);
++              const expensive = repairWarningAmount > 0 && cost >= repairWarningAmount;
++              return (
++                <tr key={row.id} className="hover:bg-slate-50">
++                  <td className="td whitespace-nowrap">{row.performed_date ?? "—"}</td>
++                  <td className="td font-medium">{row.vehicles?.unit_number ?? "—"}</td>
++                  <td className="td">
++                    <div>{row.service_type ?? "—"}</div>
++                    {row.part_name && <div className="text-xs text-slate-500">{row.part_name}</div>}
++                    {row.notes && <div className="max-w-xs truncate text-xs text-slate-400" title={row.notes}>{row.notes}</div>}
++                  </td>
++                  <td className="td">{row.mileage == null ? "—" : `${Number(row.mileage).toLocaleString("en-US")} mi`}</td>
++                  <td className="td">
++                    {row.next_due_mileage != null
++                      ? `${Number(row.next_due_mileage).toLocaleString("en-US")} mi`
++                      : row.next_due_date ?? "—"}
++                  </td>
++                  <td className="td">{row.shop_name ?? "—"}</td>
++                  <td className="td">
++                    <span className={expensive ? "font-semibold text-red-700" : ""}>{usd(cost)}</span>
++                    {expensive && <span className="ml-2 badge bg-red-100 text-red-700">Yüksek</span>}
++                  </td>
++                  <td className="td">
++                    {row.invoice_id ? (
++                      <a className="text-brand hover:underline" href={`/api/maintenance/invoices/${row.invoice_id}`} target="_blank" rel="noreferrer">
++                        {row.maintenance_invoices?.invoice_number || row.maintenance_invoices?.file_name || "PDF"}
++                      </a>
++                    ) : (
++                      <span className="text-slate-400">{row.source === "manual" ? "Manuel" : "—"}</span>
++                    )}
++                  </td>
++                </tr>
++              );
++            })
++          )}
++        </tbody>
++      </table>
++    </div>
++  );
++}
+diff --git a/components/MaintenanceRuleManager.tsx b/components/MaintenanceRuleManager.tsx
+new file mode 100644
+index 0000000..0e22315
+--- /dev/null
++++ b/components/MaintenanceRuleManager.tsx
+@@ -0,0 +1,221 @@
++"use client";
++
++import { useState } from "react";
++import { createRow, updateRow } from "@/lib/crud";
++
++interface Option { value: string; label: string }
++export interface RuleManagerRow {
++  id: string;
++  vehicle_id: string;
++  service_type: string;
++  interval_type: "mileage" | "date";
++  interval_miles: number | null;
++  interval_days: number | null;
++  last_done_mileage: number | null;
++  last_done_date: string | null;
++  active: boolean;
++  vehicles: { unit_number: string } | null;
++}
++
++interface FormState {
++  vehicle_id: string;
++  service_type: string;
++  interval_type: "mileage" | "date";
++  interval_miles: string;
++  interval_days: string;
++  last_done_mileage: string;
++  last_done_date: string;
++  active: boolean;
++}
++
++const EMPTY: FormState = {
++  vehicle_id: "",
++  service_type: "",
++  interval_type: "mileage",
++  interval_miles: "",
++  interval_days: "",
++  last_done_mileage: "",
++  last_done_date: "",
++  active: true,
++};
++
++export default function MaintenanceRuleManager({ rows, vehicles }: { rows: RuleManagerRow[]; vehicles: Option[] }) {
++  const [editingId, setEditingId] = useState<string | null>(null);
++  const [form, setForm] = useState<FormState>(EMPTY);
++  const [open, setOpen] = useState(false);
++  const [busy, setBusy] = useState(false);
++  const [error, setError] = useState("");
++
++  function startAdd() {
++    setEditingId(null);
++    setForm(EMPTY);
++    setError("");
++    setOpen(true);
++  }
++
++  function startEdit(row: RuleManagerRow) {
++    setEditingId(row.id);
++    setForm({
++      vehicle_id: row.vehicle_id ?? "",
++      service_type: row.service_type ?? "",
++      interval_type: row.interval_type,
++      interval_miles: row.interval_miles == null ? "" : String(row.interval_miles),
++      interval_days: row.interval_days == null ? "" : String(row.interval_days),
++      last_done_mileage: row.last_done_mileage == null ? "" : String(row.last_done_mileage),
++      last_done_date: row.last_done_date ?? "",
++      active: row.active,
++    });
++    setError("");
++    setOpen(true);
++  }
++
++  async function save() {
++    const intervalValue = form.interval_type === "mileage" ? Number(form.interval_miles) : Number(form.interval_days);
++    if (!form.vehicle_id || !form.service_type.trim()) {
++      setError("Araç ve servis tipi gerekli.");
++      return;
++    }
++    if (!Number.isFinite(intervalValue) || intervalValue <= 0 || !Number.isInteger(intervalValue)) {
++      setError(form.interval_type === "mileage" ? "Mil aralığı pozitif tam sayı olmalı." : "Gün aralığı pozitif tam sayı olmalı.");
++      return;
++    }
++    if (form.interval_type === "mileage" && (!form.last_done_mileage || Number(form.last_done_mileage) < 0)) {
++      setError("Mileage bazlı kural için son yapılan mileage gerekli.");
++      return;
++    }
++    if (form.interval_type === "date" && !form.last_done_date) {
++      setError("Tarih bazlı kural için son yapılan tarih gerekli.");
++      return;
++    }
++
++    const values = {
++      vehicle_id: form.vehicle_id,
++      service_type: form.service_type.trim(),
++      interval_type: form.interval_type,
++      interval_miles: form.interval_type === "mileage" ? intervalValue : null,
++      interval_days: form.interval_type === "date" ? intervalValue : null,
++      last_done_mileage: form.interval_type === "mileage" ? Number(form.last_done_mileage) : null,
++      last_done_date: form.interval_type === "date" ? form.last_done_date : null,
++      active: form.active,
++    };
++
++    setBusy(true);
++    const result = editingId
++      ? await updateRow("maintenance_rules", editingId, values, "/maintenance")
++      : await createRow("maintenance_rules", values, "/maintenance");
++    setBusy(false);
++    if (result?.error) setError(result.error);
++    else setOpen(false);
++  }
++
++  async function deactivate(id: string) {
++    if (!window.confirm("Bakım kuralı pasifleştirilsin mi? Geçmiş kayıtları korunur.")) return;
++    const result = await updateRow("maintenance_rules", id, { active: false }, "/maintenance");
++    if (result?.error) window.alert(result.error);
++  }
++
++  return (
++    <div className="space-y-4">
++      <div className="flex items-center justify-between">
++        <h2 className="font-semibold">Bakım Kuralları</h2>
++        <button type="button" onClick={startAdd} className="btn-primary">+ Kural</button>
++      </div>
++      <div className="card overflow-x-auto p-0">
++        <table className="w-full">
++          <thead className="border-b border-slate-200 bg-slate-50">
++            <tr>
++              <th className="th">Unit</th>
++              <th className="th">Servis</th>
++              <th className="th">Aralık</th>
++              <th className="th">Son Yapılan</th>
++              <th className="th">Durum</th>
++              <th className="th text-right">İşlem</th>
++            </tr>
++          </thead>
++          <tbody className="divide-y divide-slate-100">
++            {rows.length === 0 ? (
++              <tr><td className="td text-slate-400" colSpan={6}>Henüz bakım kuralı yok.</td></tr>
++            ) : rows.map((row) => (
++              <tr key={row.id} className="hover:bg-slate-50">
++                <td className="td font-medium">{row.vehicles?.unit_number ?? "—"}</td>
++                <td className="td">{row.service_type}</td>
++                <td className="td">{row.interval_type === "mileage" ? `${Number(row.interval_miles).toLocaleString("en-US")} mi` : `${row.interval_days} gün`}</td>
++                <td className="td">{row.interval_type === "mileage" ? `${Number(row.last_done_mileage).toLocaleString("en-US")} mi` : row.last_done_date}</td>
++                <td className="td"><span className={`badge ${row.active ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-600"}`}>{row.active ? "Aktif" : "Pasif"}</span></td>
++                <td className="td text-right">
++                  <button type="button" onClick={() => startEdit(row)} className="mr-3 text-brand hover:underline">Düzenle</button>
++                  {row.active && (
++                    <button type="button" onClick={() => deactivate(row.id)} className="text-red-600 hover:underline">Pasifleştir</button>
++                  )}
++                </td>
++              </tr>
++            ))}
++          </tbody>
++        </table>
++      </div>
++
++      {open && (
++        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4">
++          <div className="card my-8 w-full max-w-lg">
++            <div className="mb-4 flex items-center justify-between">
++              <h3 className="font-semibold">{editingId ? "Bakım Kuralını Düzenle" : "Bakım Kuralı Ekle"}</h3>
++              <button type="button" onClick={() => setOpen(false)} className="text-slate-400">✕</button>
++            </div>
++            <div className="grid grid-cols-2 gap-3">
++              <div>
++                <label className="label">Araç</label>
++                <select className="input" value={form.vehicle_id} onChange={(e) => setForm({ ...form, vehicle_id: e.target.value })}>
++                  <option value="">—</option>
++                  {vehicles.map((vehicle) => <option key={vehicle.value} value={vehicle.value}>{vehicle.label}</option>)}
++                </select>
++              </div>
++              <div>
++                <label className="label">Servis Tipi</label>
++                <input className="input" value={form.service_type} onChange={(e) => setForm({ ...form, service_type: e.target.value })} placeholder="Oil Change" />
++              </div>
++              <div>
++                <label className="label">Interval Tipi</label>
++                <select className="input" value={form.interval_type} onChange={(e) => setForm({ ...form, interval_type: e.target.value as FormState["interval_type"] })}>
++                  <option value="mileage">Mileage</option>
++                  <option value="date">Tarih</option>
++                </select>
++              </div>
++              {form.interval_type === "mileage" ? (
++                <>
++                  <div>
++                    <label className="label">Her X mil</label>
++                    <input className="input" type="number" min="1" step="1" value={form.interval_miles} onChange={(e) => setForm({ ...form, interval_miles: e.target.value })} />
++                  </div>
++                  <div>
++                    <label className="label">Son yapılan mileage</label>
++                    <input className="input" type="number" min="0" step="1" value={form.last_done_mileage} onChange={(e) => setForm({ ...form, last_done_mileage: e.target.value })} />
++                  </div>
++                </>
++              ) : (
++                <>
++                  <div>
++                    <label className="label">Her X gün</label>
++                    <input className="input" type="number" min="1" step="1" value={form.interval_days} onChange={(e) => setForm({ ...form, interval_days: e.target.value })} />
++                  </div>
++                  <div>
++                    <label className="label">Son yapılan tarih</label>
++                    <input className="input" type="date" value={form.last_done_date} onChange={(e) => setForm({ ...form, last_done_date: e.target.value })} />
++                  </div>
++                </>
++              )}
++              <label className="col-span-2 flex items-center gap-2 text-sm">
++                <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} className="h-4 w-4 accent-brand" />
++                Kural aktif
++              </label>
++              {error && <p className="col-span-2 text-sm text-red-600">{error}</p>}
++              <div className="col-span-2 mt-2 flex justify-end gap-2">
++                <button type="button" onClick={() => setOpen(false)} className="btn-ghost">İptal</button>
++                <button type="button" onClick={save} disabled={busy} className="btn-primary">{busy ? "Kaydediliyor…" : "Kaydet"}</button>
++              </div>
++            </div>
++          </div>
++        </div>
++      )}
++    </div>
++  );
++}
+diff --git a/components/MaintenanceTable.tsx b/components/MaintenanceTable.tsx
+index 18f4104..ba8cbd1 100644
+--- a/components/MaintenanceTable.tsx
++++ b/components/MaintenanceTable.tsx
+@@ -1,10 +1,16 @@
+ "use client";
+ 
+-import { useState, useTransition } from "react";
++import { useMemo, useState, useTransition } from "react";
+ import { updateMileage, markServiced } from "@/app/(app)/maintenance/actions";
+-import { computePM, PM_BADGE } from "@/lib/maintenance";
++import {
++  computePM,
++  formatPMRemaining,
++  PM_BADGE,
++  type PMThresholds,
++} from "@/lib/maintenance";
++import { todayISO } from "@/lib/tz";
+ 
+-interface Row {
++export interface MaintenanceRuleRow {
+   id: string;
+   service_type: string;
+   interval_type: "mileage" | "date";
+@@ -13,110 +19,174 @@ interface Row {
+   last_done_mileage: number | null;
+   last_done_date: string | null;
+   vehicle_id: string;
+-  vehicles: { unit_number: string; current_mileage: number } | null;
++  active: boolean;
++  vehicles: { unit_number: string; current_mileage: number | null } | null;
+ }
+ 
+-function MileageCell({ vehicleId, mileage }: { vehicleId: string; mileage: number }) {
+-  const [val, setVal] = useState(String(mileage ?? 0));
+-  const [pending, start] = useTransition();
+-  const [err, setErr] = useState<string | null>(null);
+-  return (
+-    <div className="flex flex-col gap-1">
+-      <div className="flex items-center gap-1">
+-        <input
+-          className="input w-24 py-1"
+-          value={val}
+-          onChange={(e) => setVal(e.target.value)}
+-        />
+-        <button
+-          onClick={() =>
+-            start(async () => {
+-              const res = await updateMileage(vehicleId, Number(val));
+-              setErr(res.ok ? null : res.error);
+-            })
+-          }
+-          disabled={pending}
+-          className="text-xs text-brand hover:underline"
+-        >
+-          Kaydet
+-        </button>
+-      </div>
+-      {err && <span className="text-xs text-red-600">{err}</span>}
+-    </div>
+-  );
++interface VehicleGroup {
++  vehicleId: string;
++  unitNumber: string;
++  mileage: number;
++  rules: MaintenanceRuleRow[];
+ }
+ 
+ export default function MaintenanceTable({
+   rows,
+-  dueSoonMiles,
++  thresholds,
+ }: {
+-  rows: Row[];
+-  dueSoonMiles: number;
++  rows: MaintenanceRuleRow[];
++  thresholds: PMThresholds;
+ }) {
+-  const [pending, start] = useTransition();
+-  const [err, setErr] = useState<string | null>(null);
++  const groups = useMemo(() => {
++    const map = new Map<string, VehicleGroup>();
++    for (const row of rows) {
++      if (!row.vehicle_id || !row.vehicles) continue;
++      const existing = map.get(row.vehicle_id) ?? {
++        vehicleId: row.vehicle_id,
++        unitNumber: row.vehicles.unit_number,
++        mileage: Number(row.vehicles.current_mileage ?? 0),
++        rules: [],
++      };
++      existing.rules.push(row);
++      map.set(row.vehicle_id, existing);
++    }
++    return [...map.values()].sort((a, b) => a.unitNumber.localeCompare(b.unitNumber));
++  }, [rows]);
++
++  const [mileages, setMileages] = useState<Record<string, string>>(() =>
++    Object.fromEntries(groups.map((group) => [group.vehicleId, String(group.mileage)])),
++  );
++  const [pending, startTransition] = useTransition();
++  const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
++
++  function saveMileage(group: VehicleGroup) {
++    const mileage = Number(mileages[group.vehicleId]);
++    startTransition(async () => {
++      const result = await updateMileage(group.vehicleId, mileage);
++      if (!result.ok) {
++        setMessage({ type: "error", text: result.error });
++        return;
++      }
++      setMileages((current) => ({ ...current, [group.vehicleId]: String(result.mileage) }));
++      setMessage({ type: "ok", text: `Unit ${group.unitNumber} mileage güncellendi.` });
++    });
++  }
++
++  function serviceRule(rule: MaintenanceRuleRow, unitNumber: string) {
++    if (!window.confirm(`Unit ${unitNumber} — ${rule.service_type} bugün yapılmış olarak kaydedilsin mi?`)) return;
++    const costRaw = window.prompt("Maliyet ($) — bilinmiyorsa 0 yazın:", "0");
++    if (costRaw === null) return;
++    const cost = Number(costRaw.replace(/,/g, ""));
++    if (!Number.isFinite(cost) || cost < 0) {
++      setMessage({ type: "error", text: "Geçerli, negatif olmayan bir maliyet girin." });
++      return;
++    }
++    const shopName = window.prompt("Shop adı (opsiyonel):", "") ?? "";
++    const partName = window.prompt("Parça adı / numarası (opsiyonel):", "") ?? "";
++    const notes = window.prompt("Not (opsiyonel):", "") ?? "";
++
++    startTransition(async () => {
++      const result = await markServiced(rule.id, { cost, shopName, partName, notes });
++      setMessage(
++        result.ok
++          ? { type: "ok", text: `${rule.service_type} bakım geçmişine kaydedildi.` }
++          : { type: "error", text: result.error },
++      );
++    });
++  }
+ 
+   return (
+-    <div className="card overflow-x-auto p-0">
+-      {err && (
+-        <p className="border-b border-red-100 bg-red-50 px-3 py-2 text-xs text-red-700">{err}</p>
++    <div className="space-y-4">
++      {message && (
++        <p
++          className={`rounded-lg border px-3 py-2 text-sm ${
++            message.type === "ok"
++              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
++              : "border-red-200 bg-red-50 text-red-700"
++          }`}
++        >
++          {message.text}
++        </p>
++      )}
++
++      {groups.length === 0 ? (
++        <div className="card text-sm text-slate-400">Henüz aktif bakım kuralı yok.</div>
++      ) : (
++        groups.map((group) => {
++          const currentMileage = Number(mileages[group.vehicleId] ?? group.mileage);
++          return (
++            <div key={group.vehicleId} className="card overflow-x-auto p-0">
++              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
++                <div>
++                  <p className="font-semibold">Unit {group.unitNumber}</p>
++                  <p className="text-xs text-slate-500">Güncel odometre</p>
++                </div>
++                <div className="flex items-center gap-2">
++                  <input
++                    aria-label={`Unit ${group.unitNumber} mileage`}
++                    className="input w-32 py-1"
++                    type="number"
++                    min={group.mileage}
++                    step="1"
++                    value={mileages[group.vehicleId] ?? String(group.mileage)}
++                    onChange={(event) =>
++                      setMileages((current) => ({ ...current, [group.vehicleId]: event.target.value }))
++                    }
++                  />
++                  <button
++                    type="button"
++                    onClick={() => saveMileage(group)}
++                    disabled={pending}
++                    className="btn-primary py-1.5 text-xs"
++                  >
++                    Mileage Kaydet
++                  </button>
++                </div>
++              </div>
++
++              <table className="w-full">
++                <thead className="border-b border-slate-200 bg-white">
++                  <tr>
++                    <th className="th">Servis</th>
++                    <th className="th">Sonraki</th>
++                    <th className="th">Kalan</th>
++                    <th className="th">Durum</th>
++                    <th className="th text-right">İşlem</th>
++                  </tr>
++                </thead>
++                <tbody className="divide-y divide-slate-100">
++                  {group.rules.map((rule) => {
++                    const pm = computePM(rule, currentMileage, thresholds, todayISO());
++                    return (
++                      <tr key={rule.id} className="hover:bg-slate-50">
++                        <td className="td font-medium">{rule.service_type}</td>
++                        <td className="td">
++                          {pm.nextDue ?? "—"}
++                          {pm.unit === "miles" && pm.nextDue != null ? " mi" : ""}
++                        </td>
++                        <td className="td">{formatPMRemaining(pm)}</td>
++                        <td className="td">
++                          <span className={`badge ${PM_BADGE[pm.status]}`}>{pm.label}</span>
++                        </td>
++                        <td className="td text-right">
++                          <button
++                            type="button"
++                            onClick={() => serviceRule(rule, group.unitNumber)}
++                            disabled={pending}
++                            className="text-xs text-brand hover:underline"
++                          >
++                            Yapıldı işaretle
++                          </button>
++                        </td>
++                      </tr>
++                    );
++                  })}
++                </tbody>
++              </table>
++            </div>
++          );
++        })
+       )}
+-      <table className="w-full">
+-        <thead className="border-b border-slate-200 bg-slate-50">
+-          <tr>
+-            <th className="th">Unit</th>
+-            <th className="th">Servis</th>
+-            <th className="th">Mevcut Mileage</th>
+-            <th className="th">Sonraki</th>
+-            <th className="th">Kalan</th>
+-            <th className="th">Durum</th>
+-            <th className="th"></th>
+-          </tr>
+-        </thead>
+-        <tbody className="divide-y divide-slate-100">
+-          {rows.length === 0 ? (
+-            <tr><td className="td text-slate-400" colSpan={7}>Henüz bakım kuralı yok.</td></tr>
+-          ) : (
+-            rows.map((r) => {
+-              const cur = r.vehicles?.current_mileage ?? 0;
+-              const pm = computePM(r, cur, dueSoonMiles);
+-              return (
+-                <tr key={r.id} className="hover:bg-slate-50">
+-                  <td className="td font-medium">{r.vehicles?.unit_number ?? "—"}</td>
+-                  <td className="td">{r.service_type}</td>
+-                  <td className="td">
+-                    <MileageCell vehicleId={r.vehicle_id} mileage={cur} />
+-                  </td>
+-                  <td className="td">
+-                    {pm.nextDue ?? "—"}
+-                    {pm.unit === "miles" && pm.nextDue ? " mi" : ""}
+-                  </td>
+-                  <td className="td">
+-                    {pm.remaining ?? "—"} {pm.remaining != null ? (pm.unit === "miles" ? "mi" : "gün") : ""}
+-                  </td>
+-                  <td className="td">
+-                    <span className={`badge ${PM_BADGE[pm.status]}`}>{pm.label}</span>
+-                  </td>
+-                  <td className="td text-right">
+-                    <button
+-                      onClick={() =>
+-                        start(async () => {
+-                          const res = await markServiced(r.id, cur);
+-                          setErr(res.ok ? null : res.error);
+-                        })
+-                      }
+-                      disabled={pending}
+-                      className="text-xs text-brand hover:underline"
+-                    >
+-                      Yapıldı işaretle
+-                    </button>
+-                  </td>
+-                </tr>
+-              );
+-            })
+-          )}
+-        </tbody>
+-      </table>
+     </div>
+   );
+ }
+diff --git a/docs/01-mimari.md b/docs/01-mimari.md
+index d221e54..01c5bd4 100644
+--- a/docs/01-mimari.md
++++ b/docs/01-mimari.md
+@@ -81,7 +81,7 @@ yük girişi için **Telegram Bot** kullanılır.
+ - Supabase Auth (email + şifre). İlk kayıt → trigger otomatik organizasyon + owner profili açar.
+ 
+ ### 6) Veri & depolama — Supabase
+-- **Postgres:** 16 tablo, hepsi `organization_id` taşır, **RLS** ile organizasyona izole (bkz. 02).
++- **Postgres:** 23 tablo, hepsi `organization_id` taşır, **RLS** ile organizasyona izole (bkz. 02).
+ - **Auth:** kullanıcılar; `profiles` tablosu org + rol tutar.
+ - **Storage:** `imports` private bucket (Telegram'dan gelen PDF/görseller).
+ 
+diff --git a/docs/02-veritabani-semasi.md b/docs/02-veritabani-semasi.md
+index dc2f5f0..f6ab318 100644
+--- a/docs/02-veritabani-semasi.md
++++ b/docs/02-veritabani-semasi.md
+@@ -291,3 +291,23 @@ current_org_id())`. `organizations` ve `profiles` için kendi varyantları var.
+ `loads(organization_id, delivery_date)`, `expenses(organization_id, date)`,
+ `settlements(organization_id, week_end)`, `imported_loads(organization_id, status)`,
+ `telegram_groups(chat_id)`.
++
++### `maintenance_invoices` (2026-07-12)
++PDF bakım invoice metadata ve duplicate kontrolü.
++
++| Kolon | Tip | Açıklama |
++|---|---|---|
++| id | uuid PK | |
++| organization_id | uuid FK | Tenant |
++| vehicle_id | uuid FK | Tespit/Seçilen unit |
++| invoice_number | text | Invoice numarası |
++| invoice_date | date | Invoice tarihi |
++| shop_name | text | Servis/Shop |
++| file_name | text | Orijinal dosya adı |
++| storage_path | text | Private `maintenance-invoices` bucket yolu |
++| file_hash | text unique/org | SHA-256 duplicate anahtarı |
++| raw_text | text | PDF metin katmanı |
++| parsed_data | jsonb | Doğrulanmış AI çıktısı |
++| created_by | uuid FK | Web kullanıcısı varsa |
++
++`maintenance_records` ayrıca `invoice_id`, `part_name`, `next_due_mileage`, `next_due_date`, `source`, `created_by`, `updated_at` alanlarını taşır. `settings.pm_due_soon_days` tarih uyarı eşiğidir.
+diff --git a/docs/03-supabase-kurulum.md b/docs/03-supabase-kurulum.md
+index 9ebc979..b819581 100644
+--- a/docs/03-supabase-kurulum.md
++++ b/docs/03-supabase-kurulum.md
+@@ -18,9 +18,9 @@ dosya depolama. Süre: ~10 dakika.
+ 1. Sol menü → **SQL Editor** → **New query**.
+ 2. Repodaki [`supabase/schema.sql`](../supabase/schema.sql) dosyasının **tamamını** kopyala, editöre
+    yapıştır.
+-3. **Run** (Ctrl/Cmd+Enter). "Success" görmelisin. Bu; 16 tabloyu, RLS politikalarını,
++3. **Run** (Ctrl/Cmd+Enter). "Success" görmelisin. Bu; 23 tabloyu, RLS politikalarını,
+    `current_org_id()` fonksiyonunu ve kayıt trigger'ını kurar. Tekrar çalıştırmak güvenlidir.
+-4. Doğrula: sol menü → **Table Editor** → 16 tablo listelenmeli.
++4. Doğrula: sol menü → **Table Editor** → 23 tablo listelenmeli.
+ 
+ ## 4) Storage bucket (otomatik)
+ `schema.sql` çalıştığında **`imports` private bucket'ı otomatik oluşur** — manuel adım gerekmez.
+diff --git a/docs/15-maintenance-invoice-upgrade-2026-07-12.md b/docs/15-maintenance-invoice-upgrade-2026-07-12.md
+new file mode 100644
+index 0000000..b225806
+--- /dev/null
++++ b/docs/15-maintenance-invoice-upgrade-2026-07-12.md
+@@ -0,0 +1,37 @@
++# Maintenance Invoice Upgrade — 2026-07-12
++
++## Kapsam
++
++- PDF invoice SHA-256 hash ile duplicate kontrolü.
++- Metin katmanlı PDF analizi; taranmış PDF için sayfaları görsele çevirip fal.ai vision fallback.
++- Tek invoice içindeki her servis ayrı `maintenance_records` satırı.
++- Terminalde sonraki tarih/mileage ve mevcut kuralı overwrite/history seçimi.
++- `maintenance_invoices` private Storage + metadata tablosu.
++- `save_maintenance_invoice`, `set_vehicle_mileage`, `mark_maintenance_serviced` atomik PostgreSQL RPC işlemleri.
++- Bakım geçmişi, invoice görüntüleme, mileage audit tablosu ve yüksek maliyet uyarıları.
++- Ayarlanabilir `pm_due_soon_miles` (varsayılan 2000) ve `pm_due_soon_days` (varsayılan 7).
++
++## Çalıştırma
++
++```bash
++npm install
++# Supabase SQL Editor'da supabase/migrations/20260712000000_maintenance_invoice_upgrade.sql çalıştır.
++npm run maintenance:invoice -- "C:\\Invoices\\invoice.pdf"
++```
++
++CLI her başlangıçta ve invoice kaydından sonra yaklaşan bakımları terminalde gösterir.
++
++## Güvenlik ve tutarlılık
++
++- PDF dosya hash’i organizasyon içinde unique.
++- Invoice metadata, tüm servis kayıtları ve kural güncellemeleri tek transaction.
++- Mileage düşürülemez; araç ve mileage logu tek transaction.
++- “Yapıldı” işlemi client mileage’ına güvenmez, DB’den güncel odometreyi tekrar okur ve aynı gün/mileage tekrarını idempotent işler.
++- Tarih hesapları `YYYY-MM-DD` calendar arithmetic kullanır; browser/Vercel timezone farkı oluşturmaz.
++- Telegram API HTTP ve `ok:false` cevapları hata kabul edilir; cron gerçek teslimat sayısını raporlar.
++
++## Doğrulama
++
++- `npx tsc --noEmit`: başarılı
++- `npm test`: 60/60 başarılı
++- `npm run lint`: başarılı
+diff --git a/docs/README.md b/docs/README.md
+index 22aaa99..4a586ec 100644
+--- a/docs/README.md
++++ b/docs/README.md
+@@ -8,7 +8,7 @@ varsayılmaz. Sıralı okuman önerilir.
+ | # | Dosya | Ne anlatır |
+ |---|---|---|
+ | 01 | [Mimari](01-mimari.md) | Tüm katmanlar (UI, server actions, lib, API, auth, Supabase, Vercel) + veri akışı |
+-| 02 | [Veritabanı Şeması](02-veritabani-semasi.md) | 16 tablo kolon-kolon, RLS, trigger, storage, indexler |
++| 02 | [Veritabanı Şeması](02-veritabani-semasi.md) | 23 tablo kolon-kolon, RLS, trigger, storage, indexler |
+ | 03 | [Supabase Kurulum](03-supabase-kurulum.md) | Hesap aç → proje → şema yükle → bucket → anahtarlar |
+ | 04 | [Telegram Kurulum](04-telegram-kurulum.md) | Bot oluştur → gruba ekle → webhook → grup eşleme |
+ | 05 | [fal.ai (Yapay Zeka)](05-fal-ai.md) | Yük okuma fal.ai ile; key, model, görsel/PDF davranışı, maliyet |
+diff --git a/lib/bot-executor.ts b/lib/bot-executor.ts
+index 895b7fb..c0bad6d 100644
+--- a/lib/bot-executor.ts
++++ b/lib/bot-executor.ts
+@@ -185,27 +185,23 @@ async function addExpense(supabase: any, orgId: string, data: Record<string, unk
+ 
+ async function updateMileage(supabase: any, orgId: string, data: Record<string, unknown>): Promise<Result> {
+   const mileage = num(data.mileage);
+-  if (mileage === null) return { ok: false, message: "Geçerli bir kilometre değeri gerekli." };
++  if (mileage === null || !Number.isInteger(mileage)) {
++    return { ok: false, message: "Geçerli bir tam sayı mileage değeri gerekli." };
++  }
+   const veh = await findVehicle(supabase, orgId, data.unit_number);
+   if (!veh.row) return { ok: false, message: `Araç bulunamadı: ${escapeHtml(str(data.unit_number) ?? "")}` };
+   if (veh.count > 1) return { ok: false, message: "Birden fazla araç eşleşti; lütfen belirginleştirin." };
+ 
+-  const { error } = await supabase
+-    .from("vehicles")
+-    .update({ current_mileage: mileage })
+-    .eq("id", veh.row.id)
+-    .eq("organization_id", orgId);
+-  if (error) return { ok: false, message: `⚠️ Güncellenemedi: ${escapeHtml(error.message)}` };
+-
+-  await supabase.from("vehicle_mileage_logs").insert({
+-    organization_id: orgId,
+-    vehicle_id: veh.row.id,
+-    mileage,
+-    source: "telegram",
++  const { error } = await supabase.rpc("set_vehicle_mileage", {
++    p_vehicle_id: veh.row.id,
++    p_mileage: mileage,
++    p_source: "telegram",
++    p_organization_id: orgId,
+   });
++  if (error) return { ok: false, message: `⚠️ Güncellenemedi: ${escapeHtml(error.message)}` };
+   return {
+     ok: true,
+-    message: `✅ Unit <b>${escapeHtml(veh.row.unit_number)}</b> kilometresi ${mileage.toLocaleString("en-US")} olarak güncellendi.`,
++    message: `✅ Unit <b>${escapeHtml(veh.row.unit_number)}</b> mileage değeri ${mileage.toLocaleString("en-US")} mi olarak güncellendi.`,
+   };
+ }
+ 
+diff --git a/lib/crud-allowlist.ts b/lib/crud-allowlist.ts
+index b8b0dec..9d21ee4 100644
+--- a/lib/crud-allowlist.ts
++++ b/lib/crud-allowlist.ts
+@@ -20,7 +20,7 @@ export const ALLOWED: Record<string, string[]> = {
+     "default_driver_pay_pct", "company_fee_pct", "company_fee_is_our_revenue",
+     "external_carrier_fee_pct", "management_commission_type",
+     "management_commission_amount", "vin", "year", "make", "model", "plate",
+-    "current_mileage", "status", "notes",
++    "status", "notes",
+   ],
+   loads: [
+     "load_number", "load_source", "company_id", "external_carrier_id",
+@@ -37,10 +37,6 @@ export const ALLOWED: Record<string, string[]> = {
+     "vehicle_id", "service_type", "interval_type", "interval_miles",
+     "interval_days", "last_done_mileage", "last_done_date", "active",
+   ],
+-  maintenance_records: [
+-    "vehicle_id", "rule_id", "service_type", "performed_date", "mileage",
+-    "cost", "shop_name", "notes",
+-  ],
+ };
+ 
+ export function isAllowedTable(table: string): boolean {
+diff --git a/lib/maintenance-invoice.test.ts b/lib/maintenance-invoice.test.ts
+new file mode 100644
+index 0000000..2023f21
+--- /dev/null
++++ b/lib/maintenance-invoice.test.ts
+@@ -0,0 +1,31 @@
++import { describe, expect, it } from "vitest";
++import { maintenanceInvoiceHash, safeMaintenanceInvoiceJson } from "./maintenance-invoice";
++
++describe("maintenance invoice validation", () => {
++  it("splits and validates multiple services", () => {
++    const parsed = safeMaintenanceInvoiceJson(JSON.stringify({
++      invoice_number: "INV-7",
++      invoice_date: "2026-07-10",
++      shop_name: "Example Shop",
++      unit_number: "14106",
++      mileage: "155,000 mi",
++      services: [
++        { service_type: "Oil Change", part_name: "Oil filter", cost: "$420.50" },
++        { service_type: "Annual Inspection", performed_date: "bad-date", mileage: -1 },
++      ],
++    }));
++    expect(parsed?.services).toHaveLength(2);
++    expect(parsed?.services[0]).toMatchObject({ performed_date: "2026-07-10", mileage: 155_000, cost: 420.5 });
++    expect(parsed?.services[1]).toMatchObject({ performed_date: "2026-07-10", mileage: 155_000 });
++  });
++
++  it("rejects output without services", () => {
++    expect(safeMaintenanceInvoiceJson('{"services":[]}')).toBeNull();
++  });
++
++  it("creates a stable SHA-256 hash", () => {
++    expect(maintenanceInvoiceHash(new TextEncoder().encode("same invoice")))
++      .toBe(maintenanceInvoiceHash(new TextEncoder().encode("same invoice")));
++    expect(maintenanceInvoiceHash(new TextEncoder().encode("same invoice"))).toHaveLength(64);
++  });
++});
+diff --git a/lib/maintenance-invoice.ts b/lib/maintenance-invoice.ts
+new file mode 100644
+index 0000000..db05ca6
+--- /dev/null
++++ b/lib/maintenance-invoice.ts
+@@ -0,0 +1,163 @@
++import { createHash } from "node:crypto";
++import { extractText, getDocumentProxy, renderPageAsImage } from "unpdf";
++import { runText, runVision } from "@/lib/ai";
++
++export interface ParsedInvoiceService {
++  service_type: string;
++  part_name: string | null;
++  performed_date: string | null;
++  mileage: number | null;
++  cost: number | null;
++  notes: string | null;
++}
++
++export interface ParsedMaintenanceInvoice {
++  invoice_number: string | null;
++  invoice_date: string | null;
++  shop_name: string | null;
++  unit_number: string | null;
++  vehicle_id_text: string | null;
++  mileage: number | null;
++  services: ParsedInvoiceService[];
++}
++
++const SYSTEM = `You extract fleet truck maintenance invoice data. Return ONLY one JSON object.
++Do not invent values. A single invoice can contain multiple distinct services; return each service separately.`;
++
++const INSTRUCTION = `Return exactly this shape, using null when unknown:
++{
++  "invoice_number": string|null,
++  "invoice_date": "YYYY-MM-DD"|null,
++  "shop_name": string|null,
++  "unit_number": string|null,
++  "vehicle_id_text": string|null,
++  "mileage": number|null,
++  "services": [
++    {
++      "service_type": string,
++      "part_name": string|null,
++      "performed_date": "YYYY-MM-DD"|null,
++      "mileage": number|null,
++      "cost": number|null,
++      "notes": string|null
++    }
++  ]
++}
++Rules:
++- Split materially different operations into separate services.
++- Use concise stable service names, e.g. Oil Change, PM Service, Annual Inspection, DPF Cleaning.
++- part_name may contain a replaced part or part number.
++- Use the invoice-level date/mileage for a service when the line has no separate value.
++- Numbers must contain no symbols or commas.`;
++
++function stringField(value: unknown): string | null {
++  if (typeof value !== "string") return null;
++  const trimmed = value.trim();
++  return trimmed && trimmed.toLowerCase() !== "null" ? trimmed : null;
++}
++
++function dateField(value: unknown): string | null {
++  const valueString = stringField(value);
++  return valueString && /^\d{4}-\d{2}-\d{2}$/.test(valueString) ? valueString : null;
++}
++
++function numberField(value: unknown): number | null {
++  if (typeof value === "number") return Number.isFinite(value) && value >= 0 ? value : null;
++  if (typeof value !== "string") return null;
++  const cleaned = value.replace(/[^0-9.-]/g, "");
++  if (!cleaned) return null;
++  const parsed = Number(cleaned);
++  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
++}
++
++export function safeMaintenanceInvoiceJson(text: string | null): ParsedMaintenanceInvoice | null {
++  if (!text) return null;
++  const match = text.match(/\{[\s\S]*\}/);
++  if (!match) return null;
++
++  let raw: Record<string, unknown>;
++  try {
++    raw = JSON.parse(match[0]);
++  } catch {
++    return null;
++  }
++
++  const invoiceDate = dateField(raw.invoice_date);
++  const invoiceMileage = numberField(raw.mileage);
++  const serviceRows = Array.isArray(raw.services) ? raw.services : [];
++  const services: ParsedInvoiceService[] = [];
++
++  for (const serviceRaw of serviceRows) {
++    if (!serviceRaw || typeof serviceRaw !== "object" || Array.isArray(serviceRaw)) continue;
++    const service = serviceRaw as Record<string, unknown>;
++    const serviceType = stringField(service.service_type);
++    if (!serviceType) continue;
++    services.push({
++      service_type: serviceType,
++      part_name: stringField(service.part_name),
++      performed_date: dateField(service.performed_date) ?? invoiceDate,
++      mileage: numberField(service.mileage) ?? invoiceMileage,
++      cost: numberField(service.cost),
++      notes: stringField(service.notes),
++    });
++  }
++
++  if (services.length === 0) return null;
++  return {
++    invoice_number: stringField(raw.invoice_number),
++    invoice_date: invoiceDate,
++    shop_name: stringField(raw.shop_name),
++    unit_number: stringField(raw.unit_number),
++    vehicle_id_text: stringField(raw.vehicle_id_text),
++    mileage: invoiceMileage,
++    services,
++  };
++}
++
++export function maintenanceInvoiceHash(bytes: Uint8Array): string {
++  return createHash("sha256").update(bytes).digest("hex");
++}
++
++async function extractPdf(bytes: Uint8Array): Promise<{ text: string; pageCount: number; pdf: Awaited<ReturnType<typeof getDocumentProxy>> }> {
++  const pdf = await getDocumentProxy(bytes);
++  const result = await extractText(pdf, { mergePages: true });
++  const text = (Array.isArray(result.text) ? result.text.join("\n") : result.text || "").trim();
++  return { text, pageCount: pdf.numPages, pdf };
++}
++
++async function renderPdfForOcr(
++  pdf: Awaited<ReturnType<typeof getDocumentProxy>>,
++  pageCount: number,
++): Promise<string[]> {
++  const urls: string[] = [];
++  const maxPages = Math.min(pageCount, 8);
++  for (let page = 1; page <= maxPages; page++) {
++    const image = await renderPageAsImage(pdf, page, {
++      scale: 1.5,
++      canvas: async () => (await import("@napi-rs/canvas")) as never,
++    });
++    urls.push(`data:image/png;base64,${Buffer.from(image).toString("base64")}`);
++  }
++  return urls;
++}
++
++export async function parseMaintenanceInvoice(bytes: Uint8Array): Promise<{
++  parsed: ParsedMaintenanceInvoice;
++  rawText: string;
++}> {
++  if (!process.env.FAL_KEY) throw new Error("FAL_KEY is missing.");
++  const { text, pageCount, pdf } = await extractPdf(bytes);
++
++  let output: string | null;
++  if (text.length >= 40) {
++    output = await runText(SYSTEM, `${INSTRUCTION}\n\nInvoice text:\n${text}`);
++  } else {
++    const pageImages = await renderPdfForOcr(pdf, pageCount);
++    if (pageImages.length === 0) throw new Error("PDF could not be rendered.");
++    output = await runVision(pageImages, SYSTEM, INSTRUCTION);
++  }
++
++  const parsed = safeMaintenanceInvoiceJson(output);
++  if (!parsed) throw new Error("Invoice could not be parsed into maintenance services.");
++  return { parsed, rawText: text };
++}
+diff --git a/lib/maintenance.test.ts b/lib/maintenance.test.ts
+index 6017c3b..fdff9a4 100644
+--- a/lib/maintenance.test.ts
++++ b/lib/maintenance.test.ts
+@@ -1,7 +1,8 @@
+-import { describe, it, expect } from "vitest";
+-import { computePM } from "./maintenance";
++import { describe, expect, it } from "vitest";
++import { addDaysISO, comparePMAlerts, computePM, formatPMRemaining } from "./maintenance";
+ 
+-const base = {
++const thresholds = { dueSoonMiles: 2_000, dueSoonDays: 7 };
++const mileageRule = {
+   interval_type: "mileage" as const,
+   interval_miles: 25_000,
+   interval_days: null,
+@@ -9,59 +10,69 @@ const base = {
+   last_done_date: null,
+ };
+ 
+-describe("computePM — mileage rules", () => {
+-  it("returns the neutral result when last_done_mileage is unknown", () => {
+-    // A 150k-mile truck with no baseline must NOT be fabricated into "overdue".
+-    const pm = computePM({ ...base, last_done_mileage: null }, 150_000);
+-    expect(pm.status).toBe("ok");
+-    expect(pm.nextDue).toBeNull();
+-    expect(pm.remaining).toBeNull();
+-    expect(pm.label).toBe("—");
++describe("computePM — mileage", () => {
++  it("returns neutral without a baseline", () => {
++    const pm = computePM({ ...mileageRule, last_done_mileage: null }, 150_000, thresholds);
++    expect(pm).toMatchObject({ status: "ok", nextDue: null, remaining: null, label: "—" });
+   });
+ 
+-  it("flags overdue when past the interval", () => {
+-    const pm = computePM(base, 130_000);
++  it("uses the configured 2,000-mile warning threshold", () => {
++    expect(computePM(mileageRule, 123_000, thresholds).status).toBe("due_soon");
++    expect(computePM(mileageRule, 122_999, thresholds).status).toBe("ok");
++  });
++
++  it("treats exact due as due_now, not overdue", () => {
++    const pm = computePM(mileageRule, 125_000, thresholds);
++    expect(pm.status).toBe("due_now");
++    expect(formatPMRemaining(pm)).toBe("Şimdi yapılmalı");
++  });
++
++  it("formats overdue distance without a negative 'remaining' label", () => {
++    const pm = computePM(mileageRule, 130_000, thresholds);
+     expect(pm.status).toBe("overdue");
+     expect(pm.remaining).toBe(-5_000);
++    expect(formatPMRemaining(pm)).toBe("5,000 mi gecikti");
+   });
++});
+ 
+-  it("flags due_soon within the threshold", () => {
+-    const pm = computePM(base, 123_000, 2_500);
+-    expect(pm.status).toBe("due_soon");
+-    expect(pm.remaining).toBe(2_000);
+-  });
++describe("computePM — date", () => {
++  const dateRule = {
++    interval_type: "date" as const,
++    interval_miles: null,
++    interval_days: 30,
++    last_done_mileage: null,
++    last_done_date: "2026-05-01",
++  };
+ 
+-  it("flags due_now within 20% of the threshold", () => {
+-    const pm = computePM(base, 124_600, 2_500);
+-    expect(pm.status).toBe("due_now");
+-    expect(pm.remaining).toBe(400);
++  it("uses timezone-independent calendar arithmetic", () => {
++    expect(addDaysISO("2026-05-01", 30)).toBe("2026-05-31");
++    expect(computePM(dateRule, 0, thresholds, "2026-05-24")).toMatchObject({
++      status: "due_soon",
++      nextDue: "2026-05-31",
++      remaining: 7,
++    });
+   });
+ 
+-  it("is ok when far from due", () => {
+-    const pm = computePM(base, 110_000);
+-    expect(pm.status).toBe("ok");
+-    expect(pm.remaining).toBe(15_000);
++  it("treats exact due date as due_now", () => {
++    expect(computePM(dateRule, 0, thresholds, "2026-05-31").status).toBe("due_now");
+   });
+-});
+ 
+-describe("computePM — date rules", () => {
+-  it("returns the neutral result when last_done_date is unknown", () => {
+-    const pm = computePM(
+-      { interval_type: "date", interval_miles: null, interval_days: 90, last_done_mileage: null, last_done_date: null },
+-      0,
+-    );
+-    expect(pm.status).toBe("ok");
+-    expect(pm.label).toBe("—");
++  it("marks a past due date overdue", () => {
++    const pm = computePM(dateRule, 0, thresholds, "2026-06-02");
++    expect(pm.status).toBe("overdue");
++    expect(formatPMRemaining(pm)).toBe("2 gün gecikti");
+   });
++});
+ 
+-  it("flags overdue when the interval has passed", () => {
+-    const now = new Date("2026-07-03T12:00:00Z");
+-    const pm = computePM(
+-      { interval_type: "date", interval_miles: null, interval_days: 30, last_done_mileage: null, last_done_date: "2026-05-01" },
++describe("alert ordering", () => {
++  it("sorts by severity and only compares values within the same unit", () => {
++    const overdue = computePM(mileageRule, 130_000, thresholds);
++    const dateSoon = computePM(
++      { interval_type: "date", interval_miles: null, interval_days: 10, last_done_mileage: null, last_done_date: "2026-07-01" },
+       0,
+-      2_500,
+-      now,
++      thresholds,
++      "2026-07-05",
+     );
+-    expect(pm.status).toBe("overdue");
++    expect(comparePMAlerts(overdue, dateSoon)).toBeLessThan(0);
+   });
+ });
+diff --git a/lib/maintenance.ts b/lib/maintenance.ts
+index 6f7d539..2f4fd92 100644
+--- a/lib/maintenance.ts
++++ b/lib/maintenance.ts
+@@ -1,12 +1,15 @@
+-import { localISODate } from "@/lib/format";
+-
+ export type PMStatus = "ok" | "due_soon" | "due_now" | "overdue";
+ 
++export interface PMThresholds {
++  dueSoonMiles: number;
++  dueSoonDays: number;
++}
++
+ export interface PMResult {
+   status: PMStatus;
+   unit: "miles" | "days";
+-  nextDue: number | string | null; // mileage number or ISO date
+-  remaining: number | null; // miles or days remaining
++  nextDue: number | string | null;
++  remaining: number | null;
+   label: string;
+ }
+ 
+@@ -17,6 +20,13 @@ const STATUS_LABEL: Record<PMStatus, string> = {
+   overdue: "Overdue",
+ };
+ 
++const STATUS_PRIORITY: Record<PMStatus, number> = {
++  overdue: 0,
++  due_now: 1,
++  due_soon: 2,
++  ok: 3,
++};
++
+ interface Rule {
+   interval_type: "mileage" | "date";
+   interval_miles: number | null;
+@@ -25,52 +35,87 @@ interface Rule {
+   last_done_date: string | null;
+ }
+ 
+-/**
+- * Compute maintenance status for a rule.
+- * @param currentMileage vehicle's current mileage
+- * @param dueSoonMiles threshold (settings.pm_due_soon_miles)
+- * @param now reference date (defaults to current time)
+- */
++export const DEFAULT_PM_THRESHOLDS: PMThresholds = {
++  dueSoonMiles: 2_000,
++  dueSoonDays: 7,
++};
++
++function validDateOnly(value: string | null): value is string {
++  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
++}
++
++/** Calendar-day arithmetic that never depends on browser/server timezone. */
++export function addDaysISO(date: string, days: number): string {
++  if (!validDateOnly(date) || !Number.isInteger(days)) throw new Error("Invalid date interval");
++  const [year, month, day] = date.split("-").map(Number);
++  const next = new Date(Date.UTC(year, month - 1, day + days));
++  return next.toISOString().slice(0, 10);
++}
++
++function epochDay(date: string): number {
++  const [year, month, day] = date.split("-").map(Number);
++  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
++}
++
+ export function computePM(
+   rule: Rule,
+   currentMileage: number,
+-  dueSoonMiles = 2500,
+-  now: Date = new Date(),
++  thresholds: Partial<PMThresholds> = DEFAULT_PM_THRESHOLDS,
++  today: string = new Date().toISOString().slice(0, 10),
+ ): PMResult {
+-  // Both branches require a known baseline; a missing last_done value would
+-  // otherwise fabricate a due date (e.g. a 150k-mile truck instantly "overdue"
+-  // against a 0-mile baseline) — fall through to the neutral "—" result.
+-  if (rule.interval_type === "mileage" && rule.interval_miles && rule.last_done_mileage != null) {
+-    const nextDue = rule.last_done_mileage + rule.interval_miles;
+-    const remaining = nextDue - (currentMileage || 0);
++  const dueSoonMiles = Math.max(0, thresholds.dueSoonMiles ?? DEFAULT_PM_THRESHOLDS.dueSoonMiles);
++  const dueSoonDays = Math.max(1, thresholds.dueSoonDays ?? DEFAULT_PM_THRESHOLDS.dueSoonDays);
++
++  if (
++    rule.interval_type === "mileage" &&
++    Number(rule.interval_miles) > 0 &&
++    rule.last_done_mileage != null
++  ) {
++    const nextDue = Number(rule.last_done_mileage) + Number(rule.interval_miles);
++    const remaining = nextDue - Number(currentMileage || 0);
++    const dueNowMiles = Math.max(1, Math.floor(dueSoonMiles * 0.2));
+     let status: PMStatus = "ok";
+-    if (remaining <= 0) status = "overdue";
+-    else if (remaining <= dueSoonMiles * 0.2) status = "due_now";
++    if (remaining < 0) status = "overdue";
++    else if (remaining <= dueNowMiles) status = "due_now";
+     else if (remaining <= dueSoonMiles) status = "due_soon";
+     return { status, unit: "miles", nextDue, remaining, label: STATUS_LABEL[status] };
+   }
+ 
+-  if (rule.interval_type === "date" && rule.interval_days && rule.last_done_date) {
+-    const last = new Date(rule.last_done_date);
+-    const next = new Date(last);
+-    next.setDate(next.getDate() + rule.interval_days);
+-    const remaining = Math.ceil((next.getTime() - now.getTime()) / 86_400_000);
++  if (
++    rule.interval_type === "date" &&
++    Number(rule.interval_days) > 0 &&
++    validDateOnly(rule.last_done_date) &&
++    validDateOnly(today)
++  ) {
++    const nextDue = addDaysISO(rule.last_done_date, Number(rule.interval_days));
++    const remaining = epochDay(nextDue) - epochDay(today);
+     let status: PMStatus = "ok";
+-    if (remaining <= 0) status = "overdue";
+-    else if (remaining <= 7) status = "due_now";
+-    else if (remaining <= 30) status = "due_soon";
+-    return {
+-      status,
+-      unit: "days",
+-      nextDue: localISODate(next),
+-      remaining,
+-      label: STATUS_LABEL[status],
+-    };
++    if (remaining < 0) status = "overdue";
++    else if (remaining <= 1) status = "due_now";
++    else if (remaining <= dueSoonDays) status = "due_soon";
++    return { status, unit: "days", nextDue, remaining, label: STATUS_LABEL[status] };
+   }
+ 
+   return { status: "ok", unit: "miles", nextDue: null, remaining: null, label: "—" };
+ }
+ 
++export function formatPMRemaining(pm: PMResult): string {
++  if (pm.remaining == null) return "—";
++  const amount = Math.abs(pm.remaining).toLocaleString("en-US");
++  const unit = pm.unit === "miles" ? "mi" : "gün";
++  if (pm.remaining < 0) return `${amount} ${unit} gecikti`;
++  if (pm.remaining === 0) return pm.unit === "miles" ? "Şimdi yapılmalı" : "Bugün yapılmalı";
++  return `${amount} ${unit} kaldı`;
++}
++
++/** Severity first; numerical comparison is only valid within the same unit. */
++export function comparePMAlerts(a: PMResult, b: PMResult): number {
++  const severity = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
++  if (severity !== 0) return severity;
++  if (a.unit === b.unit) return (a.remaining ?? Number.MAX_SAFE_INTEGER) - (b.remaining ?? Number.MAX_SAFE_INTEGER);
++  return a.unit.localeCompare(b.unit);
++}
++
+ export const PM_BADGE: Record<PMStatus, string> = {
+   ok: "bg-green-100 text-green-700",
+   due_soon: "bg-amber-100 text-amber-700",
+diff --git a/lib/telegram.ts b/lib/telegram.ts
+index 2d1dcfb..50d118e 100644
+--- a/lib/telegram.ts
++++ b/lib/telegram.ts
+@@ -16,13 +16,17 @@ export function escapeHtml(value: unknown): string {
+     .replace(/>/g, "&gt;");
+ }
+ 
+-async function call(method: string, body: Record<string, unknown>) {
++async function call<T = Record<string, unknown>>(method: string, body: Record<string, unknown>) {
+   const res = await fetch(`${API}/${method}`, {
+     method: "POST",
+     headers: { "Content-Type": "application/json" },
+     body: JSON.stringify(body),
+   });
+-  return res.json();
++  const payload = await res.json().catch(() => null) as { ok?: boolean; result?: T; description?: string } | null;
++  if (!res.ok || payload?.ok === false || !payload) {
++    throw new Error(payload?.description || `Telegram ${method} failed with HTTP ${res.status}`);
++  }
++  return payload;
+ }
+ 
+ export function sendMessage(
+@@ -64,7 +68,7 @@ let cachedUsername: string | null | undefined;
+ export async function getBotUsername(): Promise<string | null> {
+   if (cachedUsername !== undefined) return cachedUsername;
+   try {
+-    const info = await call("getMe", {});
++    const info = await call<{ username?: string }>("getMe", {});
+     cachedUsername = info?.result?.username ?? null;
+   } catch {
+     cachedUsername = null;
+@@ -135,7 +139,7 @@ export function vehicleKeyboard(
+ export async function downloadFile(
+   fileId: string,
+ ): Promise<{ bytes: Buffer; mime: string; ext: string } | null> {
+-  const info = await call("getFile", { file_id: fileId });
++  const info = await call<{ file_path?: string }>("getFile", { file_id: fileId });
+   const filePath: string | undefined = info?.result?.file_path;
+   if (!filePath) return null;
+   const url = `https://api.telegram.org/file/bot${TOKEN}/${filePath}`;
+diff --git a/package-lock.json b/package-lock.json
+index 3865347..0a2be32 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -9,6 +9,7 @@
+       "version": "0.1.0",
+       "dependencies": {
+         "@fal-ai/client": "^1.6.0",
++        "@napi-rs/canvas": "^0.1.100",
+         "@react-pdf/renderer": "^4.1.5",
+         "@supabase/ssr": "^0.5.2",
+         "@supabase/supabase-js": "^2.47.10",
+@@ -25,10 +26,12 @@
+         "@types/react": "^19.0.2",
+         "@types/react-dom": "^19.0.2",
+         "autoprefixer": "^10.4.20",
++        "dotenv": "^17.4.2",
+         "eslint": "^9.17.0",
+         "eslint-config-next": "^15.5.19",
+         "postcss": "^8.4.49",
+         "tailwindcss": "^3.4.17",
++        "tsx": "^4.23.0",
+         "typescript": "^5.7.2",
+         "vitest": "^2.1.8"
+       },
+@@ -58,6 +61,29 @@
+         "node": ">=6.9.0"
+       }
+     },
++    "node_modules/@emnapi/core": {
++      "version": "1.11.2",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@emnapi/core/-/core-1.11.2.tgz",
++      "integrity": "sha512-TC8MkTuZUtcTSiFeuC0ksCh9QIJ5+F21MvZ4Wn4ORfYaFJ/0dsiudv5tVkejgwZlwQ39jL9WWDe2lz8x0WglOA==",
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "peer": true,
++      "dependencies": {
++        "@emnapi/wasi-threads": "1.2.2",
++        "tslib": "^2.4.0"
++      }
++    },
++    "node_modules/@emnapi/runtime": {
++      "version": "1.11.2",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@emnapi/runtime/-/runtime-1.11.2.tgz",
++      "integrity": "sha512-kyOl3X0DuTiT1h2ft8r2fYO8JYtU9a9Xis/zBSiGArNaagCOWx90N1k2wxp18czFDH+OgcWGb5ZP/XMt3dcyPA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "tslib": "^2.4.0"
++      }
++    },
+     "node_modules/@emnapi/wasi-threads": {
+       "version": "1.2.2",
+       "resolved": "https://registry.npmjs.org/@emnapi/wasi-threads/-/wasi-threads-1.2.2.tgz",
+@@ -65,6 +91,7 @@
+       "dev": true,
+       "license": "MIT",
+       "optional": true,
++      "peer": true,
+       "dependencies": {
+         "tslib": "^2.4.0"
+       }
+@@ -358,6 +385,23 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/netbsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/netbsd-arm64/-/netbsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-oks0DYbLwWMmaakTsCb+zL4E+aHRVLom9IJZOAthMQEPiQmydXHkziYEsGYRx0uNV/IjEKGAV941JzH02pflqw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/netbsd-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/netbsd-x64/-/netbsd-x64-0.21.5.tgz",
+@@ -375,6 +419,23 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/openbsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/openbsd-arm64/-/openbsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-MEFJe5C3R8pwXdZ5Y21oo6m7ePiS0d9pWucn99O/wvyJZChoIQKrQDxKrGeW8F5+T0okTHesAmDeiHDTIq0V/Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/openbsd-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/openbsd-x64/-/openbsd-x64-0.21.5.tgz",
+@@ -392,6 +453,23 @@
+         "node": ">=12"
+       }
+     },
++    "node_modules/@esbuild/openharmony-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/openharmony-arm64/-/openharmony-arm64-0.28.1.tgz",
++      "integrity": "sha512-ge+Z7EXFNt2BO1oAMsVpiQ8EwndV9i1xXerAeTIK7AtPs3bKFXQM7nlRxDSIUIMeueR1CNXxqztLzdNeReKBJg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openharmony"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@esbuild/sunos-x64": {
+       "version": "0.21.5",
+       "resolved": "https://registry.npmjs.org/@esbuild/sunos-x64/-/sunos-x64-0.21.5.tgz",
+@@ -1219,6 +1297,251 @@
+         "node": ">= 18"
+       }
+     },
++    "node_modules/@napi-rs/canvas": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas/-/canvas-0.1.100.tgz",
++      "integrity": "sha512-xglYA6q3XO5P3BNJYxVZ1IV7DLVjp1Py6nwag88YntrS+3vKHyYcMqXVS4ZztJmwz2uGvz1FWhI/4LgbR5uQDA==",
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      },
++      "optionalDependencies": {
++        "@napi-rs/canvas-android-arm64": "0.1.100",
++        "@napi-rs/canvas-darwin-arm64": "0.1.100",
++        "@napi-rs/canvas-darwin-x64": "0.1.100",
++        "@napi-rs/canvas-linux-arm-gnueabihf": "0.1.100",
++        "@napi-rs/canvas-linux-arm64-gnu": "0.1.100",
++        "@napi-rs/canvas-linux-arm64-musl": "0.1.100",
++        "@napi-rs/canvas-linux-riscv64-gnu": "0.1.100",
++        "@napi-rs/canvas-linux-x64-gnu": "0.1.100",
++        "@napi-rs/canvas-linux-x64-musl": "0.1.100",
++        "@napi-rs/canvas-win32-arm64-msvc": "0.1.100",
++        "@napi-rs/canvas-win32-x64-msvc": "0.1.100"
++      }
++    },
++    "node_modules/@napi-rs/canvas-android-arm64": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-android-arm64/-/canvas-android-arm64-0.1.100.tgz",
++      "integrity": "sha512-hjhCKhntPv9+t4ckHymdx0phYNcVW+GKQR6Lzw2zE+pOVjOplSmtx9nNNknTjbEDLcuLZqA1y8ufKg1XfgftzQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-darwin-arm64": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-darwin-arm64/-/canvas-darwin-arm64-0.1.100.tgz",
++      "integrity": "sha512-2PcswRaC7Ly645DGt88///zuFDhJxJYdKAs1uU3mfk1atYkXufgcgLfBpk6Tm12nCQBaNt1wpybuPZ4qOhTo8A==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-darwin-x64": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-darwin-x64/-/canvas-darwin-x64-0.1.100.tgz",
++      "integrity": "sha512-ePNZtj7pNIva/siZMg+HmbeozkIjqUIYdoymH8HaA3qK7LfzFN4WMBM8G6HQ9ZC+H3+Dnn5pqtiXpgLykaPOhw==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-arm-gnueabihf": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-arm-gnueabihf/-/canvas-linux-arm-gnueabihf-0.1.100.tgz",
++      "integrity": "sha512-d5cDB48oWFGU8/XPhUOFAlySgb/VAu7D+s8fi55K1Pcfg8aPplHWqMgibhVLU8ky7Pyg/fuiVLz4Nf3JrSTuUA==",
++      "cpu": [
++        "arm"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-arm64-gnu": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-arm64-gnu/-/canvas-linux-arm64-gnu-0.1.100.tgz",
++      "integrity": "sha512-rDxgxRu69RvDlX/bh9o22DxLsGr8EqsNgotL9+RwQE1S0b0cqeatqsw6aW45mukm0B42DIAaAacKaYQ8cqS1nw==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-arm64-musl": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-arm64-musl/-/canvas-linux-arm64-musl-0.1.100.tgz",
++      "integrity": "sha512-K3mDW66N+xT2/V439u1alFANiBUjdEx2gLiNYnCmUsva5jZMxWTjafBYwTzYK+EMFMHrUoabuU+T1BIP5CgbYQ==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-riscv64-gnu": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-riscv64-gnu/-/canvas-linux-riscv64-gnu-0.1.100.tgz",
++      "integrity": "sha512-mooqUBTIsccZpnoQC4NgrC1v6C1vof39etLNMnBwCY+p0gajWJvAHLGQ6g/gGyS5YrpDW+GefSN4+Cvcr08UWw==",
++      "cpu": [
++        "riscv64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-x64-gnu": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-x64-gnu/-/canvas-linux-x64-gnu-0.1.100.tgz",
++      "integrity": "sha512-1eCvkDCazm7FFhsT7DfGOdSaHgZVK3bt/dSBl5EWHOWmnz+I7j8tPseJqqD81NF+MH21jKUK4wQSDjN0mdhnTg==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-linux-x64-musl": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-linux-x64-musl/-/canvas-linux-x64-musl-0.1.100.tgz",
++      "integrity": "sha512-20arT6lnI19S68qNlii73TSEDbECNgzMz2EpldC1V3mZFuRkeujXkcebRk0LRJe9SEUAooYiLokfMViY8IX7yA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-win32-arm64-msvc": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-win32-arm64-msvc/-/canvas-win32-arm64-msvc-0.1.100.tgz",
++      "integrity": "sha512-DZFFT1wIAg37LJw37yhMRFfjATd3vTQzjZ1Yki8u2vhO6Hi5VE6BVaGQ1aaDu7xb4iMErz+9EOwjpS7xcxFeBw==",
++      "cpu": [
++        "arm64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
++    "node_modules/@napi-rs/canvas-win32-x64-msvc": {
++      "version": "0.1.100",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@napi-rs/canvas-win32-x64-msvc/-/canvas-win32-x64-msvc-0.1.100.tgz",
++      "integrity": "sha512-MyT1j3mHC2+Lu4pBi9mKyMJhtP6U7k7EldY7sj/uS5gJA65gTXt8MefJQXLJo5d/vZbuWmfxzkEUNc/urV3pHA==",
++      "cpu": [
++        "x64"
++      ],
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">= 10"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Brooooooklyn"
++      }
++    },
+     "node_modules/@napi-rs/wasm-runtime": {
+       "version": "1.1.5",
+       "resolved": "https://registry.npmjs.org/@napi-rs/wasm-runtime/-/wasm-runtime-1.1.5.tgz",
+@@ -2116,7 +2439,6 @@
+       "resolved": "https://registry.npmjs.org/@supabase/supabase-js/-/supabase-js-2.108.2.tgz",
+       "integrity": "sha512-hFhnPveb5JQg4a0QYicM0swT253YHMdfeRAl2BKHOlI5VAzuHxUGSr8RbwNLYNPauWOgQMS1H8sz8bvYlgwUfQ==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@supabase/auth-js": "2.108.2",
+         "@supabase/functions-js": "2.108.2",
+@@ -2196,7 +2518,6 @@
+       "integrity": "sha512-VMeFBSCKQKmm2swI2kW51SFusDqekC6q9trBCvJ/JliDchFSuoYYKN7yVNjPthP1HKZcx3U1gI/wTcEBjEFKTA==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "undici-types": "~6.21.0"
+       }
+@@ -2207,7 +2528,6 @@
+       "integrity": "sha512-MXfmqaVPEVgkBT/aY0aGCkRWWtByiYQXo3xdQ8r5RzuFrPiRn8Gar2tQdXSUQ2GKV3bkXckek89V8wQBY2Q/Aw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "csstype": "^3.2.2"
+       }
+@@ -2267,7 +2587,6 @@
+       "integrity": "sha512-PJ5vePq5/ognBbrIcoC5+SHO5dfpeLPzP9FpLkzWrguoYQEeeSjlJpVwOpo1JRSTEi7dRcwNy4h4dzV70PqHcg==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@typescript-eslint/scope-manager": "8.61.1",
+         "@typescript-eslint/types": "8.61.1",
+@@ -2984,7 +3303,6 @@
+       "integrity": "sha512-xRQbDb9BnwDafYNn6Vwl839DYVjqXYb1XVGtWAZ1kcDc6iwAL4hg3B1dZlRiuENFeO2H53gFG3in621AdERVAg==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "bin": {
+         "acorn": "bin/acorn"
+       },
+@@ -3509,7 +3827,6 @@
+         }
+       ],
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "baseline-browser-mapping": "^2.10.12",
+         "caniuse-lite": "^1.0.30001782",
+@@ -4061,6 +4378,19 @@
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/dotenv": {
++      "version": "17.4.2",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/dotenv/-/dotenv-17.4.2.tgz",
++      "integrity": "sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==",
++      "dev": true,
++      "license": "BSD-2-Clause",
++      "engines": {
++        "node": ">=12"
++      },
++      "funding": {
++        "url": "https://dotenvx.com"
++      }
++    },
+     "node_modules/dunder-proto": {
+       "version": "1.0.1",
+       "resolved": "https://registry.npmjs.org/dunder-proto/-/dunder-proto-1.0.1.tgz",
+@@ -4369,7 +4699,6 @@
+       "integrity": "sha512-XoMjdBOwe/esVgEvLmNsD3IRHkm7fbKIUGvrleloJXUZgDHig2IPWNniv+GwjyJXzuNqVjlr5+4yVUZjycJwfQ==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@eslint-community/eslint-utils": "^4.8.0",
+         "@eslint-community/regexpp": "^4.12.1",
+@@ -4567,7 +4896,6 @@
+       "integrity": "sha512-whOE1HFo/qJDyX4SnXzP4N6zOWn79WhnCUY/iDR0mPfQZO8wcYE4JClzI2oZrhBnnMUCBCHZhO6VQyoBU95mZA==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "@rtsao/scc": "^1.1.0",
+         "array-includes": "^3.1.9",
+@@ -6023,7 +6351,6 @@
+       "integrity": "sha512-/imKNG4EbWNrVjoNC/1H5/9GFy+tqjGBHCaSsN+P2RnPqjsLmv6UD3Ej+Kj8nBWaRAwyk7kK5ZUc+OEatnTR3A==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "bin": {
+         "jiti": "bin/jiti.js"
+       }
+@@ -6147,8 +6474,7 @@
+       "version": "1.9.4",
+       "resolved": "https://registry.npmjs.org/leaflet/-/leaflet-1.9.4.tgz",
+       "integrity": "sha512-nxS1ynzJOmOlHp+iL3FyWqK89GtNL8U8rvlMOsQdTTssxZwCXh8N2NB3GDQOL+YR3XnWyZAxwQixURb+FA74PA==",
+-      "license": "BSD-2-Clause",
+-      "peer": true
++      "license": "BSD-2-Clause"
+     },
+     "node_modules/levn": {
+       "version": "0.4.1",
+@@ -7038,7 +7364,6 @@
+         }
+       ],
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "nanoid": "^3.3.12",
+         "picocolors": "^1.1.1",
+@@ -7247,7 +7572,6 @@
+       "resolved": "https://registry.npmjs.org/react/-/react-19.2.7.tgz",
+       "integrity": "sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==",
+       "license": "MIT",
+-      "peer": true,
+       "engines": {
+         "node": ">=0.10.0"
+       }
+@@ -7257,7 +7581,6 @@
+       "resolved": "https://registry.npmjs.org/react-dom/-/react-dom-19.2.7.tgz",
+       "integrity": "sha512-t0BRVXvbiE/o20Hfw669rLbMCDWtYZLvmJigy2f0MxsXF+71pxhR3xOkspmsO8h3ZlNzyibAmtCa3l4lYKk6gQ==",
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "scheduler": "^0.27.0"
+       },
+@@ -8311,7 +8634,6 @@
+       "integrity": "sha512-QP88BAKvMam/3NxH6vj2o21R6MjxZUAd6nlwAS/pnGvN9IVLocLHxGYIzFhg6fUQ+5th6P4dv4eW9jX3DSIj7A==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "engines": {
+         "node": ">=12"
+       },
+@@ -8408,6 +8730,457 @@
+       "integrity": "sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==",
+       "license": "0BSD"
+     },
++    "node_modules/tsx": {
++      "version": "4.23.0",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/tsx/-/tsx-4.23.0.tgz",
++      "integrity": "sha512-eUdUIaCr963q2h5u3+QwvYp0+eqPvn+egeqZUm0hwERCqqx1E3kK5ehbGCvqSE5MQAULr67ww0cA3jKc3YkM1w==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "esbuild": "~0.28.0"
++      },
++      "bin": {
++        "tsx": "dist/cli.mjs"
++      },
++      "engines": {
++        "node": ">=18.0.0"
++      },
++      "optionalDependencies": {
++        "fsevents": "~2.3.3"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/aix-ppc64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/aix-ppc64/-/aix-ppc64-0.28.1.tgz",
++      "integrity": "sha512-Svl7tq8k/08+p6CXPpRjQ1fKX+1odH/BQbb48fV6fj3CWHhsoIOoY87w1oHXm0qEpkIK3ZfVgp0hed3XBXzXMQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "aix"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/android-arm": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/android-arm/-/android-arm-0.28.1.tgz",
++      "integrity": "sha512-0k2F129Xdio1TdJfzJ8sy1Q47vUD2NnwdhiAf7drUN1EBTfPf4hsFCtmMgu/6m8JSzsBrlmVjudMBQqOfG8usQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/android-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/android-arm64/-/android-arm64-0.28.1.tgz",
++      "integrity": "sha512-34EGEbCIAgosYz6goLcopX6Mo7NyGv9tfwEM2/7Ce2VcVRk568iSvniGWcUXIy7wEDR1wzolcxcriFVrWYcwBg==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/android-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/android-x64/-/android-x64-0.28.1.tgz",
++      "integrity": "sha512-dbwY7ltSMDWsRatcRpCnES4F+im88OCUgGZjy52shC7GqHRE/cYlxNbB4Z4UpJswpcc4Qxd2oE/ufM0p61IKng==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "android"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/darwin-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/darwin-arm64/-/darwin-arm64-0.28.1.tgz",
++      "integrity": "sha512-TZbWkQY7kvTAXbXUT7uVACR5cMHsDiSz9z7ZKAX/RTq/WJEk3QyRr0wZpNhBDX+/0CtdqUIJlOiodQcta6tY3Q==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/darwin-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/darwin-x64/-/darwin-x64-0.28.1.tgz",
++      "integrity": "sha512-zfdzgK9ACBNZLI/CyHTOx81SyNbM6YXn7rxSgX97VjyiPl9W1i4Ka4fgKECEoFCKGpvBj5qArWIGgQjOwkgskQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "darwin"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/freebsd-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/freebsd-arm64/-/freebsd-arm64-0.28.1.tgz",
++      "integrity": "sha512-wG2EA8ENdEI0qhkSZMjfqrdY+ziCYCPMmtZjjIwOmXFjmyzEHn+UUxk5of+SYsjtfs3VpnlC7QLzSI5hY/rOAw==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/freebsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/freebsd-x64/-/freebsd-x64-0.28.1.tgz",
++      "integrity": "sha512-i7dZ9vQgnvSCzi/rYCXNgtF/U+eKZNJBzu3eTQbRgHnM7tNSizLOkRFAl3qzVc/Op/u5YkHHa4pf/3DOYHthLQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "freebsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-arm": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-arm/-/linux-arm-0.28.1.tgz",
++      "integrity": "sha512-qVXBOHQS+d5Y722GwJzJUtOLlX7km3CraOaGormF1pDtPd2C/l1SHRPgjLunLGe51Sh5YYWKMFDyV4SxgMQYTQ==",
++      "cpu": [
++        "arm"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-arm64/-/linux-arm64-0.28.1.tgz",
++      "integrity": "sha512-yHs+0uc8+nvEAfAfxrWQKK5peSNzBc4PegcMO0EJ2hT71uA7vB8Ihg2e77R2P7SG5uYjPbHlLLmve4LLLRCf0g==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-ia32": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-ia32/-/linux-ia32-0.28.1.tgz",
++      "integrity": "sha512-d1z4ZuP0ajrfz/FhGT4vv278rX8KnPPJx8i5+AtK7TYbx9Le9F1hyzurZpkEyjkGa9dUGhQow4C1NmeGvqxN2w==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-loong64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-loong64/-/linux-loong64-0.28.1.tgz",
++      "integrity": "sha512-M5sRjUVZrkm1OAPR3dlOYzNmN+loZKGVi1VUQGrwuqLcbR6qeAz+famMhjASeH3YVKvZz+zT1jlh/keC3Rj/lg==",
++      "cpu": [
++        "loong64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-mips64el": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-mips64el/-/linux-mips64el-0.28.1.tgz",
++      "integrity": "sha512-mRObBZeHh2OxcBFPWE/FjylkRgZdYuiTR3vaTozquCGOH14iP9oN4x4Ge81CoIDYQrXmIxpFumJBu5MtZpnQJQ==",
++      "cpu": [
++        "mips64el"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-ppc64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-ppc64/-/linux-ppc64-0.28.1.tgz",
++      "integrity": "sha512-slScBsMAb3GFDcdrCgLwZtPYRoH2H/youv10QiZyRjmsP48fznoveWytSgCI/R0ZcUgpc0ZhIUEx6LHts8yrfQ==",
++      "cpu": [
++        "ppc64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-riscv64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-riscv64/-/linux-riscv64-0.28.1.tgz",
++      "integrity": "sha512-kw0owk1o0GFETUJyW0jc0G4Yzs0BHZn0JDZ8JRT088vjJYX777BAs1fDGxAC+q831qOs2DTC96mNsG2opdfyyQ==",
++      "cpu": [
++        "riscv64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-s390x": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-s390x/-/linux-s390x-0.28.1.tgz",
++      "integrity": "sha512-/lAIjX8aYFRByhh6L5rYtPEDRqa9de/4V/juOXcta5frjvzXO4/sqEtyytse0g3zZFuWu5cDN0MkLz2qRDD2Ag==",
++      "cpu": [
++        "s390x"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/linux-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/linux-x64/-/linux-x64-0.28.1.tgz",
++      "integrity": "sha512-u/anNYF2mmVOEDwLtnQ1wOr3EZ9sTNGLWrsYGYwHWzGA3Si84IOkHXlbWTD1NB+9/1lcnweYKO54uhxZydNzfA==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "linux"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/netbsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/netbsd-x64/-/netbsd-x64-0.28.1.tgz",
++      "integrity": "sha512-aeL6lAnN89Hz43Mlh1G8ARasbuoYvSITDEx0tHh5b7jJnHcssqgjy9Yx430GDpmCa6OyrKoS0aNRjKundRizGg==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "netbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/openbsd-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/openbsd-x64/-/openbsd-x64-0.28.1.tgz",
++      "integrity": "sha512-i/ZLIOafE0Z8cI/XANJAixoJL/uRAoS2xOA3rb0xN+KK0K177cMAsQYkzHtBrtMXAKuAc7HGgcWiZ/sRC1Nxgw==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "openbsd"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/sunos-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/sunos-x64/-/sunos-x64-0.28.1.tgz",
++      "integrity": "sha512-BEjgtECkL3vY+SaSQ6nzVfiALUeFxpawyp8Jmf5PtYhf1Ug40N1h/hxlhts+f1FvSvarEigdxS3BlSMI2PJLcQ==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "sunos"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/win32-arm64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/win32-arm64/-/win32-arm64-0.28.1.tgz",
++      "integrity": "sha512-lCv9eK/H6ZJWbE7bh2nw54CZ9M2nupBxJcTsdk/QQnWkdSjKGuxmmH8/GWrlT1eMmZfn4dGcCjRte397WqfQXA==",
++      "cpu": [
++        "arm64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/win32-ia32": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/win32-ia32/-/win32-ia32-0.28.1.tgz",
++      "integrity": "sha512-zvb/mB2bSCoJOpoCBgYKKpX6YM6mJBlBUVUtVj41DlZJVEB6/0CKlRYxP5wWl1C1ILiCoAU5wZZ4q1P3qeS6Eg==",
++      "cpu": [
++        "ia32"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/@esbuild/win32-x64": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/@esbuild/win32-x64/-/win32-x64-0.28.1.tgz",
++      "integrity": "sha512-bm4Mowrv+GXMlpWX++EcXw/iLyd1o3+bJkC2DkWXYVvgZCqD/bSj9ctZeAMC3cIxgjRVR2Dufaiu4YPxr5gW1A==",
++      "cpu": [
++        "x64"
++      ],
++      "dev": true,
++      "license": "MIT",
++      "optional": true,
++      "os": [
++        "win32"
++      ],
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/tsx/node_modules/esbuild": {
++      "version": "0.28.1",
++      "resolved": "https://packages.applied-caas-gateway1.internal.api.openai.org/artifactory/api/npm/npm-public/esbuild/-/esbuild-0.28.1.tgz",
++      "integrity": "sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==",
++      "dev": true,
++      "hasInstallScript": true,
++      "bin": {
++        "esbuild": "bin/esbuild"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "optionalDependencies": {
++        "@esbuild/aix-ppc64": "0.28.1",
++        "@esbuild/android-arm": "0.28.1",
++        "@esbuild/android-arm64": "0.28.1",
++        "@esbuild/android-x64": "0.28.1",
++        "@esbuild/darwin-arm64": "0.28.1",
++        "@esbuild/darwin-x64": "0.28.1",
++        "@esbuild/freebsd-arm64": "0.28.1",
++        "@esbuild/freebsd-x64": "0.28.1",
++        "@esbuild/linux-arm": "0.28.1",
++        "@esbuild/linux-arm64": "0.28.1",
++        "@esbuild/linux-ia32": "0.28.1",
++        "@esbuild/linux-loong64": "0.28.1",
++        "@esbuild/linux-mips64el": "0.28.1",
++        "@esbuild/linux-ppc64": "0.28.1",
++        "@esbuild/linux-riscv64": "0.28.1",
++        "@esbuild/linux-s390x": "0.28.1",
++        "@esbuild/linux-x64": "0.28.1",
++        "@esbuild/netbsd-arm64": "0.28.1",
++        "@esbuild/netbsd-x64": "0.28.1",
++        "@esbuild/openbsd-arm64": "0.28.1",
++        "@esbuild/openbsd-x64": "0.28.1",
++        "@esbuild/openharmony-arm64": "0.28.1",
++        "@esbuild/sunos-x64": "0.28.1",
++        "@esbuild/win32-arm64": "0.28.1",
++        "@esbuild/win32-ia32": "0.28.1",
++        "@esbuild/win32-x64": "0.28.1"
++      }
++    },
+     "node_modules/type-check": {
+       "version": "0.4.0",
+       "resolved": "https://registry.npmjs.org/type-check/-/type-check-0.4.0.tgz",
+@@ -8505,7 +9278,6 @@
+       "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+       "dev": true,
+       "license": "Apache-2.0",
+-      "peer": true,
+       "bin": {
+         "tsc": "bin/tsc",
+         "tsserver": "bin/tsserver"
+@@ -8666,7 +9438,6 @@
+       "integrity": "sha512-o5a9xKjbtuhY6Bi5S3+HvbRERmouabWbyUcpXXUA1u+GNUKoROi9byOJ8M0nHbHYHkYICiMlqxkg1KkYmm25Sw==",
+       "dev": true,
+       "license": "MIT",
+-      "peer": true,
+       "dependencies": {
+         "esbuild": "^0.21.3",
+         "postcss": "^8.4.43",
+diff --git a/package.json b/package.json
+index e861d55..d41235e 100644
+--- a/package.json
++++ b/package.json
+@@ -9,13 +9,15 @@
+     "lint": "next lint",
+     "test": "vitest run",
+     "test:watch": "vitest",
+-    "smoke:fal": "node scripts/fal-smoke.mjs"
++    "smoke:fal": "node scripts/fal-smoke.mjs",
++    "maintenance:invoice": "tsx scripts/import-maintenance-invoice.ts"
+   },
+   "engines": {
+     "node": ">=20"
+   },
+   "dependencies": {
+     "@fal-ai/client": "^1.6.0",
++    "@napi-rs/canvas": "^0.1.100",
+     "@react-pdf/renderer": "^4.1.5",
+     "@supabase/ssr": "^0.5.2",
+     "@supabase/supabase-js": "^2.47.10",
+@@ -32,10 +34,12 @@
+     "@types/react": "^19.0.2",
+     "@types/react-dom": "^19.0.2",
+     "autoprefixer": "^10.4.20",
++    "dotenv": "^17.4.2",
+     "eslint": "^9.17.0",
+     "eslint-config-next": "^15.5.19",
+     "postcss": "^8.4.49",
+     "tailwindcss": "^3.4.17",
++    "tsx": "^4.23.0",
+     "typescript": "^5.7.2",
+     "vitest": "^2.1.8"
+   }
+diff --git a/scripts/import-maintenance-invoice.ts b/scripts/import-maintenance-invoice.ts
+new file mode 100644
+index 0000000..959a9d4
+--- /dev/null
++++ b/scripts/import-maintenance-invoice.ts
+@@ -0,0 +1,288 @@
++import dotenv from "dotenv";
++dotenv.config({ path: ".env.local" });
++
++import { readFile } from "node:fs/promises";
++import { basename, resolve } from "node:path";
++import { createInterface } from "node:readline/promises";
++import { stdin as input, stdout as output } from "node:process";
++import { createClient, type SupabaseClient } from "@supabase/supabase-js";
++
++type AdminClient = SupabaseClient<any, "public", any, any, any>;
++import { computePM, comparePMAlerts, formatPMRemaining } from "../lib/maintenance";
++import {
++  maintenanceInvoiceHash,
++  parseMaintenanceInvoice,
++  type ParsedInvoiceService,
++} from "../lib/maintenance-invoice";
++
++interface Organization { id: string; name: string }
++interface Vehicle { id: string; unit_number: string; current_mileage: number | null }
++interface ExistingRule { id: string; service_type: string }
++
++const rl = createInterface({ input, output });
++
++function todayInFleetTimezone(): string {
++  return new Intl.DateTimeFormat("en-CA", {
++    timeZone: process.env.FLEET_TIMEZONE ?? "America/Chicago",
++    year: "numeric",
++    month: "2-digit",
++    day: "2-digit",
++  }).format(new Date());
++}
++
++function addDays(date: string, days: number): string {
++  const [year, month, day] = date.split("-").map(Number);
++  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
++}
++
++function addMonths(date: string, months: number): string {
++  const [year, month, day] = date.split("-").map(Number);
++  const first = new Date(Date.UTC(year, month - 1 + months, 1));
++  const lastDay = new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth() + 1, 0)).getUTCDate();
++  return new Date(Date.UTC(first.getUTCFullYear(), first.getUTCMonth(), Math.min(day, lastDay)))
++    .toISOString()
++    .slice(0, 10);
++}
++
++function parseNextDue(answer: string, service: ParsedInvoiceService) {
++  const normalized = answer.trim().toLowerCase().replace(/,/g, "");
++  const mileage = normalized.match(/^(\d+)\s*(mi|mil|mile|miles)?$/);
++  if (mileage) {
++    const value = Number(mileage[1]);
++    if (service.mileage != null && value <= service.mileage) {
++      throw new Error("Sonraki mileage, işlem mileage değerinden büyük olmalı.");
++    }
++    return { next_due_mileage: value, next_due_date: null };
++  }
++  if (/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
++    if (service.performed_date && normalized <= service.performed_date) {
++      throw new Error("Sonraki tarih, işlem tarihinden sonra olmalı.");
++    }
++    return { next_due_mileage: null, next_due_date: normalized };
++  }
++
++  const period = normalized.match(/^(\d+)\s*(gün|gun|day|days|hafta|week|weeks|ay|month|months|yıl|yil|year|years)$/);
++  if (!period) throw new Error("Örnek: 155000 mil, 90 gün, 3 ay veya 2026-10-12");
++  const amount = Number(period[1]);
++  const baseDate = service.performed_date ?? todayInFleetTimezone();
++  const unit = period[2];
++  if (["gün", "gun", "day", "days"].includes(unit)) {
++    return { next_due_mileage: null, next_due_date: addDays(baseDate, amount) };
++  }
++  if (["hafta", "week", "weeks"].includes(unit)) {
++    return { next_due_mileage: null, next_due_date: addDays(baseDate, amount * 7) };
++  }
++  if (["ay", "month", "months"].includes(unit)) {
++    return { next_due_mileage: null, next_due_date: addMonths(baseDate, amount) };
++  }
++  return { next_due_mileage: null, next_due_date: addMonths(baseDate, amount * 12) };
++}
++
++async function chooseOrganization(supabase: AdminClient): Promise<Organization> {
++  const { data, error } = await supabase.from("organizations").select("id, name").order("name");
++  if (error) throw error;
++  const organizations = (data ?? []) as Organization[];
++  if (organizations.length === 0) throw new Error("Organization bulunamadı.");
++  if (organizations.length === 1) return organizations[0];
++
++  console.log("\nOrganization seç:");
++  organizations.forEach((org, index) => console.log(`${index + 1}. ${org.name}`));
++  const selected = Number(await rl.question("Numara: ")) - 1;
++  if (!organizations[selected]) throw new Error("Geçersiz seçim.");
++  return organizations[selected];
++}
++
++async function chooseVehicle(vehicles: Vehicle[], detectedUnit: string | null): Promise<Vehicle> {
++  const detected = detectedUnit?.trim().toLowerCase();
++  const exact = detected
++    ? vehicles.find((vehicle) => vehicle.unit_number.trim().toLowerCase() === detected)
++    : undefined;
++  if (exact) {
++    const answer = (await rl.question(`Unit ${exact.unit_number} bulundu. Kullanılsın mı? [E/h]: `)).trim().toLowerCase();
++    if (!answer || answer === "e" || answer === "y") return exact;
++  }
++
++  console.log("\nAraç seç:");
++  vehicles.forEach((vehicle, index) =>
++    console.log(`${index + 1}. Unit ${vehicle.unit_number} — ${Number(vehicle.current_mileage ?? 0).toLocaleString("en-US")} mi`),
++  );
++  const selected = Number(await rl.question("Numara: ")) - 1;
++  if (!vehicles[selected]) throw new Error("Geçersiz araç seçimi.");
++  return vehicles[selected];
++}
++
++async function printAlerts(supabase: AdminClient, organizationId: string) {
++  const [{ data: rules, error: rulesError }, { data: settings, error: settingsError }] = await Promise.all([
++    supabase
++      .from("maintenance_rules")
++      .select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
++      .eq("organization_id", organizationId)
++      .eq("active", true),
++    supabase
++      .from("settings")
++      .select("pm_due_soon_miles, pm_due_soon_days")
++      .eq("organization_id", organizationId)
++      .maybeSingle(),
++  ]);
++  if (rulesError) throw rulesError;
++  if (settingsError) throw settingsError;
++
++  const settingsRow = settings as { pm_due_soon_miles?: number | null; pm_due_soon_days?: number | null } | null;
++  const thresholds = {
++    dueSoonMiles: Number(settingsRow?.pm_due_soon_miles ?? 2_000),
++    dueSoonDays: Number(settingsRow?.pm_due_soon_days ?? 7),
++  };
++  const alerts = (rules ?? [])
++    .map((rule: any) => ({
++      rule,
++      pm: computePM(rule, Number(rule.vehicles?.current_mileage ?? 0), thresholds, todayInFleetTimezone()),
++    }))
++    .filter(({ pm }) => pm.status !== "ok")
++    .sort((a, b) => comparePMAlerts(a.pm, b.pm));
++
++  console.log("\n=== BAKIM UYARILARI ===");
++  if (alerts.length === 0) {
++    console.log("Yaklaşan bakım yok.");
++    return;
++  }
++  for (const { rule, pm } of alerts) {
++    console.log(`Unit ${rule.vehicles?.unit_number ?? "?"} | ${rule.service_type} | ${pm.label} | ${formatPMRemaining(pm)}`);
++  }
++}
++
++async function main() {
++  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
++  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
++  if (!url || !serviceKey) throw new Error("Supabase environment variables are missing in .env.local.");
++  const supabase = createClient(url, serviceKey, { auth: { persistSession: false } });
++
++  const organization = await chooseOrganization(supabase);
++  await printAlerts(supabase, organization.id);
++
++  const argumentPath = process.argv.slice(2).join(" ").trim();
++  const enteredPath = argumentPath || (await rl.question("\nPDF invoice dosya yolu: ")).trim();
++  const filePath = resolve(enteredPath.replace(/^['\"]|['\"]$/g, ""));
++  if (!filePath.toLowerCase().endsWith(".pdf")) throw new Error("Yalnızca PDF dosyası kabul edilir.");
++  const bytes = new Uint8Array(await readFile(filePath));
++  if (bytes.byteLength > 20 * 1024 * 1024) throw new Error("PDF 20 MB'dan büyük olamaz.");
++
++  const hash = maintenanceInvoiceHash(bytes);
++  const { data: duplicate, error: duplicateError } = await supabase
++    .from("maintenance_invoices")
++    .select("id, file_name, created_at")
++    .eq("organization_id", organization.id)
++    .eq("file_hash", hash)
++    .maybeSingle();
++  if (duplicateError) throw duplicateError;
++  if (duplicate) {
++    console.log(`\nDUPLICATE: Bu PDF daha önce kaydedilmiş (${duplicate.file_name}, ${duplicate.created_at}).`);
++    return;
++  }
++
++  console.log("\nPDF analiz ediliyor...");
++  const { parsed, rawText } = await parseMaintenanceInvoice(bytes);
++  const { data: vehicleRows, error: vehicleError } = await supabase
++    .from("vehicles")
++    .select("id, unit_number, current_mileage")
++    .eq("organization_id", organization.id)
++    .order("unit_number");
++  if (vehicleError) throw vehicleError;
++  const vehicles = (vehicleRows ?? []) as Vehicle[];
++  if (vehicles.length === 0) throw new Error("Önce sisteme araç eklemelisiniz.");
++  const vehicle = await chooseVehicle(vehicles, parsed.unit_number ?? parsed.vehicle_id_text);
++
++  console.log(`\n${parsed.services.length} servis bulundu:`);
++  parsed.services.forEach((service, index) =>
++    console.log(`${index + 1}. ${service.service_type}${service.part_name ? ` — ${service.part_name}` : ""}`),
++  );
++
++  const services = [];
++  for (const [index, service] of parsed.services.entries()) {
++    const performedDate = service.performed_date ?? parsed.invoice_date ?? todayInFleetTimezone();
++    const mileage = service.mileage ?? parsed.mileage ?? vehicle.current_mileage;
++    const normalizedService = service.service_type.trim();
++    const { data: existingRule, error: ruleError } = await supabase
++      .from("maintenance_rules")
++      .select("id, service_type")
++      .eq("organization_id", organization.id)
++      .eq("vehicle_id", vehicle.id)
++      .eq("active", true)
++      .ilike("service_type", normalizedService)
++      .maybeSingle();
++    if (ruleError) throw ruleError;
++
++    console.log(`\n[${index + 1}/${parsed.services.length}] ${normalizedService}`);
++    let nextDue;
++    while (!nextDue) {
++      try {
++        const answer = await rl.question("Bu işlemin bir sonraki bakım tarihi veya mili nedir? (örn. 155,000 mil veya 3 ay): ");
++        nextDue = parseNextDue(answer, { ...service, performed_date: performedDate, mileage: mileage == null ? null : Number(mileage) });
++      } catch (error) {
++        console.log(`Geçersiz cevap: ${(error as Error).message}`);
++      }
++    }
++
++    let resolution = "overwrite";
++    if (existingRule) {
++      const answer = (await rl.question("Bu servis için önceki kayıt mevcut. Üzerine mi yazayım, yoksa geçmiş kayıt olarak tutalım mı? [üzerine/geçmiş]: "))
++        .trim()
++        .toLowerCase();
++      resolution = answer.startsWith("g") || answer.startsWith("h") ? "history" : "overwrite";
++    }
++
++    services.push({
++      vehicle_id: vehicle.id,
++      service_type: normalizedService,
++      part_name: service.part_name,
++      performed_date: performedDate,
++      mileage: mileage == null ? null : Number(mileage),
++      cost: service.cost,
++      shop_name: parsed.shop_name,
++      notes: service.notes,
++      next_due_mileage: nextDue.next_due_mileage,
++      next_due_date: nextDue.next_due_date,
++      resolution,
++    });
++  }
++
++  const storagePath = `${organization.id}/${hash}.pdf`;
++  const { error: uploadError } = await supabase.storage
++    .from("maintenance-invoices")
++    .upload(storagePath, bytes, { contentType: "application/pdf", upsert: false });
++  if (uploadError) throw uploadError;
++
++  const { data: invoiceId, error: saveError } = await supabase.rpc("save_maintenance_invoice", {
++    p_invoice: {
++      organization_id: organization.id,
++      vehicle_id: vehicle.id,
++      invoice_number: parsed.invoice_number,
++      invoice_date: parsed.invoice_date,
++      shop_name: parsed.shop_name,
++      file_name: basename(filePath),
++      storage_path: storagePath,
++      file_hash: hash,
++      raw_text: rawText,
++      parsed_data: parsed,
++    },
++    p_services: services,
++  });
++
++  if (saveError) {
++    await supabase.storage.from("maintenance-invoices").remove([storagePath]);
++    if (saveError.message.includes("DUPLICATE_INVOICE")) {
++      console.log("DUPLICATE: Bu invoice daha önce kaydedilmiş.");
++      return;
++    }
++    throw saveError;
++  }
++
++  console.log(`\nKAYDEDİLDİ: Invoice ${invoiceId}; ${services.length} bakım kaydı oluşturuldu.`);
++  await printAlerts(supabase, organization.id);
++}
++
++main()
++  .catch((error) => {
++    console.error(`\nHATA: ${error instanceof Error ? error.message : String(error)}`);
++    process.exitCode = 1;
++  })
++  .finally(() => rl.close());
+diff --git a/supabase/migrations/20260712000000_maintenance_invoice_upgrade.sql b/supabase/migrations/20260712000000_maintenance_invoice_upgrade.sql
+new file mode 100644
+index 0000000..c2c3f31
+--- /dev/null
++++ b/supabase/migrations/20260712000000_maintenance_invoice_upgrade.sql
+@@ -0,0 +1,380 @@
++-- Maintenance invoice import, atomic mileage/service writes, configurable alerts.
++
++alter table settings add column if not exists pm_due_soon_days integer not null default 7;
++alter table settings alter column pm_due_soon_miles set default 2000;
++update settings set pm_due_soon_miles = 2000 where pm_due_soon_miles = 2500;
++
++alter table maintenance_rules add column if not exists updated_at timestamptz not null default now();
++alter table maintenance_records add column if not exists invoice_id uuid;
++alter table maintenance_records add column if not exists part_name text;
++alter table maintenance_records add column if not exists next_due_mileage numeric;
++alter table maintenance_records add column if not exists next_due_date date;
++alter table maintenance_records add column if not exists source text not null default 'manual';
++alter table maintenance_records add column if not exists created_by uuid references profiles (id) on delete set null;
++alter table maintenance_records add column if not exists updated_at timestamptz not null default now();
++
++create table if not exists maintenance_invoices (
++  id uuid primary key default gen_random_uuid(),
++  organization_id uuid not null references organizations (id) on delete cascade,
++  vehicle_id uuid,
++  invoice_number text,
++  invoice_date date,
++  shop_name text,
++  file_name text not null,
++  storage_path text not null,
++  file_hash text not null,
++  raw_text text,
++  parsed_data jsonb not null default '{}'::jsonb,
++  created_by uuid references profiles (id) on delete set null,
++  created_at timestamptz not null default now(),
++  constraint maintenance_invoices_hash_chk check (file_hash ~ '^[a-f0-9]{64}$'),
++  constraint maintenance_invoices_org_hash_key unique (organization_id, file_hash),
++  constraint maintenance_invoices_org_id_id_key unique (organization_id, id),
++  constraint maintenance_invoices_vehicle_same_org_fk
++    foreign key (organization_id, vehicle_id)
++    references vehicles (organization_id, id) on delete set null
++);
++
++alter table maintenance_records
++  drop constraint if exists maintenance_records_invoice_id_fkey;
++alter table maintenance_records
++  drop constraint if exists maintenance_records_invoice_same_org_fk;
++alter table maintenance_records
++  add constraint maintenance_records_invoice_same_org_fk
++  foreign key (organization_id, invoice_id)
++  references maintenance_invoices (organization_id, id) on delete restrict not valid;
++
++alter table maintenance_rules drop constraint if exists maintenance_rules_interval_shape_chk;
++alter table maintenance_rules add constraint maintenance_rules_interval_shape_chk check (
++  (interval_type = 'mileage' and interval_miles > 0 and interval_days is null)
++  or
++  (interval_type = 'date' and interval_days > 0 and interval_miles is null)
++) not valid;
++
++alter table maintenance_records drop constraint if exists maintenance_records_next_due_chk;
++alter table maintenance_records add constraint maintenance_records_next_due_chk check (
++  (next_due_mileage is null or next_due_mileage >= 0)
++  and (mileage is null or next_due_mileage is null or next_due_mileage > mileage)
++  and (performed_date is null or next_due_date is null or next_due_date > performed_date)
++) not valid;
++
++alter table settings drop constraint if exists settings_pm_due_soon_days_chk;
++alter table settings add constraint settings_pm_due_soon_days_chk
++  check (pm_due_soon_days between 1 and 3650) not valid;
++
++with ranked as (
++  select id, row_number() over (
++    partition by organization_id, vehicle_id, lower(btrim(service_type))
++    order by updated_at desc nulls last, created_at desc, id desc
++  ) as row_number
++  from maintenance_rules
++  where active = true and vehicle_id is not null
++)
++update maintenance_rules set active = false
++where id in (select id from ranked where row_number > 1);
++
++create unique index if not exists maintenance_rules_one_active_service_idx
++  on maintenance_rules (organization_id, vehicle_id, lower(btrim(service_type)))
++  where active = true and vehicle_id is not null;
++
++create index if not exists maintenance_invoices_org_created_idx
++  on maintenance_invoices (organization_id, created_at desc);
++create index if not exists maintenance_records_invoice_idx
++  on maintenance_records (organization_id, invoice_id);
++
++insert into storage.buckets (id, name, public)
++values ('maintenance-invoices', 'maintenance-invoices', false)
++on conflict (id) do nothing;
++
++alter table maintenance_invoices enable row level security;
++drop policy if exists maintenance_invoices_select on maintenance_invoices;
++drop policy if exists maintenance_invoices_insert on maintenance_invoices;
++drop policy if exists maintenance_invoices_update on maintenance_invoices;
++drop policy if exists maintenance_invoices_delete on maintenance_invoices;
++create policy maintenance_invoices_select on maintenance_invoices
++  for select to authenticated
++  using (organization_id = (select current_org_id()));
++create policy maintenance_invoices_insert on maintenance_invoices
++  for insert to authenticated
++  with check (organization_id = (select current_org_id()) and (select is_org_writer()));
++create policy maintenance_invoices_update on maintenance_invoices
++  for update to authenticated
++  using (organization_id = (select current_org_id()) and (select is_org_writer()))
++  with check (organization_id = (select current_org_id()) and (select is_org_writer()));
++create policy maintenance_invoices_delete on maintenance_invoices
++  for delete to authenticated
++  using (organization_id = (select current_org_id()) and (select is_org_writer()));
++
++create or replace function touch_maintenance_updated_at()
++returns trigger
++language plpgsql
++set search_path = public
++as $$
++begin
++  new.updated_at := now();
++  return new;
++end;
++$$;
++
++drop trigger if exists maintenance_rules_updated_at on maintenance_rules;
++create trigger maintenance_rules_updated_at
++  before update on maintenance_rules
++  for each row execute function touch_maintenance_updated_at();
++drop trigger if exists maintenance_records_updated_at on maintenance_records;
++create trigger maintenance_records_updated_at
++  before update on maintenance_records
++  for each row execute function touch_maintenance_updated_at();
++
++-- Atomic odometer write. Authenticated callers are scoped to their org; service-role
++-- callers (Telegram) must pass p_organization_id explicitly.
++create or replace function set_vehicle_mileage(
++  p_vehicle_id uuid,
++  p_mileage numeric,
++  p_source text default 'manual',
++  p_organization_id uuid default null
++)
++returns numeric
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid;
++  v_current numeric;
++begin
++  if p_mileage is null or p_mileage < 0 or p_mileage <> trunc(p_mileage) then
++    raise exception 'Mileage must be a non-negative whole number.';
++  end if;
++
++  v_org := coalesce((select current_org_id()), p_organization_id);
++  if v_org is null then raise exception 'Organization is required.'; end if;
++  if auth.uid() is not null and not (select is_org_writer()) then
++    raise exception 'Write permission required.';
++  end if;
++
++  select current_mileage into v_current
++  from vehicles
++  where id = p_vehicle_id and organization_id = v_org
++  for update;
++  if not found then raise exception 'Vehicle not found.'; end if;
++  if p_mileage < coalesce(v_current, 0) then
++    raise exception 'Mileage cannot be lower than the current odometer (%).', coalesce(v_current, 0);
++  end if;
++
++  update vehicles set current_mileage = p_mileage
++  where id = p_vehicle_id and organization_id = v_org;
++
++  insert into vehicle_mileage_logs (organization_id, vehicle_id, mileage, source)
++  values (v_org, p_vehicle_id, p_mileage, coalesce(nullif(btrim(p_source), ''), 'manual'));
++
++  return p_mileage;
++end;
++$$;
++revoke execute on function set_vehicle_mileage(uuid,numeric,text,uuid) from public, anon;
++grant execute on function set_vehicle_mileage(uuid,numeric,text,uuid) to authenticated, service_role;
++
++-- Atomic and idempotent "serviced now" action. Mileage is always re-read from the
++-- vehicle row, never trusted from stale browser props.
++create or replace function mark_maintenance_serviced(
++  p_rule_id uuid,
++  p_performed_date date,
++  p_cost numeric default 0,
++  p_shop_name text default null,
++  p_part_name text default null,
++  p_notes text default null
++)
++returns uuid
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid := (select current_org_id());
++  v_vehicle uuid;
++  v_service text;
++  v_mileage numeric;
++  v_existing uuid;
++  v_record uuid;
++begin
++  if v_org is null or not (select is_org_writer()) then
++    raise exception 'Write permission required.';
++  end if;
++  if p_performed_date is null then raise exception 'Performed date is required.'; end if;
++  if coalesce(p_cost, 0) < 0 then raise exception 'Cost cannot be negative.'; end if;
++
++  select r.vehicle_id, r.service_type, v.current_mileage
++    into v_vehicle, v_service, v_mileage
++  from maintenance_rules r
++  join vehicles v on v.id = r.vehicle_id and v.organization_id = r.organization_id
++  where r.id = p_rule_id and r.organization_id = v_org and r.active = true
++  for update of r, v;
++  if not found then raise exception 'Active maintenance rule not found.'; end if;
++
++  select id into v_existing
++  from maintenance_records
++  where organization_id = v_org
++    and rule_id = p_rule_id
++    and performed_date = p_performed_date
++    and mileage = v_mileage
++    and source = 'manual'
++  limit 1;
++  if v_existing is not null then return v_existing; end if;
++
++  update maintenance_rules
++  set last_done_mileage = v_mileage, last_done_date = p_performed_date
++  where id = p_rule_id and organization_id = v_org;
++
++  insert into maintenance_records (
++    organization_id, vehicle_id, rule_id, service_type, performed_date,
++    mileage, cost, shop_name, part_name, notes, source, created_by
++  ) values (
++    v_org, v_vehicle, p_rule_id, v_service, p_performed_date,
++    v_mileage, coalesce(p_cost, 0), nullif(btrim(p_shop_name), ''),
++    nullif(btrim(p_part_name), ''), nullif(btrim(p_notes), ''), 'manual', auth.uid()
++  ) returning id into v_record;
++
++  return v_record;
++end;
++$$;
++revoke execute on function mark_maintenance_serviced(uuid,date,numeric,text,text,text) from public, anon;
++grant execute on function mark_maintenance_serviced(uuid,date,numeric,text,text,text) to authenticated;
++
++-- One transaction for invoice metadata, all service records, and optional rule updates.
++-- Intended for the trusted local CLI; only service_role can execute it.
++create or replace function save_maintenance_invoice(
++  p_invoice jsonb,
++  p_services jsonb
++)
++returns uuid
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid := (p_invoice->>'organization_id')::uuid;
++  v_invoice uuid;
++  v_item jsonb;
++  v_vehicle uuid;
++  v_service text;
++  v_rule uuid;
++  v_resolution text;
++  v_performed_date date;
++  v_mileage numeric;
++  v_next_mileage numeric;
++  v_next_date date;
++  v_interval_type text;
++  v_interval_miles numeric;
++  v_interval_days integer;
++begin
++  if v_org is null then raise exception 'organization_id is required.'; end if;
++  if jsonb_typeof(p_services) <> 'array' or jsonb_array_length(p_services) = 0 then
++    raise exception 'At least one service is required.';
++  end if;
++
++  insert into maintenance_invoices (
++    organization_id, vehicle_id, invoice_number, invoice_date, shop_name,
++    file_name, storage_path, file_hash, raw_text, parsed_data, created_by
++  ) values (
++    v_org,
++    nullif(p_invoice->>'vehicle_id', '')::uuid,
++    nullif(btrim(p_invoice->>'invoice_number'), ''),
++    nullif(p_invoice->>'invoice_date', '')::date,
++    nullif(btrim(p_invoice->>'shop_name'), ''),
++    p_invoice->>'file_name',
++    p_invoice->>'storage_path',
++    p_invoice->>'file_hash',
++    p_invoice->>'raw_text',
++    coalesce(p_invoice->'parsed_data', '{}'::jsonb),
++    nullif(p_invoice->>'created_by', '')::uuid
++  ) returning id into v_invoice;
++
++  for v_item in select value from jsonb_array_elements(p_services)
++  loop
++    v_vehicle := (v_item->>'vehicle_id')::uuid;
++    v_service := btrim(v_item->>'service_type');
++    v_resolution := coalesce(v_item->>'resolution', 'overwrite');
++    v_performed_date := nullif(v_item->>'performed_date', '')::date;
++    v_mileage := nullif(v_item->>'mileage', '')::numeric;
++    v_next_mileage := nullif(v_item->>'next_due_mileage', '')::numeric;
++    v_next_date := nullif(v_item->>'next_due_date', '')::date;
++
++    if v_service is null or v_service = '' then raise exception 'service_type is required.'; end if;
++    if not exists (select 1 from vehicles where id = v_vehicle and organization_id = v_org) then
++      raise exception 'Vehicle does not belong to organization.';
++    end if;
++
++    if v_mileage is not null then
++      update vehicles
++      set current_mileage = v_mileage
++      where id = v_vehicle and organization_id = v_org
++        and v_mileage > coalesce(current_mileage, 0);
++      if found then
++        insert into vehicle_mileage_logs (organization_id, vehicle_id, mileage, source)
++        values (v_org, v_vehicle, v_mileage, 'invoice');
++      end if;
++    end if;
++
++    select id into v_rule
++    from maintenance_rules
++    where organization_id = v_org and vehicle_id = v_vehicle and active = true
++      and lower(btrim(service_type)) = lower(v_service)
++    limit 1
++    for update;
++
++    v_interval_type := null;
++    v_interval_miles := null;
++    v_interval_days := null;
++    if v_next_mileage is not null and v_mileage is not null and v_next_mileage > v_mileage then
++      v_interval_type := 'mileage';
++      v_interval_miles := v_next_mileage - v_mileage;
++    elsif v_next_date is not null and v_performed_date is not null and v_next_date > v_performed_date then
++      v_interval_type := 'date';
++      v_interval_days := v_next_date - v_performed_date;
++    end if;
++
++    if v_rule is null and v_interval_type is not null then
++      insert into maintenance_rules (
++        organization_id, vehicle_id, service_type, interval_type,
++        interval_miles, interval_days, last_done_mileage, last_done_date, active
++      ) values (
++        v_org, v_vehicle, v_service, v_interval_type,
++        v_interval_miles, v_interval_days, v_mileage, v_performed_date, true
++      ) returning id into v_rule;
++    elsif v_rule is not null and v_resolution = 'overwrite' and v_interval_type is not null then
++      update maintenance_rules set
++        service_type = v_service,
++        interval_type = v_interval_type,
++        interval_miles = v_interval_miles,
++        interval_days = v_interval_days,
++        last_done_mileage = v_mileage,
++        last_done_date = v_performed_date,
++        active = true
++      where id = v_rule and organization_id = v_org;
++    end if;
++
++    insert into maintenance_records (
++      organization_id, vehicle_id, rule_id, invoice_id, service_type,
++      performed_date, mileage, cost, shop_name, part_name, notes,
++      next_due_mileage, next_due_date, source
++    ) values (
++      v_org, v_vehicle, v_rule, v_invoice, v_service,
++      v_performed_date, v_mileage,
++      coalesce(nullif(v_item->>'cost', '')::numeric, 0),
++      nullif(btrim(coalesce(v_item->>'shop_name', p_invoice->>'shop_name')), ''),
++      nullif(btrim(v_item->>'part_name'), ''),
++      nullif(btrim(v_item->>'notes'), ''),
++      v_next_mileage, v_next_date, 'invoice'
++    );
++  end loop;
++
++  return v_invoice;
++exception
++  when unique_violation then
++    if sqlerrm like '%maintenance_invoices_org_hash_key%' then
++      raise exception 'DUPLICATE_INVOICE';
++    end if;
++    raise;
++end;
++$$;
++revoke execute on function save_maintenance_invoice(jsonb,jsonb) from public, anon, authenticated;
++grant execute on function save_maintenance_invoice(jsonb,jsonb) to service_role;
+diff --git a/supabase/schema.sql b/supabase/schema.sql
+index 3fc324b..50bd7dc 100644
+--- a/supabase/schema.sql
++++ b/supabase/schema.sql
+@@ -1447,3 +1447,388 @@ create unique index if not exists imported_loads_created_load_key
+ 
+ create index if not exists tracking_events_org_created_idx
+   on tracking_events (organization_id, created_at desc);
++
++-- =============================================================================
++-- 2026-07-12 — Maintenance invoice parsing, atomic writes, history and alerts
++-- Mirrors: 20260712000000_maintenance_invoice_upgrade.sql
++-- =============================================================================
++-- Maintenance invoice import, atomic mileage/service writes, configurable alerts.
++
++alter table settings add column if not exists pm_due_soon_days integer not null default 7;
++alter table settings alter column pm_due_soon_miles set default 2000;
++update settings set pm_due_soon_miles = 2000 where pm_due_soon_miles = 2500;
++
++alter table maintenance_rules add column if not exists updated_at timestamptz not null default now();
++alter table maintenance_records add column if not exists invoice_id uuid;
++alter table maintenance_records add column if not exists part_name text;
++alter table maintenance_records add column if not exists next_due_mileage numeric;
++alter table maintenance_records add column if not exists next_due_date date;
++alter table maintenance_records add column if not exists source text not null default 'manual';
++alter table maintenance_records add column if not exists created_by uuid references profiles (id) on delete set null;
++alter table maintenance_records add column if not exists updated_at timestamptz not null default now();
++
++create table if not exists maintenance_invoices (
++  id uuid primary key default gen_random_uuid(),
++  organization_id uuid not null references organizations (id) on delete cascade,
++  vehicle_id uuid,
++  invoice_number text,
++  invoice_date date,
++  shop_name text,
++  file_name text not null,
++  storage_path text not null,
++  file_hash text not null,
++  raw_text text,
++  parsed_data jsonb not null default '{}'::jsonb,
++  created_by uuid references profiles (id) on delete set null,
++  created_at timestamptz not null default now(),
++  constraint maintenance_invoices_hash_chk check (file_hash ~ '^[a-f0-9]{64}$'),
++  constraint maintenance_invoices_org_hash_key unique (organization_id, file_hash),
++  constraint maintenance_invoices_org_id_id_key unique (organization_id, id),
++  constraint maintenance_invoices_vehicle_same_org_fk
++    foreign key (organization_id, vehicle_id)
++    references vehicles (organization_id, id) on delete set null
++);
++
++alter table maintenance_records
++  drop constraint if exists maintenance_records_invoice_id_fkey;
++alter table maintenance_records
++  drop constraint if exists maintenance_records_invoice_same_org_fk;
++alter table maintenance_records
++  add constraint maintenance_records_invoice_same_org_fk
++  foreign key (organization_id, invoice_id)
++  references maintenance_invoices (organization_id, id) on delete restrict not valid;
++
++alter table maintenance_rules drop constraint if exists maintenance_rules_interval_shape_chk;
++alter table maintenance_rules add constraint maintenance_rules_interval_shape_chk check (
++  (interval_type = 'mileage' and interval_miles > 0 and interval_days is null)
++  or
++  (interval_type = 'date' and interval_days > 0 and interval_miles is null)
++) not valid;
++
++alter table maintenance_records drop constraint if exists maintenance_records_next_due_chk;
++alter table maintenance_records add constraint maintenance_records_next_due_chk check (
++  (next_due_mileage is null or next_due_mileage >= 0)
++  and (mileage is null or next_due_mileage is null or next_due_mileage > mileage)
++  and (performed_date is null or next_due_date is null or next_due_date > performed_date)
++) not valid;
++
++alter table settings drop constraint if exists settings_pm_due_soon_days_chk;
++alter table settings add constraint settings_pm_due_soon_days_chk
++  check (pm_due_soon_days between 1 and 3650) not valid;
++
++with ranked as (
++  select id, row_number() over (
++    partition by organization_id, vehicle_id, lower(btrim(service_type))
++    order by updated_at desc nulls last, created_at desc, id desc
++  ) as row_number
++  from maintenance_rules
++  where active = true and vehicle_id is not null
++)
++update maintenance_rules set active = false
++where id in (select id from ranked where row_number > 1);
++
++create unique index if not exists maintenance_rules_one_active_service_idx
++  on maintenance_rules (organization_id, vehicle_id, lower(btrim(service_type)))
++  where active = true and vehicle_id is not null;
++
++create index if not exists maintenance_invoices_org_created_idx
++  on maintenance_invoices (organization_id, created_at desc);
++create index if not exists maintenance_records_invoice_idx
++  on maintenance_records (organization_id, invoice_id);
++
++insert into storage.buckets (id, name, public)
++values ('maintenance-invoices', 'maintenance-invoices', false)
++on conflict (id) do nothing;
++
++alter table maintenance_invoices enable row level security;
++drop policy if exists maintenance_invoices_select on maintenance_invoices;
++drop policy if exists maintenance_invoices_insert on maintenance_invoices;
++drop policy if exists maintenance_invoices_update on maintenance_invoices;
++drop policy if exists maintenance_invoices_delete on maintenance_invoices;
++create policy maintenance_invoices_select on maintenance_invoices
++  for select to authenticated
++  using (organization_id = (select current_org_id()));
++create policy maintenance_invoices_insert on maintenance_invoices
++  for insert to authenticated
++  with check (organization_id = (select current_org_id()) and (select is_org_writer()));
++create policy maintenance_invoices_update on maintenance_invoices
++  for update to authenticated
++  using (organization_id = (select current_org_id()) and (select is_org_writer()))
++  with check (organization_id = (select current_org_id()) and (select is_org_writer()));
++create policy maintenance_invoices_delete on maintenance_invoices
++  for delete to authenticated
++  using (organization_id = (select current_org_id()) and (select is_org_writer()));
++
++create or replace function touch_maintenance_updated_at()
++returns trigger
++language plpgsql
++set search_path = public
++as $$
++begin
++  new.updated_at := now();
++  return new;
++end;
++$$;
++
++drop trigger if exists maintenance_rules_updated_at on maintenance_rules;
++create trigger maintenance_rules_updated_at
++  before update on maintenance_rules
++  for each row execute function touch_maintenance_updated_at();
++drop trigger if exists maintenance_records_updated_at on maintenance_records;
++create trigger maintenance_records_updated_at
++  before update on maintenance_records
++  for each row execute function touch_maintenance_updated_at();
++
++-- Atomic odometer write. Authenticated callers are scoped to their org; service-role
++-- callers (Telegram) must pass p_organization_id explicitly.
++create or replace function set_vehicle_mileage(
++  p_vehicle_id uuid,
++  p_mileage numeric,
++  p_source text default 'manual',
++  p_organization_id uuid default null
++)
++returns numeric
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid;
++  v_current numeric;
++begin
++  if p_mileage is null or p_mileage < 0 or p_mileage <> trunc(p_mileage) then
++    raise exception 'Mileage must be a non-negative whole number.';
++  end if;
++
++  v_org := coalesce((select current_org_id()), p_organization_id);
++  if v_org is null then raise exception 'Organization is required.'; end if;
++  if auth.uid() is not null and not (select is_org_writer()) then
++    raise exception 'Write permission required.';
++  end if;
++
++  select current_mileage into v_current
++  from vehicles
++  where id = p_vehicle_id and organization_id = v_org
++  for update;
++  if not found then raise exception 'Vehicle not found.'; end if;
++  if p_mileage < coalesce(v_current, 0) then
++    raise exception 'Mileage cannot be lower than the current odometer (%).', coalesce(v_current, 0);
++  end if;
++
++  update vehicles set current_mileage = p_mileage
++  where id = p_vehicle_id and organization_id = v_org;
++
++  insert into vehicle_mileage_logs (organization_id, vehicle_id, mileage, source)
++  values (v_org, p_vehicle_id, p_mileage, coalesce(nullif(btrim(p_source), ''), 'manual'));
++
++  return p_mileage;
++end;
++$$;
++revoke execute on function set_vehicle_mileage(uuid,numeric,text,uuid) from public, anon;
++grant execute on function set_vehicle_mileage(uuid,numeric,text,uuid) to authenticated, service_role;
++
++-- Atomic and idempotent "serviced now" action. Mileage is always re-read from the
++-- vehicle row, never trusted from stale browser props.
++create or replace function mark_maintenance_serviced(
++  p_rule_id uuid,
++  p_performed_date date,
++  p_cost numeric default 0,
++  p_shop_name text default null,
++  p_part_name text default null,
++  p_notes text default null
++)
++returns uuid
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid := (select current_org_id());
++  v_vehicle uuid;
++  v_service text;
++  v_mileage numeric;
++  v_existing uuid;
++  v_record uuid;
++begin
++  if v_org is null or not (select is_org_writer()) then
++    raise exception 'Write permission required.';
++  end if;
++  if p_performed_date is null then raise exception 'Performed date is required.'; end if;
++  if coalesce(p_cost, 0) < 0 then raise exception 'Cost cannot be negative.'; end if;
++
++  select r.vehicle_id, r.service_type, v.current_mileage
++    into v_vehicle, v_service, v_mileage
++  from maintenance_rules r
++  join vehicles v on v.id = r.vehicle_id and v.organization_id = r.organization_id
++  where r.id = p_rule_id and r.organization_id = v_org and r.active = true
++  for update of r, v;
++  if not found then raise exception 'Active maintenance rule not found.'; end if;
++
++  select id into v_existing
++  from maintenance_records
++  where organization_id = v_org
++    and rule_id = p_rule_id
++    and performed_date = p_performed_date
++    and mileage = v_mileage
++    and source = 'manual'
++  limit 1;
++  if v_existing is not null then return v_existing; end if;
++
++  update maintenance_rules
++  set last_done_mileage = v_mileage, last_done_date = p_performed_date
++  where id = p_rule_id and organization_id = v_org;
++
++  insert into maintenance_records (
++    organization_id, vehicle_id, rule_id, service_type, performed_date,
++    mileage, cost, shop_name, part_name, notes, source, created_by
++  ) values (
++    v_org, v_vehicle, p_rule_id, v_service, p_performed_date,
++    v_mileage, coalesce(p_cost, 0), nullif(btrim(p_shop_name), ''),
++    nullif(btrim(p_part_name), ''), nullif(btrim(p_notes), ''), 'manual', auth.uid()
++  ) returning id into v_record;
++
++  return v_record;
++end;
++$$;
++revoke execute on function mark_maintenance_serviced(uuid,date,numeric,text,text,text) from public, anon;
++grant execute on function mark_maintenance_serviced(uuid,date,numeric,text,text,text) to authenticated;
++
++-- One transaction for invoice metadata, all service records, and optional rule updates.
++-- Intended for the trusted local CLI; only service_role can execute it.
++create or replace function save_maintenance_invoice(
++  p_invoice jsonb,
++  p_services jsonb
++)
++returns uuid
++language plpgsql
++security definer
++set search_path = public
++as $$
++declare
++  v_org uuid := (p_invoice->>'organization_id')::uuid;
++  v_invoice uuid;
++  v_item jsonb;
++  v_vehicle uuid;
++  v_service text;
++  v_rule uuid;
++  v_resolution text;
++  v_performed_date date;
++  v_mileage numeric;
++  v_next_mileage numeric;
++  v_next_date date;
++  v_interval_type text;
++  v_interval_miles numeric;
++  v_interval_days integer;
++begin
++  if v_org is null then raise exception 'organization_id is required.'; end if;
++  if jsonb_typeof(p_services) <> 'array' or jsonb_array_length(p_services) = 0 then
++    raise exception 'At least one service is required.';
++  end if;
++
++  insert into maintenance_invoices (
++    organization_id, vehicle_id, invoice_number, invoice_date, shop_name,
++    file_name, storage_path, file_hash, raw_text, parsed_data, created_by
++  ) values (
++    v_org,
++    nullif(p_invoice->>'vehicle_id', '')::uuid,
++    nullif(btrim(p_invoice->>'invoice_number'), ''),
++    nullif(p_invoice->>'invoice_date', '')::date,
++    nullif(btrim(p_invoice->>'shop_name'), ''),
++    p_invoice->>'file_name',
++    p_invoice->>'storage_path',
++    p_invoice->>'file_hash',
++    p_invoice->>'raw_text',
++    coalesce(p_invoice->'parsed_data', '{}'::jsonb),
++    nullif(p_invoice->>'created_by', '')::uuid
++  ) returning id into v_invoice;
++
++  for v_item in select value from jsonb_array_elements(p_services)
++  loop
++    v_vehicle := (v_item->>'vehicle_id')::uuid;
++    v_service := btrim(v_item->>'service_type');
++    v_resolution := coalesce(v_item->>'resolution', 'overwrite');
++    v_performed_date := nullif(v_item->>'performed_date', '')::date;
++    v_mileage := nullif(v_item->>'mileage', '')::numeric;
++    v_next_mileage := nullif(v_item->>'next_due_mileage', '')::numeric;
++    v_next_date := nullif(v_item->>'next_due_date', '')::date;
++
++    if v_service is null or v_service = '' then raise exception 'service_type is required.'; end if;
++    if not exists (select 1 from vehicles where id = v_vehicle and organization_id = v_org) then
++      raise exception 'Vehicle does not belong to organization.';
++    end if;
++
++    if v_mileage is not null then
++      update vehicles
++      set current_mileage = v_mileage
++      where id = v_vehicle and organization_id = v_org
++        and v_mileage > coalesce(current_mileage, 0);
++      if found then
++        insert into vehicle_mileage_logs (organization_id, vehicle_id, mileage, source)
++        values (v_org, v_vehicle, v_mileage, 'invoice');
++      end if;
++    end if;
++
++    select id into v_rule
++    from maintenance_rules
++    where organization_id = v_org and vehicle_id = v_vehicle and active = true
++      and lower(btrim(service_type)) = lower(v_service)
++    limit 1
++    for update;
++
++    v_interval_type := null;
++    v_interval_miles := null;
++    v_interval_days := null;
++    if v_next_mileage is not null and v_mileage is not null and v_next_mileage > v_mileage then
++      v_interval_type := 'mileage';
++      v_interval_miles := v_next_mileage - v_mileage;
++    elsif v_next_date is not null and v_performed_date is not null and v_next_date > v_performed_date then
++      v_interval_type := 'date';
++      v_interval_days := v_next_date - v_performed_date;
++    end if;
++
++    if v_rule is null and v_interval_type is not null then
++      insert into maintenance_rules (
++        organization_id, vehicle_id, service_type, interval_type,
++        interval_miles, interval_days, last_done_mileage, last_done_date, active
++      ) values (
++        v_org, v_vehicle, v_service, v_interval_type,
++        v_interval_miles, v_interval_days, v_mileage, v_performed_date, true
++      ) returning id into v_rule;
++    elsif v_rule is not null and v_resolution = 'overwrite' and v_interval_type is not null then
++      update maintenance_rules set
++        service_type = v_service,
++        interval_type = v_interval_type,
++        interval_miles = v_interval_miles,
++        interval_days = v_interval_days,
++        last_done_mileage = v_mileage,
++        last_done_date = v_performed_date,
++        active = true
++      where id = v_rule and organization_id = v_org;
++    end if;
++
++    insert into maintenance_records (
++      organization_id, vehicle_id, rule_id, invoice_id, service_type,
++      performed_date, mileage, cost, shop_name, part_name, notes,
++      next_due_mileage, next_due_date, source
++    ) values (
++      v_org, v_vehicle, v_rule, v_invoice, v_service,
++      v_performed_date, v_mileage,
++      coalesce(nullif(v_item->>'cost', '')::numeric, 0),
++      nullif(btrim(coalesce(v_item->>'shop_name', p_invoice->>'shop_name')), ''),
++      nullif(btrim(v_item->>'part_name'), ''),
++      nullif(btrim(v_item->>'notes'), ''),
++      v_next_mileage, v_next_date, 'invoice'
++    );
++  end loop;
++
++  return v_invoice;
++exception
++  when unique_violation then
++    if sqlerrm like '%maintenance_invoices_org_hash_key%' then
++      raise exception 'DUPLICATE_INVOICE';
++    end if;
++    raise;
++end;
++$$;
++revoke execute on function save_maintenance_invoice(jsonb,jsonb) from public, anon, authenticated;
++grant execute on function save_maintenance_invoice(jsonb,jsonb) to service_role;

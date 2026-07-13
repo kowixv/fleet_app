@@ -7,7 +7,7 @@
 - **Telegram otomasyonu** — her şoför grubuna düşen Rate Confirmation PDF / Amazon Relay ekran görüntüsü / mesaj otomatik okunur (fal.ai vision), güzergah–mil–tutar çıkarılır, **onaya** düşer. Hem Telegram'dan (Onayla/Reddet butonu) hem web'den onaylanır → resmi Load kaydı oluşur.
 - **Esnek settlement motoru** — hiçbir ödeme modeli sabit değil. Her araç için company fee %12/%10/yok, $250 komisyon, driver %, dış carrier fee ayrı ayrı tanımlanır. 5 modeli destekler (company driver, box truck, owner operator, managed/investor, external carrier statement).
 - **Bilingual PDF statement** — EN/TR settlement statement üretir (imza bloğunda logo/MC/DOT/telefon/email/adres yok).
-- **Preventive maintenance** — mileage/tarih bazlı bakım takibi, dashboard uyarısı + günlük Telegram uyarısı (Vercel Cron).
+- **Preventive maintenance** — mileage/tarih planları, PDF invoice analizi, bakım geçmişi, dashboard + günlük Telegram uyarısı.
 - **Canlı GPS takip** — sürücünün telefonu/tableti `/drive?token=…` sayfasından konum gönderir; harita
   üzerinde araçlar, geofence (pickup/delivery), ETA, risk skoru ve alertler canlı görünür. Detay:
   [docs/11-tracking.md](docs/11-tracking.md).
@@ -22,7 +22,7 @@ Settlement motoru `lib/settlement/engine.ts` içinde; brief'teki 5 örnek rakam 
 ### 1) Supabase (veritabanı + auth + storage)
 1. [supabase.com](https://supabase.com) → ücretsiz proje oluştur.
 2. **SQL Editor** → `supabase/schema.sql` dosyasının tamamını yapıştır ve çalıştır (tablolar, RLS, signup trigger).
-3. **Storage** → `imports` adında bir **private bucket** oluştur (Telegram dosyaları buraya yüklenir).
+3. `schema.sql`, private `imports` ve `maintenance-invoices` Storage bucket’larını otomatik oluşturur.
 4. **Project Settings → API**'den şu değerleri al: `Project URL`, `anon key`, `service_role key`.
 
 ### 2) fal.ai (yük okuma)
@@ -55,7 +55,7 @@ GOOGLE_ROUTES_API_KEY=...                 # opsiyonel; gerçek yol-bazlı ETA (y
 ```
 npm install
 npm run dev        # http://localhost:3000
-npm test           # settlement motoru testleri (7/7)
+npm test           # tüm birim testleri (60 test)
 npm run lint       # eslint
 npm run smoke:fal  # fal.ai key testi (FAL_KEY gerekir)
 ```
@@ -84,7 +84,7 @@ Sonra uygulamada **Settings → Telegram Grupları**'ndan her grubu araç+şofö
 2. Hafta sonu **Settlements → Yeni Settlement** → tip + araç + hafta seç → motor loadları/masrafları toplar, net hesaplar.
 3. Settlement detayında **PDF İndir** → bilingual statement.
 4. **Finalize → Paid** ile kilitle (Paid düzenlenemez).
-5. **Maintenance**'ta mileage gir; eşiği aşınca dashboard + Telegram uyarısı.
+5. **Maintenance**’ta mileage gir veya `npm run maintenance:invoice -- "C:\\Invoices\\invoice.pdf"` ile PDF invoice işle; dashboard + Telegram uyarılarını takip et.
 
 ## Ücretsiz katman notları
 - Supabase free DB ~7 gün hiç istek almazsa duraklar; düzenli bot/cron kullanımı canlı tutar.
@@ -92,4 +92,4 @@ Sonra uygulamada **Settings → Telegram Grupları**'ndan her grubu araç+şofö
 - Tek ücretli parça: fal.ai (yük başına birkaç cent). `AI_MODEL`'i daha ucuz bir modele çekerek düşürebilirsin.
 
 ## v2 (kapsam dışı)
-Repairs, driver scorecard, unit profitability, fuel efficiency, repair-cost warning, gelişmiş raporlar/CSV, rol bazlı yetki.
+Tam repair work-order modülü, driver scorecard, unit profitability, fuel efficiency ve gelişmiş raporlar/CSV.

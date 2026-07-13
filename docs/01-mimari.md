@@ -81,7 +81,7 @@ yük girişi için **Telegram Bot** kullanılır.
 - Supabase Auth (email + şifre). İlk kayıt → trigger otomatik organizasyon + owner profili açar.
 
 ### 6) Veri & depolama — Supabase
-- **Postgres:** 16 tablo, hepsi `organization_id` taşır, **RLS** ile organizasyona izole (bkz. 02).
+- **Postgres:** 23 tablo, hepsi `organization_id` taşır, **RLS** ile organizasyona izole (bkz. 02).
 - **Auth:** kullanıcılar; `profiles` tablosu org + rol tutar.
 - **Storage:** `imports` private bucket (Telegram'dan gelen PDF/görseller).
 

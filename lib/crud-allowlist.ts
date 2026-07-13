@@ -20,7 +20,7 @@ export const ALLOWED: Record<string, string[]> = {
     "default_driver_pay_pct", "company_fee_pct", "company_fee_is_our_revenue",
     "external_carrier_fee_pct", "management_commission_type",
     "management_commission_amount", "vin", "year", "make", "model", "plate",
-    "current_mileage", "status", "notes",
+    "status", "notes",
   ],
   loads: [
     "load_number", "load_source", "company_id", "external_carrier_id",
@@ -36,10 +36,6 @@ export const ALLOWED: Record<string, string[]> = {
   maintenance_rules: [
     "vehicle_id", "service_type", "interval_type", "interval_miles",
     "interval_days", "last_done_mileage", "last_done_date", "active",
-  ],
-  maintenance_records: [
-    "vehicle_id", "rule_id", "service_type", "performed_date", "mileage",
-    "cost", "shop_name", "notes",
   ],
 };
 

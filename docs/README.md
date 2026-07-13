@@ -8,7 +8,7 @@ varsayılmaz. Sıralı okuman önerilir.
 | # | Dosya | Ne anlatır |
 |---|---|---|
 | 01 | [Mimari](01-mimari.md) | Tüm katmanlar (UI, server actions, lib, API, auth, Supabase, Vercel) + veri akışı |
-| 02 | [Veritabanı Şeması](02-veritabani-semasi.md) | 16 tablo kolon-kolon, RLS, trigger, storage, indexler |
+| 02 | [Veritabanı Şeması](02-veritabani-semasi.md) | 23 tablo kolon-kolon, RLS, trigger, storage, indexler |
 | 03 | [Supabase Kurulum](03-supabase-kurulum.md) | Hesap aç → proje → şema yükle → bucket → anahtarlar |
 | 04 | [Telegram Kurulum](04-telegram-kurulum.md) | Bot oluştur → gruba ekle → webhook → grup eşleme |
 | 05 | [fal.ai (Yapay Zeka)](05-fal-ai.md) | Yük okuma fal.ai ile; key, model, görsel/PDF davranışı, maliyet |

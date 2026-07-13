@@ -18,9 +18,9 @@ dosya depolama. Süre: ~10 dakika.
 1. Sol menü → **SQL Editor** → **New query**.
 2. Repodaki [`supabase/schema.sql`](../supabase/schema.sql) dosyasının **tamamını** kopyala, editöre
    yapıştır.
-3. **Run** (Ctrl/Cmd+Enter). "Success" görmelisin. Bu; 16 tabloyu, RLS politikalarını,
+3. **Run** (Ctrl/Cmd+Enter). "Success" görmelisin. Bu; 23 tabloyu, RLS politikalarını,
    `current_org_id()` fonksiyonunu ve kayıt trigger'ını kurar. Tekrar çalıştırmak güvenlidir.
-4. Doğrula: sol menü → **Table Editor** → 16 tablo listelenmeli.
+4. Doğrula: sol menü → **Table Editor** → 23 tablo listelenmeli.
 
 ## 4) Storage bucket (otomatik)
 `schema.sql` çalıştığında **`imports` private bucket'ı otomatik oluşur** — manuel adım gerekmez.

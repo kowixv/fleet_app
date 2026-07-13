@@ -67,7 +67,6 @@ export default async function VehiclesPage({
     { name: "make", label: "Make", hideInTable: true },
     { name: "model", label: "Model", hideInTable: true },
     { name: "plate", label: "Plaka", hideInTable: true },
-    { name: "current_mileage", label: "Mileage", type: "number" },
     {
       name: "status",
       label: "Durum",

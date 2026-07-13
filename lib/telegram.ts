@@ -16,13 +16,17 @@ export function escapeHtml(value: unknown): string {
     .replace(/>/g, "&gt;");
 }
 
-async function call(method: string, body: Record<string, unknown>) {
+async function call<T = Record<string, unknown>>(method: string, body: Record<string, unknown>) {
   const res = await fetch(`${API}/${method}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  return res.json();
+  const payload = await res.json().catch(() => null) as { ok?: boolean; result?: T; description?: string } | null;
+  if (!res.ok || payload?.ok === false || !payload) {
+    throw new Error(payload?.description || `Telegram ${method} failed with HTTP ${res.status}`);
+  }
+  return payload;
 }
 
 export function sendMessage(
@@ -64,7 +68,7 @@ let cachedUsername: string | null | undefined;
 export async function getBotUsername(): Promise<string | null> {
   if (cachedUsername !== undefined) return cachedUsername;
   try {
-    const info = await call("getMe", {});
+    const info = await call<{ username?: string }>("getMe", {});
     cachedUsername = info?.result?.username ?? null;
   } catch {
     cachedUsername = null;
@@ -135,7 +139,7 @@ export function vehicleKeyboard(
 export async function downloadFile(
   fileId: string,
 ): Promise<{ bytes: Buffer; mime: string; ext: string } | null> {
-  const info = await call("getFile", { file_id: fileId });
+  const info = await call<{ file_path?: string }>("getFile", { file_id: fileId });
   const filePath: string | undefined = info?.result?.file_path;
   if (!filePath) return null;
   const url = `https://api.telegram.org/file/bot${TOKEN}/${filePath}`;

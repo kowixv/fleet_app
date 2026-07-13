@@ -14,16 +14,35 @@ export async function updateSettings(formData: FormData): Promise<void> {
     return v === null || v === "" ? null : Number(v);
   };
 
+  const defaultCommission = num("default_commission");
+  const dueSoonMiles = num("pm_due_soon_miles");
+  const dueSoonDays = num("pm_due_soon_days");
+  const repairWarning = num("repair_warning_amount");
+  const fuelPct = num("fuel_warning_pct");
+  const values = [defaultCommission, dueSoonMiles, dueSoonDays, repairWarning, fuelPct];
+  if (values.some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
+    throw new Error("Ayar değerleri geçersiz.");
+  }
+  if (dueSoonMiles == null || !Number.isInteger(dueSoonMiles) || dueSoonMiles < 0) {
+    throw new Error("Mileage uyarı eşiği sıfır veya daha büyük tam sayı olmalı.");
+  }
+  if (dueSoonDays == null || !Number.isInteger(dueSoonDays) || dueSoonDays < 1) {
+    throw new Error("Tarih uyarı eşiği pozitif tam sayı olmalı.");
+  }
+  if (fuelPct != null && fuelPct > 100) throw new Error("Fuel yüzdesi 0-100 arasında olmalı.");
+
   const patch = {
     organization_id: profile.organization_id,
-    default_commission: num("default_commission"),
-    pm_due_soon_miles: num("pm_due_soon_miles"),
-    repair_warning_amount: num("repair_warning_amount"),
-    fuel_warning_pct: num("fuel_warning_pct") != null ? Number(num("fuel_warning_pct")) / 100 : null,
+    default_commission: defaultCommission,
+    pm_due_soon_miles: dueSoonMiles,
+    pm_due_soon_days: dueSoonDays,
+    repair_warning_amount: repairWarning,
+    fuel_warning_pct: fuelPct != null ? fuelPct / 100 : null,
     updated_at: new Date().toISOString(),
   };
 
-  await supabase.from("settings").upsert(patch, { onConflict: "organization_id" });
+  const { error } = await supabase.from("settings").upsert(patch, { onConflict: "organization_id" });
+  if (error) throw new Error(error.message);
   revalidatePath("/settings");
 }
 

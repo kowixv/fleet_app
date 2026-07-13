@@ -3,55 +3,59 @@
 import { createClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
-import { localISODate } from "@/lib/format";
+import { todayISO } from "@/lib/tz";
 
-export async function updateMileage(vehicleId: string, mileage: number) {
-  const profile = await requireWriteRole();
-  const supabase = await createClient();
-  const { error: updErr } = await supabase
-    .from("vehicles")
-    .update({ current_mileage: mileage })
-    .eq("id", vehicleId);
-  if (updErr) return { ok: false as const, error: updErr.message };
-  const { error: logErr } = await supabase.from("vehicle_mileage_logs").insert({
-    organization_id: profile.organization_id,
-    vehicle_id: vehicleId,
-    mileage,
-    source: "manual",
-  });
-  if (logErr) return { ok: false as const, error: logErr.message };
+function maintenanceRevalidate() {
   revalidatePath("/maintenance");
+  revalidatePath("/vehicles");
   revalidatePath("/");
-  return { ok: true as const };
 }
 
-/** Mark a rule serviced now: snapshot mileage/date as the new baseline. */
-export async function markServiced(ruleId: string, mileage: number) {
-  const profile = await requireWriteRole();
-  const supabase = await createClient();
-  const today = localISODate();
-  const { error: updErr } = await supabase
-    .from("maintenance_rules")
-    .update({ last_done_mileage: mileage, last_done_date: today })
-    .eq("id", ruleId);
-  if (updErr) return { ok: false as const, error: updErr.message };
-  const { data: rule, error: ruleErr } = await supabase
-    .from("maintenance_rules")
-    .select("vehicle_id, service_type")
-    .eq("id", ruleId)
-    .single();
-  if (ruleErr) return { ok: false as const, error: ruleErr.message };
-  if (rule) {
-    const { error: recErr } = await supabase.from("maintenance_records").insert({
-      organization_id: profile.organization_id,
-      vehicle_id: rule.vehicle_id,
-      rule_id: ruleId,
-      service_type: rule.service_type,
-      performed_date: today,
-      mileage,
-    });
-    if (recErr) return { ok: false as const, error: recErr.message };
+export async function updateMileage(vehicleId: string, mileage: number) {
+  await requireWriteRole();
+  if (!vehicleId) return { ok: false as const, error: "Araç gerekli." };
+  if (!Number.isFinite(mileage) || mileage < 0 || !Number.isInteger(mileage)) {
+    return { ok: false as const, error: "Mileage sıfır veya daha büyük tam sayı olmalı." };
   }
-  revalidatePath("/maintenance");
-  return { ok: true as const };
+
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("set_vehicle_mileage", {
+    p_vehicle_id: vehicleId,
+    p_mileage: mileage,
+    p_source: "manual",
+    p_organization_id: null,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  maintenanceRevalidate();
+  return { ok: true as const, mileage };
+}
+
+export interface ServiceDetails {
+  cost?: number;
+  shopName?: string;
+  partName?: string;
+  notes?: string;
+}
+
+/** Atomic and idempotent: DB re-reads the authoritative vehicle mileage. */
+export async function markServiced(ruleId: string, details: ServiceDetails = {}) {
+  await requireWriteRole();
+  const cost = Number(details.cost ?? 0);
+  if (!ruleId) return { ok: false as const, error: "Bakım kuralı gerekli." };
+  if (!Number.isFinite(cost) || cost < 0) {
+    return { ok: false as const, error: "Maliyet negatif olamaz." };
+  }
+
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("mark_maintenance_serviced", {
+    p_rule_id: ruleId,
+    p_performed_date: todayISO(),
+    p_cost: cost,
+    p_shop_name: details.shopName?.trim() || null,
+    p_part_name: details.partName?.trim() || null,
+    p_notes: details.notes?.trim() || null,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  maintenanceRevalidate();
+  return { ok: true as const, recordId: data as string };
 }

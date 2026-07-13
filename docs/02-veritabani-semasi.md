@@ -291,3 +291,23 @@ current_org_id())`. `organizations` ve `profiles` için kendi varyantları var. 
 `loads(organization_id, delivery_date)`, `expenses(organization_id, date)`,
 `settlements(organization_id, week_end)`, `imported_loads(organization_id, status)`,
 `telegram_groups(chat_id)`.
+
+### `maintenance_invoices` (2026-07-12)
+PDF bakım invoice metadata ve duplicate kontrolü.
+
+| Kolon | Tip | Açıklama |
+|---|---|---|
+| id | uuid PK | |
+| organization_id | uuid FK | Tenant |
+| vehicle_id | uuid FK | Tespit/Seçilen unit |
+| invoice_number | text | Invoice numarası |
+| invoice_date | date | Invoice tarihi |
+| shop_name | text | Servis/Shop |
+| file_name | text | Orijinal dosya adı |
+| storage_path | text | Private `maintenance-invoices` bucket yolu |
+| file_hash | text unique/org | SHA-256 duplicate anahtarı |
+| raw_text | text | PDF metin katmanı |
+| parsed_data | jsonb | Doğrulanmış AI çıktısı |
+| created_by | uuid FK | Web kullanıcısı varsa |
+
+`maintenance_records` ayrıca `invoice_id`, `part_name`, `next_due_mileage`, `next_due_date`, `source`, `created_by`, `updated_at` alanlarını taşır. `settings.pm_due_soon_days` tarih uyarı eşiğidir.

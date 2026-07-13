@@ -44,7 +44,11 @@ export default async function SettingsPage() {
           </div>
           <div>
             <label className="label">PM "Due Soon" eşiği (mil)</label>
-            <input name="pm_due_soon_miles" type="number" defaultValue={settings?.pm_due_soon_miles ?? 2500} className="input" />
+            <input name="pm_due_soon_miles" type="number" defaultValue={settings?.pm_due_soon_miles ?? 2000} className="input" />
+          </div>
+          <div>
+            <label className="label">PM "Due Soon" eşiği (gün)</label>
+            <input name="pm_due_soon_days" type="number" min="1" step="1" defaultValue={settings?.pm_due_soon_days ?? 7} className="input" />
           </div>
           <div>
             <label className="label">Repair uyarı tutarı ($)</label>

@@ -1,12 +1,15 @@
-import { localISODate } from "@/lib/format";
-
 export type PMStatus = "ok" | "due_soon" | "due_now" | "overdue";
+
+export interface PMThresholds {
+  dueSoonMiles: number;
+  dueSoonDays: number;
+}
 
 export interface PMResult {
   status: PMStatus;
   unit: "miles" | "days";
-  nextDue: number | string | null; // mileage number or ISO date
-  remaining: number | null; // miles or days remaining
+  nextDue: number | string | null;
+  remaining: number | null;
   label: string;
 }
 
@@ -17,6 +20,13 @@ const STATUS_LABEL: Record<PMStatus, string> = {
   overdue: "Overdue",
 };
 
+const STATUS_PRIORITY: Record<PMStatus, number> = {
+  overdue: 0,
+  due_now: 1,
+  due_soon: 2,
+  ok: 3,
+};
+
 interface Rule {
   interval_type: "mileage" | "date";
   interval_miles: number | null;
@@ -25,50 +35,85 @@ interface Rule {
   last_done_date: string | null;
 }
 
-/**
- * Compute maintenance status for a rule.
- * @param currentMileage vehicle's current mileage
- * @param dueSoonMiles threshold (settings.pm_due_soon_miles)
- * @param now reference date (defaults to current time)
- */
+export const DEFAULT_PM_THRESHOLDS: PMThresholds = {
+  dueSoonMiles: 2_000,
+  dueSoonDays: 7,
+};
+
+function validDateOnly(value: string | null): value is string {
+  return !!value && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/** Calendar-day arithmetic that never depends on browser/server timezone. */
+export function addDaysISO(date: string, days: number): string {
+  if (!validDateOnly(date) || !Number.isInteger(days)) throw new Error("Invalid date interval");
+  const [year, month, day] = date.split("-").map(Number);
+  const next = new Date(Date.UTC(year, month - 1, day + days));
+  return next.toISOString().slice(0, 10);
+}
+
+function epochDay(date: string): number {
+  const [year, month, day] = date.split("-").map(Number);
+  return Math.floor(Date.UTC(year, month - 1, day) / 86_400_000);
+}
+
 export function computePM(
   rule: Rule,
   currentMileage: number,
-  dueSoonMiles = 2500,
-  now: Date = new Date(),
+  thresholds: Partial<PMThresholds> = DEFAULT_PM_THRESHOLDS,
+  today: string = new Date().toISOString().slice(0, 10),
 ): PMResult {
-  // Both branches require a known baseline; a missing last_done value would
-  // otherwise fabricate a due date (e.g. a 150k-mile truck instantly "overdue"
-  // against a 0-mile baseline) — fall through to the neutral "—" result.
-  if (rule.interval_type === "mileage" && rule.interval_miles && rule.last_done_mileage != null) {
-    const nextDue = rule.last_done_mileage + rule.interval_miles;
-    const remaining = nextDue - (currentMileage || 0);
+  const dueSoonMiles = Math.max(0, thresholds.dueSoonMiles ?? DEFAULT_PM_THRESHOLDS.dueSoonMiles);
+  const dueSoonDays = Math.max(1, thresholds.dueSoonDays ?? DEFAULT_PM_THRESHOLDS.dueSoonDays);
+
+  if (
+    rule.interval_type === "mileage" &&
+    Number(rule.interval_miles) > 0 &&
+    rule.last_done_mileage != null
+  ) {
+    const nextDue = Number(rule.last_done_mileage) + Number(rule.interval_miles);
+    const remaining = nextDue - Number(currentMileage || 0);
+    const dueNowMiles = Math.max(1, Math.floor(dueSoonMiles * 0.2));
     let status: PMStatus = "ok";
-    if (remaining <= 0) status = "overdue";
-    else if (remaining <= dueSoonMiles * 0.2) status = "due_now";
+    if (remaining < 0) status = "overdue";
+    else if (remaining <= dueNowMiles) status = "due_now";
     else if (remaining <= dueSoonMiles) status = "due_soon";
     return { status, unit: "miles", nextDue, remaining, label: STATUS_LABEL[status] };
   }
 
-  if (rule.interval_type === "date" && rule.interval_days && rule.last_done_date) {
-    const last = new Date(rule.last_done_date);
-    const next = new Date(last);
-    next.setDate(next.getDate() + rule.interval_days);
-    const remaining = Math.ceil((next.getTime() - now.getTime()) / 86_400_000);
+  if (
+    rule.interval_type === "date" &&
+    Number(rule.interval_days) > 0 &&
+    validDateOnly(rule.last_done_date) &&
+    validDateOnly(today)
+  ) {
+    const nextDue = addDaysISO(rule.last_done_date, Number(rule.interval_days));
+    const remaining = epochDay(nextDue) - epochDay(today);
     let status: PMStatus = "ok";
-    if (remaining <= 0) status = "overdue";
-    else if (remaining <= 7) status = "due_now";
-    else if (remaining <= 30) status = "due_soon";
-    return {
-      status,
-      unit: "days",
-      nextDue: localISODate(next),
-      remaining,
-      label: STATUS_LABEL[status],
-    };
+    if (remaining < 0) status = "overdue";
+    else if (remaining <= 1) status = "due_now";
+    else if (remaining <= dueSoonDays) status = "due_soon";
+    return { status, unit: "days", nextDue, remaining, label: STATUS_LABEL[status] };
   }
 
   return { status: "ok", unit: "miles", nextDue: null, remaining: null, label: "—" };
+}
+
+export function formatPMRemaining(pm: PMResult): string {
+  if (pm.remaining == null) return "—";
+  const amount = Math.abs(pm.remaining).toLocaleString("en-US");
+  const unit = pm.unit === "miles" ? "mi" : "gün";
+  if (pm.remaining < 0) return `${amount} ${unit} gecikti`;
+  if (pm.remaining === 0) return pm.unit === "miles" ? "Şimdi yapılmalı" : "Bugün yapılmalı";
+  return `${amount} ${unit} kaldı`;
+}
+
+/** Severity first; numerical comparison is only valid within the same unit. */
+export function comparePMAlerts(a: PMResult, b: PMResult): number {
+  const severity = STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status];
+  if (severity !== 0) return severity;
+  if (a.unit === b.unit) return (a.remaining ?? Number.MAX_SAFE_INTEGER) - (b.remaining ?? Number.MAX_SAFE_INTEGER);
+  return a.unit.localeCompare(b.unit);
 }
 
 export const PM_BADGE: Record<PMStatus, string> = {

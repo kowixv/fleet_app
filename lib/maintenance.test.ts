@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
-import { computePM } from "./maintenance";
+import { describe, expect, it } from "vitest";
+import { addDaysISO, comparePMAlerts, computePM, formatPMRemaining } from "./maintenance";
 
-const base = {
+const thresholds = { dueSoonMiles: 2_000, dueSoonDays: 7 };
+const mileageRule = {
   interval_type: "mileage" as const,
   interval_miles: 25_000,
   interval_days: null,
@@ -9,59 +10,69 @@ const base = {
   last_done_date: null,
 };
 
-describe("computePM — mileage rules", () => {
-  it("returns the neutral result when last_done_mileage is unknown", () => {
-    // A 150k-mile truck with no baseline must NOT be fabricated into "overdue".
-    const pm = computePM({ ...base, last_done_mileage: null }, 150_000);
-    expect(pm.status).toBe("ok");
-    expect(pm.nextDue).toBeNull();
-    expect(pm.remaining).toBeNull();
-    expect(pm.label).toBe("—");
+describe("computePM — mileage", () => {
+  it("returns neutral without a baseline", () => {
+    const pm = computePM({ ...mileageRule, last_done_mileage: null }, 150_000, thresholds);
+    expect(pm).toMatchObject({ status: "ok", nextDue: null, remaining: null, label: "—" });
   });
 
-  it("flags overdue when past the interval", () => {
-    const pm = computePM(base, 130_000);
+  it("uses the configured 2,000-mile warning threshold", () => {
+    expect(computePM(mileageRule, 123_000, thresholds).status).toBe("due_soon");
+    expect(computePM(mileageRule, 122_999, thresholds).status).toBe("ok");
+  });
+
+  it("treats exact due as due_now, not overdue", () => {
+    const pm = computePM(mileageRule, 125_000, thresholds);
+    expect(pm.status).toBe("due_now");
+    expect(formatPMRemaining(pm)).toBe("Şimdi yapılmalı");
+  });
+
+  it("formats overdue distance without a negative 'remaining' label", () => {
+    const pm = computePM(mileageRule, 130_000, thresholds);
     expect(pm.status).toBe("overdue");
     expect(pm.remaining).toBe(-5_000);
-  });
-
-  it("flags due_soon within the threshold", () => {
-    const pm = computePM(base, 123_000, 2_500);
-    expect(pm.status).toBe("due_soon");
-    expect(pm.remaining).toBe(2_000);
-  });
-
-  it("flags due_now within 20% of the threshold", () => {
-    const pm = computePM(base, 124_600, 2_500);
-    expect(pm.status).toBe("due_now");
-    expect(pm.remaining).toBe(400);
-  });
-
-  it("is ok when far from due", () => {
-    const pm = computePM(base, 110_000);
-    expect(pm.status).toBe("ok");
-    expect(pm.remaining).toBe(15_000);
+    expect(formatPMRemaining(pm)).toBe("5,000 mi gecikti");
   });
 });
 
-describe("computePM — date rules", () => {
-  it("returns the neutral result when last_done_date is unknown", () => {
-    const pm = computePM(
-      { interval_type: "date", interval_miles: null, interval_days: 90, last_done_mileage: null, last_done_date: null },
-      0,
-    );
-    expect(pm.status).toBe("ok");
-    expect(pm.label).toBe("—");
+describe("computePM — date", () => {
+  const dateRule = {
+    interval_type: "date" as const,
+    interval_miles: null,
+    interval_days: 30,
+    last_done_mileage: null,
+    last_done_date: "2026-05-01",
+  };
+
+  it("uses timezone-independent calendar arithmetic", () => {
+    expect(addDaysISO("2026-05-01", 30)).toBe("2026-05-31");
+    expect(computePM(dateRule, 0, thresholds, "2026-05-24")).toMatchObject({
+      status: "due_soon",
+      nextDue: "2026-05-31",
+      remaining: 7,
+    });
   });
 
-  it("flags overdue when the interval has passed", () => {
-    const now = new Date("2026-07-03T12:00:00Z");
-    const pm = computePM(
-      { interval_type: "date", interval_miles: null, interval_days: 30, last_done_mileage: null, last_done_date: "2026-05-01" },
-      0,
-      2_500,
-      now,
-    );
+  it("treats exact due date as due_now", () => {
+    expect(computePM(dateRule, 0, thresholds, "2026-05-31").status).toBe("due_now");
+  });
+
+  it("marks a past due date overdue", () => {
+    const pm = computePM(dateRule, 0, thresholds, "2026-06-02");
     expect(pm.status).toBe("overdue");
+    expect(formatPMRemaining(pm)).toBe("2 gün gecikti");
+  });
+});
+
+describe("alert ordering", () => {
+  it("sorts by severity and only compares values within the same unit", () => {
+    const overdue = computePM(mileageRule, 130_000, thresholds);
+    const dateSoon = computePM(
+      { interval_type: "date", interval_miles: null, interval_days: 10, last_done_mileage: null, last_done_date: "2026-07-01" },
+      0,
+      thresholds,
+      "2026-07-05",
+    );
+    expect(comparePMAlerts(overdue, dateSoon)).toBeLessThan(0);
   });
 });
