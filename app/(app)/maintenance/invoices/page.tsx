@@ -1,3 +1,4 @@
+import BulkMaintenanceInvoiceUpload from "@/components/BulkMaintenanceInvoiceUpload";
 import MaintenanceInvoiceInbox, { type MaintenanceInvoiceInboxRow } from "@/components/MaintenanceInvoiceInbox";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { createClient } from "@/lib/supabase/server";
@@ -20,6 +21,7 @@ export default async function MaintenanceInvoicesPage() {
         <h2 className="font-semibold">Invoice Inbox ve PDF Yükleme</h2>
         <p className="mt-1 text-sm text-slate-500">PDF yükleyin, inceleme bekleyen taslakları tamamlayın veya tamamlanmış importları geri alın.</p>
       </div>
+      <BulkMaintenanceInvoiceUpload />
       <MaintenanceInvoiceInbox rows={(inboxResult.data ?? []) as unknown as MaintenanceInvoiceInboxRow[]} />
     </div>
   );

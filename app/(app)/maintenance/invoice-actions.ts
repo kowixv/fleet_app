@@ -52,3 +52,25 @@ export async function undoMaintenanceInvoiceImport(invoiceId: string) {
   revalidateMaintenanceInvoicePaths(invoiceId);
   return { ok: true as const, result: data };
 }
+
+export async function finalizeBulkMaintenanceInvoiceUnit(payload: unknown) {
+  await requireWriteRole();
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("finalize_bulk_maintenance_invoice_unit", {
+    p_payload: payload,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  revalidateMaintenanceInvoicePaths();
+  return { ok: true as const, result: data };
+}
+
+export async function undoBulkMaintenanceInvoiceBatch(batchId: string) {
+  await requireWriteRole();
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("undo_bulk_maintenance_invoice_batch", {
+    p_batch_id: batchId,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  revalidateMaintenanceInvoicePaths();
+  return { ok: true as const, result: data };
+}
