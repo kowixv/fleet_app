@@ -4,12 +4,13 @@ import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 
 const ITEMS = [
-  { href: "/maintenance", label: "Overview", exact: true },
+  { href: "/maintenance", label: "Özet", exact: true },
+  { href: "/maintenance/reminders", label: "Hatırlatıcılar" },
   { href: "/maintenance?add=1", label: "Bakım Ekle", queryActive: "add" },
-  { href: "/maintenance/units", label: "Units" },
   { href: "/maintenance/history", label: "Geçmiş" },
-  { href: "/maintenance/costs", label: "Costs" },
-  { href: "/maintenance/settings", label: "Settings" },
+  { href: "/maintenance/inspections", label: "Inspection" },
+  { href: "/maintenance/costs", label: "Maliyetler" },
+  { href: "/maintenance/settings", label: "Ayarlar" },
 ];
 
 export default function MaintenanceNav({ title = "Bakım Merkezi" }: { title?: string }) {

@@ -38,7 +38,7 @@ describe("manual maintenance service safety", () => {
     expect(normalizeUnitNumber(" truck- A 12 ")).toBe("A12");
   });
 
-  it("matches fleet-manager labels to seeded template service names", () => {
+  it("matches fleet-manager labels to existing reminder service names", () => {
     expect(manualServiceKeys("periodic", "Cabin Air Filter")).toContain("cabin air filter inspection replacement");
     expect(manualServiceKeys("periodic", "Cabin Air Filter Inspection/Replacement")).toContain("cabin air filter");
     expect(manualServiceKeys("periodic", "DOT Annual")).toContain("annual inspection");
@@ -68,13 +68,14 @@ describe("manual maintenance SQL contract", () => {
     expect(migration).toContain("v_update_plan := false");
   });
 
-  it("creates missing units once and applies the Peterbilt template without hardcoded ids", () => {
-    expect(migration).toContain("create or replace function quick_create_maintenance_vehicle");
-    expect(migration).toContain("canonical_unit_number(unit_number) = v_unit");
-    expect(migration).toContain("2023 Peterbilt 579 + Cummins X15 EPA21");
-    expect(migration).toContain("if found then");
-    expect(migration).toContain("v_created_rules := v_created_rules + 1");
-    expect(migration).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  it("keeps the normal quick-create path away from the legacy template RPC", () => {
+    const actions = readFileSync("app/(app)/maintenance/actions.ts", "utf8");
+    expect(actions).not.toContain('rpc("quick_create_maintenance_vehicle"');
+    expect(actions).toContain('from("vehicles")');
+    expect(actions).toContain('rpc("set_vehicle_mileage"');
+    expect(actions).toContain("created: true");
+    expect(actions).not.toContain("Peterbilt");
+    expect(actions).not.toContain("Cummins");
   });
 
   it("keeps viewer restrictions and organization isolation on RPCs", () => {
@@ -121,7 +122,7 @@ describe("manual maintenance daily UX contract", () => {
     expect(overview).toContain("PDF Invoice Yükle");
     expect(overview).toContain("Toplu Invoice Import");
     expect(overview).not.toContain("BulkMaintenanceInvoiceUpload");
-    expect(settings).toContain("Advanced Data Tools");
+    expect(settings).toContain("Gelişmiş Veri Araçları");
     expect(settings).toContain("/maintenance/invoices");
   });
 
@@ -136,7 +137,12 @@ describe("manual maintenance daily UX contract", () => {
     expect(terms).toContain("Toplam Maliyet");
     expect(terms).toContain("Ek Detaylar");
     expect(form).toContain("Yeni Unit Oluştur");
-    expect(form).toContain("Peterbilt 579 + X15 bakım planı uygulanacak");
+    expect(form).toContain("Unit Number");
+    expect(form).toContain("Current Mileage");
+    expect(form).toContain("Ek Araç Bilgileri");
+    expect(form).toContain("Bakım Hatırlatıcısı Ekle");
+    expect(form).not.toContain("Peterbilt");
+    expect(form).not.toContain("template");
   });
 
   it("shows plain-language save summaries for periodic, repair, and historical entries", () => {
@@ -147,16 +153,16 @@ describe("manual maintenance daily UX contract", () => {
     expect(actions).toContain("Geçmiş bakım kaydedildi");
     expect(form).toContain("Current mileage güncellendi");
     expect(form).toContain("Current mileage düşürülmedi");
-    expect(form).toContain("Periyodik bakım planı değişmedi");
+    expect(form).toContain("Bakım hatırlatıcısı değişmedi");
     expect(form).toContain("Sonraki bakım");
   });
 
   it("keeps repair entries history-only in the normal form", () => {
     const form = readFileSync("components/ManualMaintenanceEntry.tsx", "utf8");
     const terms = readFileSync("lib/maintenance-terminology.ts", "utf8");
-    expect(form).toContain("Bu kayıt bakım planını değiştirmez.");
-    expect(terms).toContain("Sonraki bakım tarihini güncelle");
-    expect(terms).toContain("Gelişmiş plan ayarları");
+    expect(form).toContain("Bu kayıt bakım hatırlatıcısını değiştirmez.");
+    expect(terms).toContain("Sonraki bakımı güncelle");
+    expect(terms).toContain("Gelişmiş hatırlatıcı ayarları");
   });
 
   it("uses a real delete confirmation panel and edit service/type controls", () => {

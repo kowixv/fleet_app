@@ -1,7 +1,7 @@
 "use server";
 
 import { requireWriteRole } from "@/lib/auth";
-import { manualMaintenanceCategory, manualServiceOption, shouldUpdateMaintenancePlan, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
+import { manualMaintenanceCategory, manualServiceOption, normalizeUnitNumber, shouldUpdateMaintenancePlan, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 import { mileageRpcErrorMessage, validateMileageInput } from "@/lib/vehicle-mileage";
@@ -126,7 +126,6 @@ export async function saveManualMaintenance(formData: FormData) {
     if (!mileage.ok) throw new Error(mileage.error);
 
     const updatePlan = shouldUpdateMaintenancePlan(kind, serviceType, formData.get("update_plan") === "on");
-    const createMissingRule = updatePlan && formData.get("create_missing_rule") === "on";
     const submissionKey = text(formData.get("submission_key")) ?? crypto.randomUUID();
     const payload = {
       submission_key: submissionKey,
@@ -151,7 +150,7 @@ export async function saveManualMaintenance(formData: FormData) {
       category: manualMaintenanceCategory(kind, serviceType),
       planned: kind === "periodic",
       update_plan: updatePlan,
-      create_missing_rule: createMissingRule,
+      create_missing_rule: false,
     };
 
     const supabase = await createClient();
@@ -216,27 +215,47 @@ export async function saveManualMaintenance(formData: FormData) {
 }
 
 export async function quickCreateMaintenanceVehicle(formData: FormData) {
-  await requireWriteRole();
+  const profile = await requireWriteRole();
   const unitNumber = text(formData.get("unit_number"));
   const mileage = validateMileageInput(text(formData.get("current_mileage")));
   if (!unitNumber) return { ok: false as const, error: "Unit Number gerekli." };
   if (!mileage.ok) return { ok: false as const, error: mileage.error };
 
   const supabase = await createClient();
-  const { data, error } = await supabase.rpc("quick_create_maintenance_vehicle", {
-    p_payload: {
-      unit_number: unitNumber,
-      current_mileage: mileage.mileage,
+  const canonical = normalizeUnitNumber(unitNumber);
+  const existingRes = await supabase
+    .from("vehicles")
+    .select("id, unit_number")
+    .eq("organization_id", profile.organization_id);
+  if (existingRes.error) return { ok: false as const, error: existingRes.error.message };
+  const existing = (existingRes.data ?? []).find((vehicle) => normalizeUnitNumber(String(vehicle.unit_number ?? "")) === canonical);
+  if (existing) {
+    return { ok: true as const, result: { vehicle_id: existing.id as string, created: false } };
+  }
+
+  const { data, error } = await supabase
+    .from("vehicles")
+    .insert({
+      organization_id: profile.organization_id,
+      unit_number: canonical || unitNumber,
+      vehicle_type: "truck",
+      ownership_type: "company_owned",
+      status: "active",
       vin: text(formData.get("vin")),
-      year: 2023,
-      make: "Peterbilt",
-      model: "579",
-      engine_model: "Cummins X15 EPA21",
-    },
-  });
+    })
+    .select("id")
+    .single();
   if (error) return { ok: false as const, error: mileageRpcErrorMessage(error.message) };
+
+  const { error: mileageError } = await supabase.rpc("set_vehicle_mileage", {
+    p_vehicle_id: data.id,
+    p_mileage: mileage.mileage,
+    p_source: "quick_vehicle_create",
+    p_organization_id: null,
+  });
+  if (mileageError) return { ok: false as const, error: mileageRpcErrorMessage(mileageError.message) };
   maintenanceRevalidate();
-  return { ok: true as const, result: data as { vehicle_id?: string } };
+  return { ok: true as const, result: { vehicle_id: data.id as string, created: true } };
 }
 
 export async function deleteManualMaintenanceRecord(recordId: string) {

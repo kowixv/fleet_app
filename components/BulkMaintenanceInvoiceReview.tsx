@@ -18,7 +18,6 @@ export default function BulkMaintenanceInvoiceReview({
       vehicleId: group.vehicle?.id ?? "",
       vin: group.vin ?? "",
       autoCreate: group.status !== "existing_vehicle",
-      applyTemplate: true,
       proposedMileage: group.proposed_current_mileage == null ? "" : String(group.proposed_current_mileage),
       excludedInvoices: new Set<string>(),
       excludedServices: new Set<string>(),
@@ -94,7 +93,7 @@ export default function BulkMaintenanceInvoiceReview({
           vehicle_id: draft.vehicleId || null,
           vin: draft.vin || null,
           auto_create_vehicle: draft.autoCreate,
-          apply_template: draft.applyTemplate,
+          apply_template: false,
           proposed_current_mileage: draft.proposedMileage === "" ? null : Number(draft.proposedMileage),
           invoice_ids: group.invoices.filter((invoice) => !draft.excludedInvoices.has(invoice.id)).map((invoice) => invoice.id),
           records,
@@ -149,7 +148,6 @@ export default function BulkMaintenanceInvoiceReview({
           <div className="mt-4 grid gap-3 sm:grid-cols-4">
             <Stat label="DB mileage" value={group.vehicle?.current_mileage == null ? "-" : group.vehicle.current_mileage.toLocaleString("en-US")} />
             <Stat label="Highest invoice mileage" value={group.highest_invoice_mileage == null ? "-" : group.highest_invoice_mileage.toLocaleString("en-US")} />
-            <Stat label="Template" value={draft.applyTemplate ? "Uygulanacak" : "Kapalı"} />
             <Stat label="History only" value={String(group.unmapped_services.length)} />
           </div>
 
@@ -157,10 +155,6 @@ export default function BulkMaintenanceInvoiceReview({
             <label className="flex items-center gap-2">
               <input type="checkbox" className="h-4 w-4 accent-brand" checked={draft.autoCreate} onChange={(event) => patch(group.group_key, { autoCreate: event.target.checked })} />
               Eksik aracı oluştur
-            </label>
-            <label className="flex items-center gap-2">
-              <input type="checkbox" className="h-4 w-4 accent-brand" checked={draft.applyTemplate} onChange={(event) => patch(group.group_key, { applyTemplate: event.target.checked })} />
-              Peterbilt 579 + X15 template uygula
             </label>
           </div>
 

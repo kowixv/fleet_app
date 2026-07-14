@@ -1,7 +1,7 @@
 import ResourceManager, { Field } from "@/components/ResourceManager";
-import VehicleMaintenanceProfileManager from "@/components/VehicleMaintenanceProfileManager";
-import VehicleMileageManager from "@/components/VehicleMileageManager";
-import { fetchRowsPaged, fetchOptions, parsePage } from "@/lib/data";
+import VehicleRemovalActions from "@/components/VehicleRemovalActions";
+import { requireProfile } from "@/lib/auth";
+import { DEFAULT_PAGE_SIZE, fetchOptions, parsePage } from "@/lib/data";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -9,40 +9,36 @@ export const dynamic = "force-dynamic";
 export default async function VehiclesPage({
   searchParams,
 }: {
-  searchParams: Promise<{ page?: string }>;
+  searchParams: Promise<{ page?: string; showInactive?: string }>;
 }) {
-  const { page } = await searchParams;
+  const { page, showInactive } = await searchParams;
+  const includeInactive = showInactive === "1";
+  const currentPage = parsePage(page);
+  const from = (currentPage - 1) * DEFAULT_PAGE_SIZE;
+  const profile = await requireProfile();
+  const canPermanentDelete = profile.role === "owner" || profile.role === "admin";
   const supabase = await createClient();
-  const [paged, opts, profilesRes, templatesRes, rulesRes] = await Promise.all([
-    fetchRowsPaged("vehicles", { page: parsePage(page) }),
+
+  let vehiclesQuery = supabase
+    .from("vehicles")
+    .select("*", { count: "exact" })
+    .order("unit_number", { ascending: true })
+    .range(from, from + DEFAULT_PAGE_SIZE - 1);
+  if (!includeInactive) vehiclesQuery = vehiclesQuery.in("status", ["active", "in_repair"]);
+
+  const [vehiclesRes, opts] = await Promise.all([
+    vehiclesQuery,
     fetchOptions(),
-    supabase.from("vehicle_maintenance_profiles").select("*"),
-    supabase
-      .from("maintenance_templates")
-      .select(`
-        id,
-        name,
-        warning,
-        items:maintenance_template_items (
-          id,
-          service_type,
-          service_category,
-          description,
-          default_checklist_reference,
-          interval_miles,
-          interval_days,
-          interval_engine_hours,
-          duty_cycle_adjusted,
-          configurable,
-          warning,
-          sort_order
-        )
-      `)
-      .order("name"),
-    supabase.from("maintenance_rules").select("id, vehicle_id, service_type, active").eq("active", true),
   ]);
-  const queryError = profilesRes.error ?? templatesRes.error ?? rulesRes.error;
+  const queryError = vehiclesRes.error;
   if (queryError) throw new Error(`Vehicle maintenance data failed to load: ${queryError.message}`);
+
+  const paged = {
+    rows: vehiclesRes.data ?? [],
+    total: vehiclesRes.count ?? 0,
+    page: currentPage,
+    pageSize: DEFAULT_PAGE_SIZE,
+  };
 
   const fields: Field[] = [
     { name: "unit_number", label: "Unit #", required: true },
@@ -51,6 +47,7 @@ export default async function VehiclesPage({
       label: "Tip",
       type: "select",
       required: true,
+      hideOnCreate: true,
       options: [
         { value: "truck", label: "Truck" },
         { value: "box_truck", label: "Box Truck" },
@@ -64,6 +61,8 @@ export default async function VehiclesPage({
       label: "Sahiplik",
       type: "select",
       required: true,
+      hideInTable: true,
+      hideOnCreate: true,
       options: [
         { value: "company_owned", label: "Company Owned" },
         { value: "owner_operator", label: "Owner Operator" },
@@ -72,37 +71,37 @@ export default async function VehiclesPage({
         { value: "partner_carrier", label: "Partner Carrier" },
       ],
     },
-    { name: "company_id", label: "Şirket", type: "select", options: opts.companies, hideInTable: true },
-    { name: "external_carrier_id", label: "External Carrier", type: "select", options: opts.carriers, hideInTable: true },
-    { name: "owner_id", label: "Owner / Investor", type: "select", options: opts.owners, hideInTable: true },
-    { name: "assigned_driver_id", label: "Şoför", type: "select", options: opts.drivers },
-    { name: "default_driver_pay_pct", label: "Driver %", type: "percent" },
-    { name: "company_fee_pct", label: "Company Fee %", type: "percent" },
-    { name: "company_fee_is_our_revenue", label: "Fee bize mi?", type: "checkbox", hideInTable: true },
-    { name: "external_carrier_fee_pct", label: "Ext. Carrier Fee %", type: "percent", hideInTable: true },
+    { name: "company_id", label: "Şirket", type: "select", options: opts.companies, hideInTable: true, hideOnCreate: true },
+    { name: "external_carrier_id", label: "External Carrier", type: "select", options: opts.carriers, hideInTable: true, hideOnCreate: true },
+    { name: "owner_id", label: "Owner / Investor", type: "select", options: opts.owners, hideInTable: true, hideOnCreate: true },
+    { name: "assigned_driver_id", label: "Şoför", type: "select", options: opts.drivers, hideOnCreate: true },
+    { name: "default_driver_pay_pct", label: "Driver %", type: "percent", hideInTable: true, hideOnCreate: true },
+    { name: "company_fee_pct", label: "Company Fee %", type: "percent", hideInTable: true, hideOnCreate: true },
+    { name: "company_fee_is_our_revenue", label: "Fee bize mi?", type: "checkbox", hideInTable: true, hideOnCreate: true },
+    { name: "external_carrier_fee_pct", label: "Ext. Carrier Fee %", type: "percent", hideInTable: true, hideOnCreate: true },
     {
       name: "management_commission_type",
       label: "Komisyon Tipi",
       type: "select",
       hideInTable: true,
+      hideOnCreate: true,
       options: [
         { value: "none", label: "Yok" },
         { value: "flat", label: "Sabit ($)" },
         { value: "percent", label: "Yüzde (%)" },
       ],
     },
-    { name: "management_commission_amount", label: "Komisyon", type: "number", step: "0.01", hideInTable: true },
-    { name: "vin", label: "VIN", hideInTable: true },
-    { name: "year", label: "Yıl", type: "number", hideInTable: true },
-    { name: "make", label: "Make", hideInTable: true },
-    { name: "model", label: "Model", hideInTable: true },
-    { name: "plate", label: "Plaka", hideInTable: true },
+    { name: "management_commission_amount", label: "Komisyon", type: "number", step: "0.01", hideInTable: true, hideOnCreate: true },
+    { name: "vin", label: "VIN", hideInTable: true, hideOnCreate: true },
+    { name: "year", label: "Yıl", type: "number", hideInTable: true, hideOnCreate: true },
+    { name: "make", label: "Make", hideInTable: true, hideOnCreate: true },
+    { name: "model", label: "Model", hideInTable: true, hideOnCreate: true },
+    { name: "plate", label: "Plaka", hideInTable: true, hideOnCreate: true },
     {
       name: "current_mileage",
-      label: "Initial Mileage",
+      label: "Current Mileage",
       type: "number",
       step: "1",
-      hideInTable: true,
       createOnly: true,
     },
     {
@@ -110,51 +109,39 @@ export default async function VehiclesPage({
       label: "Durum",
       type: "select",
       required: true,
+      hideOnCreate: true,
       options: [
         { value: "active", label: "Aktif" },
         { value: "in_repair", label: "Tamirde" },
         { value: "inactive", label: "Pasif" },
       ],
     },
-    { name: "notes", label: "Not", type: "textarea", hideInTable: true },
+    { name: "notes", label: "Not", type: "textarea", hideInTable: true, hideOnCreate: true },
   ];
 
   return (
     <div className="space-y-4">
-      <VehicleMileageManager
-        vehicles={paged.rows.map((row) => ({
-          id: row.id,
-          unit_number: row.unit_number,
-          current_mileage: row.current_mileage,
-        }))}
-      />
-      <VehicleMaintenanceProfileManager
-        vehicles={paged.rows.map((row) => ({
-          id: row.id,
-          unit_number: row.unit_number,
-          current_mileage: row.current_mileage,
-          vin: row.vin,
-          year: row.year,
-          make: row.make,
-          model: row.model,
-        }))}
-        profiles={(profilesRes.data ?? []) as any}
-        templates={(templatesRes.data ?? []).map((template: any) => ({
-          id: template.id,
-          name: template.name,
-          warning: template.warning,
-          items: template.items ?? [],
-        }))}
-        activeRules={(rulesRes.data ?? []) as any}
-      />
+      <div className="flex justify-end">
+        <a className="btn-ghost" href={includeInactive ? "/vehicles" : "/vehicles?showInactive=1"}>
+          {includeInactive ? "Pasif Unitleri Gizle" : "Pasif Unitleri Göster"}
+        </a>
+      </div>
       <ResourceManager
         title="Vehicles / Units"
         table="vehicles"
         basePath="/vehicles"
-      addLabel="Araç"
+        addLabel="Araç"
         fields={fields}
         rows={paged.rows}
         pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
+        paginationHref={(nextPage) => `/vehicles?page=${nextPage}${includeInactive ? "&showInactive=1" : ""}`}
+        renderActions={(row, actions) => (
+          <VehicleRemovalActions
+            row={{ id: row.id, unit_number: row.unit_number, status: row.status }}
+            startEdit={(vehicle) => actions.startEdit(vehicle as any)}
+            canPermanentDelete={canPermanentDelete}
+          />
+        )}
       />
     </div>
   );

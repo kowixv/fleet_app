@@ -45,7 +45,7 @@ export default function InspectionTemplateManager({
     }
     startTransition(async () => {
       const result = await cloneInspectionTemplate(selected.id, trimmed);
-      setMessage(result.ok ? { type: "ok", text: "Checklist cloned." } : { type: "error", text: result.error });
+      setMessage(result.ok ? { type: "ok", text: "Checklist kopyalandı." } : { type: "error", text: result.error });
       if (result.ok) window.location.reload();
     });
   }
@@ -53,17 +53,17 @@ export default function InspectionTemplateManager({
   function saveItem(item: TemplateItem) {
     startTransition(async () => {
       const result = await updateRow("inspection_template_items", item.id, { ...item }, basePath);
-      setMessage(result?.error ? { type: "error", text: result.error } : { type: "ok", text: "Checklist item saved." });
+      setMessage(result?.error ? { type: "error", text: result.error } : { type: "ok", text: "Checklist satırı kaydedildi." });
     });
   }
 
-  if (templates.length === 0) return <div className="text-sm text-slate-400">Checklist template yok.</div>;
+  if (templates.length === 0) return <div className="text-sm text-slate-400">Checklist yok.</div>;
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-semibold">Checklist Templates</h2>
+          <h2 className="font-semibold">Inspection Checklistleri</h2>
         </div>
         <div className="flex gap-2">
           <button type="button" className="btn-ghost" disabled={!templates[0] || pending} onClick={() => setTemplateId(templates[0]?.id ?? null)}>İlk checklist'i aç</button>
@@ -85,7 +85,7 @@ export default function InspectionTemplateManager({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="font-semibold">{selected.name} v{selected.version}</h2>
-                <p className="text-sm text-slate-500">{selected.items.length} checklist item</p>
+                <p className="text-sm text-slate-500">{selected.items.length} checklist satırı</p>
               </div>
               <div className="flex gap-2">
                 <div className="flex flex-wrap items-center gap-2">
@@ -95,7 +95,7 @@ export default function InspectionTemplateManager({
                     placeholder={`${selected.name} Copy`}
                     onChange={(event) => setCloneName(event.target.value)}
                   />
-                  <button type="button" className="btn-ghost" disabled={pending} onClick={() => cloneTemplate(cloneName || `${selected.name} Copy`)}>Clone</button>
+                  <button type="button" className="btn-ghost" disabled={pending} onClick={() => cloneTemplate(cloneName || `${selected.name} Copy`)}>Kopyala</button>
                 </div>
                 <button type="button" className="btn-ghost" onClick={() => setTemplateId(null)}>Kapat</button>
               </div>
@@ -104,13 +104,13 @@ export default function InspectionTemplateManager({
               <table className="w-full min-w-[980px]">
                 <thead className="border-b border-slate-200 bg-slate-50">
                   <tr>
-                    <th className="th">Sort</th>
-                    <th className="th">Section</th>
+                    <th className="th">Sıra</th>
+                    <th className="th">Bölüm</th>
                     <th className="th">Label</th>
-                    <th className="th">Type</th>
-                    <th className="th">Thresholds</th>
+                    <th className="th">Tip</th>
+                    <th className="th">Eşikler</th>
                     <th className="th">Active</th>
-                    <th className="th text-right">Save</th>
+                    <th className="th text-right">Kaydet</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
@@ -180,7 +180,7 @@ function EditableTemplateItem({ item, onSave }: { item: TemplateItem; onSave: (i
         </div>
       </td>
       <td className="td"><input type="checkbox" checked={draft.active} onChange={(event) => patch({ active: event.target.checked })} className="h-4 w-4 accent-brand" /></td>
-      <td className="td text-right"><button type="button" className="text-brand hover:underline" onClick={() => onSave(draft)}>Save</button></td>
+      <td className="td text-right"><button type="button" className="text-brand hover:underline" onClick={() => onSave(draft)}>Kaydet</button></td>
     </tr>
   );
 }

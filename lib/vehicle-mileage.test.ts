@@ -47,8 +47,9 @@ describe("vehicle mileage write contract", () => {
     });
   });
 
-  it("supports a vehicle with no maintenance rule on the Vehicles page", () => {
-    expect(vehiclePage).toContain("VehicleMileageManager");
+  it("keeps Vehicles page independent of maintenance rules while retaining the mileage RPC component", () => {
+    expect(vehiclePage).not.toContain("maintenance_rules");
+    expect(vehiclePage).toContain("Current Mileage");
     expect(mileageComponent).toContain('updateMileage(vehicleId, parsed.mileage)');
     expect(mileageComponent).not.toContain("maintenance_rules");
   });

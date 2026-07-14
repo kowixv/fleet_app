@@ -23,6 +23,7 @@ export interface Field {
   step?: string;
   hideInTable?: boolean;
   createOnly?: boolean;
+  hideOnCreate?: boolean;
 }
 
 export interface Pagination {
@@ -39,6 +40,8 @@ interface Props {
   rows: Record<string, any>[];
   addLabel?: string;
   pagination?: Pagination;
+  paginationHref?: (page: number) => string;
+  renderActions?: (row: Record<string, any>, actions: { startEdit: (row: Record<string, any>) => void }) => React.ReactNode;
 }
 
 function toFormValue(field: Field, raw: any): any {
@@ -63,6 +66,8 @@ export default function ResourceManager({
   rows,
   addLabel = "Ekle",
   pagination,
+  paginationHref,
+  renderActions,
 }: Props) {
   const [editing, setEditing] = useState<Record<string, any> | null>(null);
   const [open, setOpen] = useState(false);
@@ -70,7 +75,7 @@ export default function ResourceManager({
   const [busy, setBusy] = useState(false);
 
   const tableFields = fields.filter((f) => !f.hideInTable);
-  const formFields = fields.filter((f) => !editing || !f.createOnly);
+  const formFields = fields.filter((f) => editing ? !f.createOnly : !f.hideOnCreate);
 
   function startAdd() {
     setEditing(null);
@@ -152,18 +157,24 @@ export default function ResourceManager({
                     </td>
                   ))}
                   <td className="td text-right">
-                    <button
-                      onClick={() => startEdit(row)}
-                      className="mr-3 text-brand hover:underline"
-                    >
-                      Düzenle
-                    </button>
-                    <button
-                      onClick={() => onDelete(row.id)}
-                      className="text-red-600 hover:underline"
-                    >
-                      Sil
-                    </button>
+                    {renderActions ? (
+                      renderActions(row, { startEdit })
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => startEdit(row)}
+                          className="mr-3 text-brand hover:underline"
+                        >
+                          Düzenle
+                        </button>
+                        <button
+                          onClick={() => onDelete(row.id)}
+                          className="text-red-600 hover:underline"
+                        >
+                          Sil
+                        </button>
+                      </>
+                    )}
                   </td>
                 </tr>
               ))
@@ -181,14 +192,14 @@ export default function ResourceManager({
           </span>
           <span className="flex gap-2">
             {pagination.page > 1 ? (
-              <a href={`${basePath}?page=${pagination.page - 1}`} className="btn-ghost">
+              <a href={paginationHref ? paginationHref(pagination.page - 1) : `${basePath}?page=${pagination.page - 1}`} className="btn-ghost">
                 ← Önceki
               </a>
             ) : (
               <span className="btn-ghost opacity-40">← Önceki</span>
             )}
             {pagination.page * pagination.pageSize < pagination.total ? (
-              <a href={`${basePath}?page=${pagination.page + 1}`} className="btn-ghost">
+              <a href={paginationHref ? paginationHref(pagination.page + 1) : `${basePath}?page=${pagination.page + 1}`} className="btn-ghost">
                 Sonraki →
               </a>
             ) : (

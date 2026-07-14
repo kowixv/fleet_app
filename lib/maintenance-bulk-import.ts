@@ -2,7 +2,6 @@ import { serviceKey, type ReviewDraftData, type ReviewServiceRow } from "./maint
 
 export { serviceKey };
 
-export const PETERBILT_579_X15_TEMPLATE_NAME = "2023 Peterbilt 579 + Cummins X15 EPA21";
 export const ODOMETER_MAX = 2_500_000;
 
 export interface BulkInvoiceDraft {

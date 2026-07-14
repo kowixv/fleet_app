@@ -39,7 +39,12 @@ export async function createRow(
     table === "vehicles" ? validateOptionalInitialMileage(values.current_mileage) : null;
   if (initialMileage && !initialMileage.ok) return { error: initialMileage.error };
 
-  const row = { ...clean(table, values), organization_id: profile.organization_id };
+  const row: Record<string, unknown> = { ...clean(table, values), organization_id: profile.organization_id };
+  if (table === "vehicles") {
+    row.vehicle_type ??= "truck";
+    row.ownership_type ??= "company_owned";
+    row.status ??= "active";
+  }
   if (table === "loads") {
     const { data, error } = await supabase
       .from(table)

@@ -51,7 +51,7 @@ export default function UnitMaintenancePlans({
   engineHours: number | null;
   thresholds: PMThresholds;
 }) {
-  if (rules.length === 0) return <div className="card text-sm text-slate-400">Aktif bakım planı yok.</div>;
+  if (rules.length === 0) return <div className="card text-sm text-slate-400">Aktif bakım hatırlatıcısı yok.</div>;
 
   return (
     <section className="space-y-3">
@@ -80,7 +80,7 @@ export default function UnitMaintenancePlans({
                   <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`}>
                     Bakım Ekle
                   </Link>
-                  <Link className="btn-ghost" href="/maintenance/settings">Düzenle</Link>
+                  <Link className="btn-ghost" href={`/maintenance/reminders?vehicleId=${rule.vehicle_id}&service=${encodeURIComponent(rule.service_type)}`}>Düzenle</Link>
                 </div>
               </div>
             </div>

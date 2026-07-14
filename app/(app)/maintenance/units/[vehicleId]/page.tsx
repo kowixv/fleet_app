@@ -3,7 +3,6 @@ import MaintenanceInspectionWorkflow from "@/components/MaintenanceInspectionWor
 import MaintenanceNav from "@/components/MaintenanceNav";
 import UnitMaintenancePlans from "@/components/UnitMaintenancePlans";
 import UnitMileageInline from "@/components/UnitMileageInline";
-import UnitTemplateApplyWizard from "@/components/UnitTemplateApplyWizard";
 import VehicleMaintenanceCostPanel from "@/components/VehicleMaintenanceCostPanel";
 import {
   computePM,
@@ -30,7 +29,7 @@ type Tab = "summary" | "plans" | "history" | "inspections" | "costs" | "mileage"
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "summary", label: "Özet" },
-  { id: "plans", label: "Bakım Planları" },
+  { id: "plans", label: "Hatırlatıcılar" },
   { id: "history", label: "Geçmiş" },
   { id: "inspections", label: "Inspectionlar" },
   { id: "costs", label: "Maliyetler" },
@@ -87,7 +86,7 @@ export default async function MaintenanceUnitDetailPage({
   const query = await searchParams;
   const tab = selectedTab(query.tab);
   const supabase = await createClient();
-  const [vehicleRes, rulesRes, settingsRes, profileRes, criticalFindingsRes, templatesRes, templateRulesRes] = await Promise.all([
+  const [vehicleRes, rulesRes, settingsRes, profileRes, criticalFindingsRes] = await Promise.all([
     supabase.from("vehicles").select("id, unit_number, current_mileage, vin, year, make, model").eq("id", vehicleId).single(),
     supabase
       .from("maintenance_rules")
@@ -103,31 +102,8 @@ export default async function MaintenanceUnitDetailPage({
       .eq("status", "open")
       .in("severity", ["critical", "do_not_dispatch"])
       .order("created_at", { ascending: false }),
-    supabase
-      .from("maintenance_templates")
-      .select(`
-        id,
-        name,
-        warning,
-        items:maintenance_template_items (
-          id,
-          service_type,
-          service_category,
-          description,
-          default_checklist_reference,
-          interval_miles,
-          interval_days,
-          interval_engine_hours,
-          duty_cycle_adjusted,
-          configurable,
-          warning,
-          sort_order
-        )
-      `)
-      .order("name"),
-    supabase.from("maintenance_rules").select("id, vehicle_id, service_type, active").eq("active", true),
   ]);
-  const baseError = vehicleRes.error ?? rulesRes.error ?? settingsRes.error ?? profileRes.error ?? criticalFindingsRes.error ?? templatesRes.error ?? templateRulesRes.error;
+  const baseError = vehicleRes.error ?? rulesRes.error ?? settingsRes.error ?? profileRes.error ?? criticalFindingsRes.error;
   if (baseError) throw new Error(`Araç detayı yüklenemedi: ${baseError.message}`);
   if (!vehicleRes.data) throw new Error("Araç bulunamadı.");
 
@@ -353,14 +329,6 @@ export default async function MaintenanceUnitDetailPage({
             <summary className="btn-ghost cursor-pointer list-none">{MAINTENANCE_TERMS.otherActions}</summary>
             <div className="absolute right-0 z-10 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-2 text-sm shadow-lg">
               <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href={`/maintenance/invoices?vehicleId=${vehicleId}`}>Invoice Yükle</Link>
-              <div className="rounded-md px-2 py-1.5">
-                <UnitTemplateApplyWizard
-                  vehicle={vehicle}
-                  profile={profile}
-                  templates={(templatesRes.data ?? []).map((template: any) => ({ ...template, items: template.items ?? [] }))}
-                  activeRules={(templateRulesRes.data ?? []) as any}
-                />
-              </div>
               <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href={`/vehicles/${vehicleId}`}>Unit Ayarları</Link>
               <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href="/maintenance/settings">Gelişmiş İşlemler</Link>
             </div>

@@ -7,7 +7,6 @@ import {
   mapRecurringService,
   normalizeMileageCandidate,
   normalizeUnitNumber,
-  PETERBILT_579_X15_TEMPLATE_NAME,
 } from "./maintenance-bulk-import";
 
 const serviceRow = (service_type: string, mileage: number | null, performed_date: string | null = "2026-06-01") => ({
@@ -278,7 +277,7 @@ describe("bulk historical maintenance import", () => {
     expect(groups[0].warnings.join(" ")).toContain("mevcut daha yeni baseline korundu");
   });
 
-  it("adds the ordered migration, RPCs, metadata, aliases and template name", () => {
+  it("adds the ordered migration, RPCs, metadata and aliases", () => {
     const sql = fs.readFileSync("supabase/migrations/20260713030000_bulk_historical_maintenance_invoice_import.sql", "utf8");
     expect(sql).toContain("create table if not exists maintenance_invoice_batches");
     expect(sql).toContain("create or replace function finalize_bulk_maintenance_invoice_unit");
@@ -290,6 +289,12 @@ describe("bulk historical maintenance import", () => {
     expect(sql).toContain("v_prior_completed_mileage");
     expect(sql).toContain("last_done_date = nullif(v_baseline->>'last_done_date'");
     expect(sql).toContain("maintenance_service_aliases");
-    expect(sql).toContain(PETERBILT_579_X15_TEMPLATE_NAME);
+  });
+
+  it("does not expose template application in the normal bulk review UI", () => {
+    const review = fs.readFileSync("components/BulkMaintenanceInvoiceReview.tsx", "utf8");
+    expect(review).toContain("apply_template: false");
+    expect(review).not.toContain("Peterbilt");
+    expect(review).not.toContain("Template");
   });
 });

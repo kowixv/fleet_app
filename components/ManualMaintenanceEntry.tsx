@@ -94,13 +94,12 @@ function SaveSummaryCard({ summary }: { summary: SaveSummary }) {
         <li>{mileageLine}</li>
         <li>
           {summary.planUpdated
-            ? `${summary.rule?.serviceType ?? summary.serviceType} bakım planı güncellendi.`
+            ? `${summary.rule?.serviceType ?? summary.serviceType} bakım hatırlatıcısı güncellendi.`
             : summary.historyOnly
-              ? "Geçmiş kaydı olarak kaydedildi. Periyodik bakım planı değişmedi."
-              : "Bakım planı değişmedi."}
+              ? "Geçmiş kaydı olarak kaydedildi. Bakım hatırlatıcısı değişmedi."
+              : "Bakım hatırlatıcısı değişmedi."}
         </li>
-        {summary.planCreated && <li>Eşleşen bakım planı Peterbilt 579 + X15 şablonundan oluşturuldu.</li>}
-        {summary.missingRule && <li>Aktif eşleşen bakım planı bulunamadı.</li>}
+        {summary.missingRule && <li>Bu bakım için hatırlatıcı bulunamadı.</li>}
         {due && <li>Sonraki bakım: {due}</li>}
         {summary.idempotent && <li>Bu işlem daha önce kaydedildi; duplicate kayıt oluşturulmadı.</li>}
       </ul>
@@ -141,6 +140,7 @@ export default function ManualMaintenanceEntry({
   const [showQuickCreate, setShowQuickCreate] = useState(false);
   const [isPending, startTransition] = useTransition();
   const [quickMessage, setQuickMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
+  const [quickCreatedVehicleId, setQuickCreatedVehicleId] = useState<string | null>(null);
   const [isQuickPending, startQuickTransition] = useTransition();
 
   useEffect(() => {
@@ -208,7 +208,9 @@ export default function ManualMaintenanceEntry({
         setQuickMessage({ type: "error", text: result.error });
         return;
       }
-      setQuickMessage({ type: "ok", text: "Yeni Unit kaydedildi. Liste yenileniyor; ardından Unit alanından seçebilirsiniz." });
+      const vehicleId = typeof result.result?.vehicle_id === "string" ? result.result.vehicle_id : null;
+      setQuickCreatedVehicleId(vehicleId);
+      setQuickMessage({ type: "ok", text: "Unit başarıyla oluşturuldu." });
       router.refresh();
     });
   }
@@ -313,22 +315,27 @@ export default function ManualMaintenanceEntry({
                       {MAINTENANCE_TERMS.updateNextDue}
                     </label>
                     <details className="mt-2">
-                      <summary className="cursor-pointer text-brand">{MAINTENANCE_TERMS.advancedPlanSettings}</summary>
+                      <summary className="cursor-pointer text-brand">Detay</summary>
                       <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3 text-slate-600">
                         {hasActiveRule ? (
-                          <p>Bu kayıt aynı bakım planını günceller.</p>
+                          <p>Bu kayıt aynı bakım hatırlatıcısını günceller.</p>
                         ) : (
-                          <label className="flex items-center gap-2">
-                            <input type="checkbox" name="create_missing_rule" defaultChecked />
-                            Aktif plan yoksa Peterbilt 579 + X15 bakım planından bu servisi ekle.
-                          </label>
+                          <div className="space-y-2">
+                            <p>Bu bakım için hatırlatıcı bulunamadı.</p>
+                            <div className="flex flex-wrap gap-2">
+                              <span className="badge bg-slate-100 text-slate-700">Sadece geçmişe kaydet</span>
+                              <a className="text-brand hover:underline" href={`/maintenance/reminders${vehicleId ? `?vehicleId=${vehicleId}&service=${encodeURIComponent(serviceType)}` : ""}`}>
+                                Hatırlatıcı oluştur
+                              </a>
+                            </div>
+                          </div>
                         )}
                       </div>
                     </details>
                   </div>
                 ) : (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                    Bu kayıt bakım planını değiştirmez.
+                    Bu kayıt bakım hatırlatıcısını değiştirmez.
                   </div>
                 )}
 
@@ -426,20 +433,23 @@ export default function ManualMaintenanceEntry({
                       <label className="label">Current Mileage</label>
                       <input className="input" name="current_mileage" inputMode="numeric" pattern="[0-9]*" required />
                     </div>
-                    <div className="md:col-span-2 rounded-lg border border-slate-200 bg-white p-3 text-sm text-slate-600">
-                      <p className="font-medium text-slate-800">Varsayılanlar</p>
-                      <p>2023 Peterbilt 579</p>
-                      <p>Cummins X15</p>
-                      <p>Active</p>
-                      <p>Peterbilt 579 + X15 bakım planı uygulanacak</p>
-                    </div>
                     <details className="md:col-span-2 rounded-lg border border-slate-100 bg-white p-3">
-                      <summary className="cursor-pointer text-sm font-medium">Gelişmiş alanlar</summary>
+                      <summary className="cursor-pointer text-sm font-medium">Ek Araç Bilgileri</summary>
                       <div className="mt-3">
                         <label className="label">VIN</label>
                         <input className="input" name="vin" />
                       </div>
                     </details>
+                    {quickMessage?.type === "ok" && (
+                      <div className="md:col-span-2 flex flex-wrap gap-2">
+                        <a className="btn-ghost" href={`/maintenance/reminders${quickCreatedVehicleId ? `?vehicleId=${quickCreatedVehicleId}` : ""}`}>
+                          Bakım Hatırlatıcısı Ekle
+                        </a>
+                        <button type="button" className="btn-ghost" onClick={() => setShowQuickCreate(false)}>
+                          Şimdilik Geç
+                        </button>
+                      </div>
+                    )}
                     <div className="md:col-span-2">
                       <button className="btn-primary" type="submit" disabled={isQuickPending}>
                         {isQuickPending ? "Kaydediliyor..." : "Yeni Unit Kaydet"}
