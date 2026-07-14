@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { usd } from "@/lib/format";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   MAINTENANCE_COST_CATEGORIES,
   buildMaintenanceCostAlerts,
@@ -26,11 +27,32 @@ function perUnit(value: number | null, suffix: string): string {
 }
 
 function formatCategory(category: string): string {
-  return category.replace(/_/g, " ");
+  return formatMaintenanceCategory(category);
 }
 
 function filterValue(value: string | null | undefined, fallback = "") {
   return value ?? fallback;
+}
+
+function AlertSources({ ids, rows }: { ids: string[]; rows: MaintenanceCostRow[] }) {
+  const sources = ids
+    .map((id) => rows.find((row) => row.source_record_id === id))
+    .filter(Boolean)
+    .slice(0, 5) as MaintenanceCostRow[];
+  if (sources.length === 0) return null;
+  return (
+    <details className="mt-2 text-xs text-slate-500">
+      <summary className="cursor-pointer text-brand">Kaynak kayıtlar</summary>
+      <div className="mt-2 space-y-1">
+        {sources.map((row) => (
+          <div key={row.source_record_id} className="rounded border border-slate-100 bg-slate-50 p-2">
+            Unit {row.unit_number ?? "-"} · {row.cost_date ?? "-"} · {row.service_type ?? "-"} · {row.shop ?? "Shop yok"} · {usd(Number(row.total_cost ?? 0))}
+            {row.invoice_id && <span> · Invoice bağlı</span>}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 export default function MaintenanceCostDashboard({
@@ -176,7 +198,7 @@ export default function MaintenanceCostDashboard({
               <div key={`${alert.type}-${index}`} className="rounded-lg border border-slate-200 p-3 text-sm">
                 <div className="font-medium">{alert.unit_number ? `Unit ${alert.unit_number} - ` : ""}{alert.title}</div>
                 <p className="mt-1 text-slate-600">{alert.explanation}</p>
-                <p className="mt-1 text-xs text-slate-400">Kaynak kayıtlar: {alert.sourceRecordIds.join(", ")}</p>
+                <AlertSources ids={alert.sourceRecordIds} rows={filteredRows} />
               </div>
             ))}
           </div>

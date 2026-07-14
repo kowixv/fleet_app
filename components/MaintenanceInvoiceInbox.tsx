@@ -30,6 +30,7 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
   const [progress, setProgress] = useState<number | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ id: string; action: "cancel" | "undo" } | null>(null);
 
   function upload(file: File | null | undefined) {
     if (!file) return;
@@ -39,23 +40,17 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
     }
     const form = new FormData();
     form.append("file", file);
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/maintenance/invoices/upload");
     setProgress(0);
     setMessage(null);
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", "/api/maintenance/invoices/upload");
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) setProgress(Math.round((event.loaded / event.total) * 100));
     };
     xhr.onload = () => {
       setProgress(null);
-      let body: { ok?: boolean; invoiceId?: string; error?: string } = {};
-      try {
-        body = JSON.parse(xhr.responseText);
-      } catch {
-        body = {};
-      }
-      if (xhr.status >= 200 && xhr.status < 300 && body.ok && body.invoiceId) {
-        setMessage({ type: "ok", text: "Taslak oluşturuldu. İnceleme ekranı açılıyor." });
+      const body = JSON.parse(xhr.responseText || "{}");
+      if (xhr.status >= 200 && xhr.status < 300 && body.invoiceId) {
         window.location.href = `/maintenance/invoices/${body.invoiceId}`;
       } else {
         setMessage({ type: "error", text: body.error ?? "PDF işlenemedi." });
@@ -75,18 +70,18 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
   }
 
   async function cancel(id: string) {
-    if (!window.confirm("Bu taslak iptal edilsin mi?")) return;
     setBusyId(id);
     const result = await cancelMaintenanceInvoiceReview(id);
     setBusyId(null);
+    setConfirmAction(null);
     if (!result.ok) setMessage({ type: "error", text: result.error });
   }
 
   async function undo(id: string) {
-    if (!window.confirm("Bu tamamlanmış import geri alınsın mı? Sadece bu invoice ile oluşturulan kayıtlar etkilenir.")) return;
     setBusyId(id);
     const result = await undoMaintenanceInvoiceImport(id);
     setBusyId(null);
+    setConfirmAction(null);
     if (!result.ok) setMessage({ type: "error", text: result.error });
   }
 
@@ -146,18 +141,32 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
             ) : sorted.map((row) => (
               <tr key={row.id} className={row.status === "pending_review" ? "bg-amber-50/40" : ""}>
                 <td className="td">{row.shop_name ?? row.file_name}</td>
-                <td className="td">{row.invoice_date ?? "—"}</td>
-                <td className="td">{row.vehicles?.unit_number ?? "—"}</td>
+                <td className="td">{row.invoice_date ?? "-"}</td>
+                <td className="td">{row.vehicles?.unit_number ?? "-"}</td>
                 <td className="td">{row.parsed_data?.review?.services?.length ?? 0}</td>
                 <td className="td"><span className="badge bg-slate-100 text-slate-700">{STATUS_LABEL[row.status]}</span></td>
                 <td className="td text-right">
                   <Link className="mr-3 text-brand hover:underline" href={`/api/maintenance/invoices/${row.id}`} target="_blank">PDF</Link>
                   <Link className="mr-3 text-brand hover:underline" href={`/maintenance/invoices/${row.id}`}>İncele</Link>
                   {row.status === "pending_review" && (
-                    <button disabled={busyId === row.id} type="button" className="mr-3 text-red-600 hover:underline" onClick={() => cancel(row.id)}>İptal</button>
+                    confirmAction?.id === row.id && confirmAction.action === "cancel" ? (
+                      <span className="mr-3 inline-flex items-center gap-2">
+                        <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => cancel(row.id)}>Onayla</button>
+                        <button type="button" className="text-slate-500 hover:underline" onClick={() => setConfirmAction(null)}>Vazgeç</button>
+                      </span>
+                    ) : (
+                      <button disabled={busyId === row.id} type="button" className="mr-3 text-red-600 hover:underline" onClick={() => setConfirmAction({ id: row.id, action: "cancel" })}>İptal</button>
+                    )
                   )}
                   {row.status === "completed" && (
-                    <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => undo(row.id)}>Geri al</button>
+                    confirmAction?.id === row.id && confirmAction.action === "undo" ? (
+                      <span className="inline-flex items-center gap-2">
+                        <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => undo(row.id)}>Onayla</button>
+                        <button type="button" className="text-slate-500 hover:underline" onClick={() => setConfirmAction(null)}>Vazgeç</button>
+                      </span>
+                    ) : (
+                      <button disabled={busyId === row.id} type="button" className="text-red-600 hover:underline" onClick={() => setConfirmAction({ id: row.id, action: "undo" })}>Geri al</button>
+                    )
                   )}
                 </td>
               </tr>

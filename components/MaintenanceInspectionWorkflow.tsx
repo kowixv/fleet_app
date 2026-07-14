@@ -17,7 +17,7 @@ import {
   type InspectionResultInput,
   type InspectionTemplateItem,
 } from "@/lib/inspection";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useEffect, useMemo, useState, useTransition, type Dispatch, type SetStateAction } from "react";
 
 interface OptionRow { id: string; unit_number: string }
 interface RuleOption { id: string; vehicle_id: string; service_type: string }
@@ -121,6 +121,8 @@ export default function MaintenanceInspectionWorkflow({
   const [results, setResults] = useState<Record<string, InspectionResultInput>>({});
   const [templateEditorId, setTemplateEditorId] = useState(templates[0]?.id ?? "");
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
+  const [cloneName, setCloneName] = useState("");
+  const [workOrderNotes, setWorkOrderNotes] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
 
   const selectedTemplate = templates.find((template) => template.id === templateId) ?? null;
@@ -209,7 +211,7 @@ export default function MaintenanceInspectionWorkflow({
 
   function cloneTemplate() {
     if (!editorTemplate) return;
-    const name = window.prompt("Yeni checklist adı:", `${editorTemplate.name} Copy`);
+    const name = cloneName || `${editorTemplate.name} Copy`;
     if (!name) return;
     startTransition(async () => {
       const result = await cloneInspectionTemplate(editorTemplate.id, name);
@@ -226,7 +228,7 @@ export default function MaintenanceInspectionWorkflow({
   }
 
   function createWorkOrder(finding: FindingRow) {
-    const woNotes = window.prompt("Work-order taslak notu:", finding.recommended_action ?? "") ?? "";
+    const woNotes = workOrderNotes[finding.id] ?? finding.recommended_action ?? "";
     startTransition(async () => {
       const result = await createInspectionWorkOrderDraft(finding.id, woNotes);
       setMessage(result.ok ? { type: "ok", text: "Work-order taslağı oluşturuldu." } : { type: "error", text: result.error });
@@ -352,7 +354,12 @@ export default function MaintenanceInspectionWorkflow({
         )}
       </div>
 
-      <FindingsTable findings={findings} onWorkOrder={createWorkOrder} />
+      <FindingsTable
+        findings={findings}
+        workOrderNotes={workOrderNotes}
+        setWorkOrderNotes={setWorkOrderNotes}
+        onWorkOrder={createWorkOrder}
+      />
       <TrendTable trends={trends.filter((row) => TRACKED_TRENDS.some((label) => row.label.toLowerCase().includes(label.toLowerCase().split(" ")[0])))} />
 
       {showTemplateManagement && (
@@ -363,6 +370,12 @@ export default function MaintenanceInspectionWorkflow({
             <select className="input" value={templateEditorId} onChange={(event) => setTemplateEditorId(event.target.value)}>
               {templates.map((template) => <option key={template.id} value={template.id}>{template.name} v{template.version}</option>)}
             </select>
+            <input
+              className="input w-56"
+              value={cloneName}
+              placeholder={editorTemplate ? `${editorTemplate.name} Copy` : "Yeni checklist adı"}
+              onChange={(event) => setCloneName(event.target.value)}
+            />
             <button type="button" className="btn-ghost" disabled={pending} onClick={cloneTemplate}>Kopyala</button>
           </div>
         </div>
@@ -425,7 +438,17 @@ function renderInput(
   return <input className="input min-w-40" value={String(value)} onChange={(event) => update(item, { value_text: event.target.value })} />;
 }
 
-function FindingsTable({ findings, onWorkOrder }: { findings: FindingRow[]; onWorkOrder: (finding: FindingRow) => void }) {
+function FindingsTable({
+  findings,
+  workOrderNotes,
+  setWorkOrderNotes,
+  onWorkOrder,
+}: {
+  findings: FindingRow[];
+  workOrderNotes: Record<string, string>;
+  setWorkOrderNotes: Dispatch<SetStateAction<Record<string, string>>>;
+  onWorkOrder: (finding: FindingRow) => void;
+}) {
   return (
     <div className="card overflow-x-auto p-0">
       <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
@@ -454,7 +477,7 @@ function FindingsTable({ findings, onWorkOrder }: { findings: FindingRow[]; onWo
                 {finding.work_order_status === "draft" ? (
                   <span className="text-xs text-slate-500">Taslak oluşturuldu</span>
                 ) : (
-                  <button type="button" className="text-xs text-brand hover:underline" onClick={() => onWorkOrder(finding)}>Taslak oluştur</button>
+                  <div className="flex flex-col items-end gap-2"><input className="input w-56 text-xs" value={workOrderNotes[finding.id] ?? ""} placeholder={finding.recommended_action ?? "Work-order notu"} onChange={(event) => setWorkOrderNotes((current) => ({ ...current, [finding.id]: event.target.value }))} /><button type="button" className="text-xs text-brand hover:underline" onClick={() => onWorkOrder(finding)}>Taslak olustur</button></div>
                 )}
               </td>
             </tr>

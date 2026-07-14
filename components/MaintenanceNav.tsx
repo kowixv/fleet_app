@@ -1,25 +1,30 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 
 const ITEMS = [
-  { href: "/maintenance", label: "Özet", exact: true },
-  { href: "/maintenance/units", label: "Araçlar" },
-  { href: "/maintenance/invoices", label: "Faturalar" },
-  { href: "/maintenance/inspections", label: "İncelemeler" },
-  { href: "/maintenance/costs", label: "Maliyetler" },
-  { href: "/maintenance/settings", label: "Ayarlar" },
+  { href: "/maintenance", label: "Overview", exact: true },
+  { href: "/maintenance?add=1", label: "Bakım Ekle", queryActive: "add" },
+  { href: "/maintenance/units", label: "Units" },
+  { href: "/maintenance/history", label: "Geçmiş" },
+  { href: "/maintenance/costs", label: "Costs" },
+  { href: "/maintenance/settings", label: "Settings" },
 ];
 
 export default function MaintenanceNav({ title = "Bakım Merkezi" }: { title?: string }) {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   return (
     <div className="space-y-3">
       <h1 className="text-xl font-bold">{title}</h1>
       <nav className="flex gap-2 overflow-x-auto border-b border-slate-200 pb-2 text-sm">
         {ITEMS.map((item) => {
-          const active = item.exact ? pathname === item.href : pathname === item.href || pathname.startsWith(`${item.href}/`);
+          const active = item.queryActive
+            ? pathname === "/maintenance" && searchParams.get(item.queryActive) === "1"
+            : item.exact
+              ? pathname === item.href
+              : pathname === item.href || pathname.startsWith(`${item.href}/`);
           return (
             <Link
               key={item.href}

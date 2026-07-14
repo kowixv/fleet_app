@@ -1,4 +1,5 @@
 import InspectionTemplateManager from "@/components/InspectionTemplateManager";
+import Link from "next/link";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import MaintenanceRuleManager, { type RuleManagerRow } from "@/components/MaintenanceRuleManager";
 import MaintenanceTemplateChecklistAssignments from "@/components/MaintenanceTemplateChecklistAssignments";
@@ -172,6 +173,13 @@ export default async function MaintenanceSettingsPage() {
       </AdminSection>
 
       <AdminSection title="Advanced Data Tools">
+        <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="font-semibold">Bu işlem normal günlük kullanım için gerekli değildir.</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link className="btn-ghost bg-white" href="/maintenance/invoices">Invoice Import</Link>
+            <Link className="btn-ghost bg-white" href="/maintenance/invoices/bulk">Bulk Historical Invoice Import</Link>
+          </div>
+        </div>
         <MileageSnapshotControls vehicles={vehicles} />
       </AdminSection>
     </div>

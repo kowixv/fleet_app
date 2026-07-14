@@ -90,6 +90,7 @@ export default function MaintenanceRuleManager({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [confirmDeactivateId, setConfirmDeactivateId] = useState<string | null>(null);
 
   function startAdd() {
     setEditingId(null);
@@ -173,9 +174,9 @@ export default function MaintenanceRuleManager({
   }
 
   async function deactivate(id: string) {
-    if (!window.confirm("Bakim kurali pasiflestirilsin mi? Gecmis kayitlar korunur.")) return;
     const result = await updateRow("maintenance_rules", id, { active: false }, basePath);
-    if (result?.error) window.alert(result.error);
+    setConfirmDeactivateId(null);
+    if (result?.error) setError(result.error);
   }
 
   return (
@@ -211,7 +212,14 @@ export default function MaintenanceRuleManager({
                 <td className="td text-right">
                   <button type="button" onClick={() => startEdit(row)} className="mr-3 text-brand hover:underline">Duzenle</button>
                   {row.active && (
-                    <button type="button" onClick={() => deactivate(row.id)} className="text-red-600 hover:underline">Pasiflestir</button>
+                    confirmDeactivateId === row.id ? (
+                      <span className="inline-flex items-center gap-2">
+                        <button type="button" onClick={() => deactivate(row.id)} className="text-red-600 hover:underline">Onayla</button>
+                        <button type="button" onClick={() => setConfirmDeactivateId(null)} className="text-slate-500 hover:underline">Vazgeç</button>
+                      </span>
+                    ) : (
+                      <button type="button" onClick={() => setConfirmDeactivateId(row.id)} className="text-red-600 hover:underline">Pasiflestir</button>
+                    )
                   )}
                 </td>
               </tr>

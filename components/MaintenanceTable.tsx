@@ -1,6 +1,5 @@
 "use client";
 
-import { markServiced } from "@/app/(app)/maintenance/actions";
 import {
   computePM,
   formatPMDimension,
@@ -10,7 +9,8 @@ import {
   type PMThresholds,
 } from "@/lib/maintenance";
 import { todayISO } from "@/lib/tz";
-import { useMemo, useState, useTransition } from "react";
+import Link from "next/link";
+import { useMemo } from "react";
 
 export interface MaintenanceRuleRow {
   id: string;
@@ -61,56 +61,18 @@ export default function MaintenanceTable({
     return [...map.values()].sort((a, b) => a.unitNumber.localeCompare(b.unitNumber));
   }, [engineHoursByVehicle, rows]);
 
-  const [pending, startTransition] = useTransition();
-  const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
-
-  function serviceRule(rule: MaintenanceRuleRow, unitNumber: string) {
-    if (!window.confirm(`Unit ${unitNumber} - ${rule.service_type} bugun yapilmis olarak kaydedilsin mi?`)) return;
-    const costRaw = window.prompt("Maliyet ($) - bilinmiyorsa 0 yazin:", "0");
-    if (costRaw === null) return;
-    const cost = Number(costRaw.replace(/,/g, ""));
-    if (!Number.isFinite(cost) || cost < 0) {
-      setMessage({ type: "error", text: "Gecerli, negatif olmayan bir maliyet girin." });
-      return;
-    }
-    const shopName = window.prompt("Shop adi (opsiyonel):", "") ?? "";
-    const partName = window.prompt("Parca adi / numarasi (opsiyonel):", "") ?? "";
-    const notes = window.prompt("Not (opsiyonel):", "") ?? "";
-
-    startTransition(async () => {
-      const result = await markServiced(rule.id, { cost, shopName, partName, notes });
-      setMessage(
-        result.ok
-          ? { type: "ok", text: `${rule.service_type} bakim gecmisine kaydedildi.` }
-          : { type: "error", text: result.error },
-      );
-    });
-  }
-
   return (
     <div className="space-y-4">
-      {message && (
-        <p
-          className={`rounded-lg border px-3 py-2 text-sm ${
-            message.type === "ok"
-              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-              : "border-red-200 bg-red-50 text-red-700"
-          }`}
-        >
-          {message.text}
-        </p>
-      )}
-
       {groups.length === 0 ? (
-        <div className="card text-sm text-slate-400">Henuz aktif bakim kurali yok.</div>
+        <div className="card text-sm text-slate-400">Henüz aktif bakım kuralı yok.</div>
       ) : (
         groups.map((group) => (
           <div key={group.vehicleId} className="card overflow-x-auto p-0">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
               <p className="font-semibold">Unit {group.unitNumber}</p>
               <p className="text-xs text-slate-500">
-                Odometer {group.mileage.toLocaleString("en-US")} mi
-                {group.engineHours != null ? ` - Engine ${Number(group.engineHours).toLocaleString("en-US")} h` : ""}
+                Mileage {group.mileage.toLocaleString("en-US")} mi
+                {group.engineHours != null ? ` · Engine ${Number(group.engineHours).toLocaleString("en-US")} h` : ""}
               </p>
             </div>
 
@@ -121,7 +83,7 @@ export default function MaintenanceTable({
                   <th className="th">Boyutlar</th>
                   <th className="th">İlk Dolan Sınır</th>
                   <th className="th">Durum</th>
-                  <th className="th text-right">Islem</th>
+                  <th className="th text-right">İşlem</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -145,14 +107,12 @@ export default function MaintenanceTable({
                         <span className={`badge ${PM_BADGE[pm.status]}`}>{pm.label}</span>
                       </td>
                       <td className="td text-right">
-                        <button
-                          type="button"
-                          onClick={() => serviceRule(rule, group.unitNumber)}
-                          disabled={pending}
+                        <Link
                           className="text-xs text-brand hover:underline"
+                          href={`/maintenance?add=1&vehicleId=${group.vehicleId}&type=periodic&service=${encodeURIComponent(rule.service_type)}`}
                         >
-                          Yapildi isaretle
-                        </button>
+                          Bakım Ekle
+                        </Link>
                       </td>
                     </tr>
                   );

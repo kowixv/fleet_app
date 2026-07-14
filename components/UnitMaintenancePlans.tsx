@@ -1,6 +1,5 @@
 "use client";
 
-import { markServiced } from "@/app/(app)/maintenance/actions";
 import {
   computePM,
   formatPMDimension,
@@ -11,8 +10,6 @@ import {
 } from "@/lib/maintenance";
 import { todayISO } from "@/lib/tz";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
 
 interface RuleRow {
   id: string;
@@ -54,44 +51,10 @@ export default function UnitMaintenancePlans({
   engineHours: number | null;
   thresholds: PMThresholds;
 }) {
-  const router = useRouter();
-  const [pendingId, setPendingId] = useState<string | null>(null);
-  const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
-  const [isPending, startTransition] = useTransition();
-
-  function service(rule: RuleRow) {
-    const costRaw = window.prompt("Maliyet ($) - bilinmiyorsa 0 yazın:", "0");
-    if (costRaw === null) return;
-    const cost = Number(costRaw.replace(/,/g, ""));
-    if (!Number.isFinite(cost) || cost < 0) {
-      setMessage({ type: "error", text: "Geçerli, negatif olmayan bir maliyet girin." });
-      return;
-    }
-    const shopName = window.prompt("Shop adı (opsiyonel):", "") ?? "";
-    const partName = window.prompt("Parça adı / numarası (opsiyonel):", "") ?? "";
-    const notes = window.prompt("Not (opsiyonel):", "") ?? "";
-    setPendingId(rule.id);
-    startTransition(async () => {
-      const result = await markServiced(rule.id, { cost, shopName, partName, notes });
-      setPendingId(null);
-      if (!result.ok) {
-        setMessage({ type: "error", text: result.error });
-        return;
-      }
-      setMessage({ type: "ok", text: "Bakım kaydedildi." });
-      router.refresh();
-    });
-  }
-
   if (rules.length === 0) return <div className="card text-sm text-slate-400">Aktif bakım planı yok.</div>;
 
   return (
     <section className="space-y-3">
-      {message && (
-        <p className={`rounded-lg border px-3 py-2 text-sm ${message.type === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"}`}>
-          {message.text}
-        </p>
-      )}
       <div className="grid gap-3">
         {rules.map((rule) => {
           const pm = computePM(rule, Number(currentMileage ?? 0), thresholds, todayISO(), engineHours);
@@ -114,14 +77,9 @@ export default function UnitMaintenancePlans({
                   </details>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    className="btn-primary"
-                    disabled={isPending && pendingId === rule.id}
-                    onClick={() => service(rule)}
-                  >
-                    {pendingId === rule.id ? "Kaydediliyor..." : "Yapıldı"}
-                  </button>
+                  <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`}>
+                    Bakım Ekle
+                  </Link>
                   <Link className="btn-ghost" href="/maintenance/settings">Düzenle</Link>
                 </div>
               </div>

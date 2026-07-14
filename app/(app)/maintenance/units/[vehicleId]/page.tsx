@@ -20,6 +20,7 @@ import {
   type MileagePeriodSnapshot,
 } from "@/lib/maintenance-cost";
 import { usd } from "@/lib/format";
+import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -162,6 +163,7 @@ export default async function MaintenanceUnitDetailPage({
       .from("maintenance_records")
       .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)")
       .eq("vehicle_id", vehicleId)
+      .is("deleted_at", null)
       .order("performed_date", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(100);
@@ -271,8 +273,8 @@ export default async function MaintenanceUnitDetailPage({
     content = (
       <section className="space-y-4">
         <div className="card">
-          <h2 className="font-semibold">Güvenli Mileage Düzeltme</h2>
-          <p className="mt-1 text-sm text-slate-500">Yetkili kullanıcılar mileage değerini audit RPC ile günceller.</p>
+          <h2 className="font-semibold">Mileage Düzeltme</h2>
+          <p className="mt-1 text-sm text-slate-500">Mileage geçmişe kaydedilir; düşük değer current mileage değerini düşürmez.</p>
           <div className="mt-3">
             <UnitMileageInline vehicleId={vehicle.id} unitNumber={vehicle.unit_number} currentMileage={vehicle.current_mileage} />
           </div>
@@ -286,6 +288,7 @@ export default async function MaintenanceUnitDetailPage({
         .from("maintenance_records")
         .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)")
         .eq("vehicle_id", vehicleId)
+        .is("deleted_at", null)
         .order("performed_date", { ascending: false })
         .order("created_at", { ascending: false })
         .limit(5),
@@ -343,16 +346,25 @@ export default async function MaintenanceUnitDetailPage({
           </div>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          <Link className="btn-ghost" href={tabHref(vehicleId, "mileage")}>Mileage Güncelle</Link>
-          <Link className="btn-ghost" href={tabHref(vehicleId, "plans")}>Bakım Kaydet</Link>
-          <Link className="btn-ghost" href={tabHref(vehicleId, "inspections")}>Inspection Başlat</Link>
-          <Link className="btn-ghost" href="/maintenance/invoices">Invoice Yükle</Link>
-          <UnitTemplateApplyWizard
-            vehicle={vehicle}
-            profile={profile}
-            templates={(templatesRes.data ?? []).map((template: any) => ({ ...template, items: template.items ?? [] }))}
-            activeRules={(templateRulesRes.data ?? []) as any}
-          />
+          <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${vehicleId}`}>{MAINTENANCE_TERMS.addMaintenance}</Link>
+          <Link className="btn-ghost" href={tabHref(vehicleId, "mileage")}>{MAINTENANCE_TERMS.updateMileage}</Link>
+          <Link className="btn-ghost" href={tabHref(vehicleId, "inspections")}>{MAINTENANCE_TERMS.startInspection}</Link>
+          <details className="relative">
+            <summary className="btn-ghost cursor-pointer list-none">{MAINTENANCE_TERMS.otherActions}</summary>
+            <div className="absolute right-0 z-10 mt-2 w-56 rounded-lg border border-slate-200 bg-white p-2 text-sm shadow-lg">
+              <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href={`/maintenance/invoices?vehicleId=${vehicleId}`}>Invoice Yükle</Link>
+              <div className="rounded-md px-2 py-1.5">
+                <UnitTemplateApplyWizard
+                  vehicle={vehicle}
+                  profile={profile}
+                  templates={(templatesRes.data ?? []).map((template: any) => ({ ...template, items: template.items ?? [] }))}
+                  activeRules={(templateRulesRes.data ?? []) as any}
+                />
+              </div>
+              <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href={`/vehicles/${vehicleId}`}>Unit Ayarları</Link>
+              <Link className="block rounded-md px-2 py-1.5 hover:bg-slate-100" href="/maintenance/settings">Gelişmiş İşlemler</Link>
+            </div>
+          </details>
         </div>
       </section>
       <nav className="flex gap-2 overflow-x-auto border-b border-slate-200 pb-2 text-sm">

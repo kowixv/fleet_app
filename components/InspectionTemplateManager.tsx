@@ -32,15 +32,19 @@ export default function InspectionTemplateManager({
 }) {
   const [templateId, setTemplateId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
+  const [cloneName, setCloneName] = useState("");
   const [pending, startTransition] = useTransition();
   const selected = templates.find((template) => template.id === templateId) ?? null;
 
-  function cloneTemplate() {
+  function cloneTemplate(name: string) {
     if (!selected) return;
-    const name = window.prompt("New checklist name:", `${selected.name} Copy`);
-    if (!name) return;
+    const trimmed = name.trim();
+    if (!trimmed) {
+      setMessage({ type: "error", text: "Checklist adı gerekli." });
+      return;
+    }
     startTransition(async () => {
-      const result = await cloneInspectionTemplate(selected.id, name);
+      const result = await cloneInspectionTemplate(selected.id, trimmed);
       setMessage(result.ok ? { type: "ok", text: "Checklist cloned." } : { type: "error", text: result.error });
       if (result.ok) window.location.reload();
     });
@@ -84,7 +88,15 @@ export default function InspectionTemplateManager({
                 <p className="text-sm text-slate-500">{selected.items.length} checklist item</p>
               </div>
               <div className="flex gap-2">
-                <button type="button" className="btn-ghost" disabled={pending} onClick={cloneTemplate}>Clone</button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    className="input w-56"
+                    value={cloneName}
+                    placeholder={`${selected.name} Copy`}
+                    onChange={(event) => setCloneName(event.target.value)}
+                  />
+                  <button type="button" className="btn-ghost" disabled={pending} onClick={() => cloneTemplate(cloneName || `${selected.name} Copy`)}>Clone</button>
+                </div>
                 <button type="button" className="btn-ghost" onClick={() => setTemplateId(null)}>Kapat</button>
               </div>
             </div>
