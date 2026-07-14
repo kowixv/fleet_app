@@ -41,10 +41,26 @@ const CRITICAL_PASS_FAIL_PATTERNS = [
 const LOWER_IS_BAD_PATTERNS = [
   /brake/i,
   /tread/i,
-  /battery cca/i,
-  /regen frequency/i,
-  /\bmpg\b/i,
 ];
+
+export function inspectionTypeLabel(type: string | null | undefined, name?: string | null): string {
+  const raw = `${type ?? ""} ${name ?? ""}`.toLowerCase();
+  if (raw.includes("daily") || raw.includes("pre-trip") || raw.includes("weekly")) return "Hızlı Güvenlik Kontrolü";
+  if (raw.includes("pm_b") || raw.includes("pm-b") || raw.includes("detay")) return "Detaylı PM";
+  if (raw.includes("pm_a") || raw.includes("pm-a") || raw.includes("temel")) return "Temel PM";
+  if (raw.includes("annual") || raw.includes("dot")) return "DOT Annual";
+  return name?.trim() || "Inspection";
+}
+
+export function findingSeverityLabel(severity: FindingSeverity | string): string {
+  const labels: Record<string, string> = {
+    monitor: "Takip Et",
+    service_soon: "Yakında Servis",
+    critical: "Kritik",
+    do_not_dispatch: "Aracı Çıkartma",
+  };
+  return labels[severity] ?? severity;
+}
 
 export function resultHasValue(result: InspectionResultInput | undefined): boolean {
   if (!result) return false;
@@ -117,5 +133,5 @@ export function hasDoNotDispatchFinding(findings: Array<{ severity: FindingSever
 
 export function cloneTemplateName(name: string): string {
   const trimmed = name.trim();
-  return trimmed ? `${trimmed} Copy` : "Inspection Template Copy";
+  return trimmed ? `${trimmed} Copy` : "Yeni Kontrol Listesi";
 }

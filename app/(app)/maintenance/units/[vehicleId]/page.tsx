@@ -20,6 +20,7 @@ import {
 } from "@/lib/maintenance-cost";
 import { usd } from "@/lib/format";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
+import { findingSeverityLabel } from "@/lib/inspection";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -408,7 +409,7 @@ function OpenFindings({ rows }: { rows: any[] }) {
       <div className="mt-3 space-y-2">
         {rows.length === 0 ? <p className="text-sm text-slate-400">Açık bulgu yok.</p> : rows.map((row) => (
           <div key={row.id} className="rounded-lg border border-slate-100 p-3 text-sm">
-            <span className={`badge ${row.severity === "do_not_dispatch" || row.severity === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{row.severity}</span>
+            <span className={`badge ${row.severity === "do_not_dispatch" || row.severity === "critical" ? "bg-red-100 text-red-700" : "bg-amber-100 text-amber-700"}`}>{findingSeverityLabel(row.severity)}</span>
             <p className="mt-1 font-medium">{row.label ?? "-"}</p>
             <p className="text-slate-500">{row.recommended_action ?? row.notes ?? "-"}</p>
           </div>
@@ -434,7 +435,7 @@ function HistoryPanel({ rows, params }: { rows: any[]; params: Record<string, st
         </div>
         <div>
           <label className="label">Kategori</label>
-          <input className="input" name="history_category" defaultValue={first(params.history_category) ?? ""} placeholder="routine_pm" />
+          <input className="input" name="history_category" defaultValue={first(params.history_category) ?? ""} placeholder="Preventive Maintenance" />
         </div>
         <div>
           <label className="label">Shop</label>

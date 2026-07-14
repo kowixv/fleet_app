@@ -28,9 +28,9 @@ describe("manual maintenance service safety", () => {
   });
 
   it("classifies manual entries for cost analytics without forcing allocation fields", () => {
-    expect(manualMaintenanceCategory("periodic", "PM-A")).toBe("routine_pm");
+    expect(manualMaintenanceCategory("periodic", "PM-A")).toBe("preventive_maintenance");
     expect(manualMaintenanceCategory("repair", "Tire Repair")).toBe("tires");
-    expect(manualMaintenanceCategory("repair", "Road Service")).toBe("road_service_towing");
+    expect(manualMaintenanceCategory("repair", "Road Service")).toBe("other");
   });
 
   it("normalizes unit numbers before quick creation", () => {
@@ -122,7 +122,7 @@ describe("manual maintenance daily UX contract", () => {
     expect(overview).toContain("PDF Invoice Yükle");
     expect(overview).toContain("Toplu Invoice Import");
     expect(overview).not.toContain("BulkMaintenanceInvoiceUpload");
-    expect(settings).toContain("Gelişmiş Veri Araçları");
+    expect(settings).toContain("Gelişmiş Araçlar");
     expect(settings).toContain("/maintenance/invoices");
   });
 

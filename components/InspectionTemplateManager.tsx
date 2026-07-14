@@ -4,7 +4,7 @@ import {
   cloneInspectionTemplate,
 } from "@/app/(app)/maintenance/inspection-actions";
 import { updateRow } from "@/lib/crud";
-import type { InspectionInputType, InspectionTemplateItem } from "@/lib/inspection";
+import { inspectionTypeLabel, type InspectionInputType, type InspectionTemplateItem } from "@/lib/inspection";
 import { useState, useTransition } from "react";
 
 interface TemplateItem extends InspectionTemplateItem {
@@ -63,10 +63,7 @@ export default function InspectionTemplateManager({
     <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="font-semibold">Inspection Checklistleri</h2>
-        </div>
-        <div className="flex gap-2">
-          <button type="button" className="btn-ghost" disabled={!templates[0] || pending} onClick={() => setTemplateId(templates[0]?.id ?? null)}>İlk checklist'i aç</button>
+          <h2 className="font-semibold">Inspection Kontrol Listeleri</h2>
         </div>
       </div>
       {message && (
@@ -84,7 +81,7 @@ export default function InspectionTemplateManager({
           <div className="card my-8 w-full max-w-5xl space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <h2 className="font-semibold">{selected.name} v{selected.version}</h2>
+                <h2 className="font-semibold">{inspectionTypeLabel(selected.inspection_type, selected.name)}</h2>
                 <p className="text-sm text-slate-500">{selected.items.length} checklist satırı</p>
               </div>
               <div className="flex gap-2">
@@ -95,7 +92,7 @@ export default function InspectionTemplateManager({
                     placeholder={`${selected.name} Copy`}
                     onChange={(event) => setCloneName(event.target.value)}
                   />
-                  <button type="button" className="btn-ghost" disabled={pending} onClick={() => cloneTemplate(cloneName || `${selected.name} Copy`)}>Kopyala</button>
+                  <button type="button" className="btn-ghost" disabled={pending} onClick={() => cloneTemplate(cloneName || `${selected.name} Copy`)}>Yeni Kontrol Listesi Oluştur</button>
                 </div>
                 <button type="button" className="btn-ghost" onClick={() => setTemplateId(null)}>Kapat</button>
               </div>
@@ -127,7 +124,11 @@ export default function InspectionTemplateManager({
   );
 }
 
-function checklistLabel(name: string) {
+function checklistLabel(template: TemplateRow) {
+  return inspectionTypeLabel(template.inspection_type, template.name);
+}
+
+function checklistGroupLabel(name: string) {
   const lower = name.toLowerCase();
   if (lower.includes("daily") || lower.includes("pre-trip")) return "Daily / Pre-trip";
   if (lower.includes("weekly")) return "Weekly";
@@ -144,8 +145,8 @@ function ChecklistCard({ template, onEdit }: { template: TemplateRow; onEdit: ()
     <div className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="font-semibold">{checklistLabel(template.name)}</h3>
-          <p className="mt-1 text-sm text-slate-500">{template.name} v{template.version}</p>
+          <h3 className="font-semibold">{checklistLabel(template)}</h3>
+          <p className="mt-1 text-sm text-slate-500">{checklistGroupLabel(template.name)}</p>
           <p className="mt-1 text-xs text-slate-500">{activeItems} aktif item</p>
         </div>
         <button type="button" className="btn-ghost text-xs" onClick={onEdit}>Düzenle</button>

@@ -4,17 +4,14 @@ import MaintenanceNav from "@/components/MaintenanceNav";
 import MileageSnapshotControls from "@/components/MileageSnapshotControls";
 import { updateSettings } from "@/app/(app)/settings/actions";
 import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
 export default async function MaintenanceSettingsPage() {
   const supabase = await createClient();
-  const [
-    settingsRes,
-    vehiclesRes,
-    inspectionTemplatesRes,
-  ] = await Promise.all([
+  const [settingsRes, vehiclesRes, inspectionTemplatesRes] = await Promise.all([
     supabase.from("settings").select("*").single(),
     supabase.from("vehicles").select("id, unit_number").eq("status", "active").order("unit_number"),
     supabase
@@ -44,10 +41,7 @@ export default async function MaintenanceSettingsPage() {
       .order("name"),
   ]);
 
-  const error =
-    settingsRes.error ??
-    vehiclesRes.error ??
-    inspectionTemplatesRes.error;
+  const error = settingsRes.error ?? vehiclesRes.error ?? inspectionTemplatesRes.error;
   if (error) throw new Error(`Maintenance settings yüklenemedi: ${error.message}`);
 
   const settings = settingsRes.data;
@@ -64,7 +58,7 @@ export default async function MaintenanceSettingsPage() {
         <span className="badge bg-slate-900 text-white">Yönetici Ayarı</span>
       </div>
 
-      <AdminSection title="Uyarı Eşikleri" defaultOpen>
+      <AdminSection title="Uyarı Ayarları" defaultOpen>
         <form action={updateSettings} className="grid max-w-2xl grid-cols-2 gap-3">
           <input name="default_commission" type="hidden" defaultValue={settings?.default_commission ?? 250} />
           <input name="fuel_warning_pct" type="hidden" defaultValue={Math.round((settings?.fuel_warning_pct ?? 0.3) * 100)} />
@@ -94,24 +88,24 @@ export default async function MaintenanceSettingsPage() {
         </form>
       </AdminSection>
 
-      <AdminSection title="Inspection Checklistleri">
+      <AdminSection title="Inspection Kontrol Listeleri">
         <InspectionTemplateManager
           templates={(inspectionTemplatesRes.data ?? []).map((template: any) => ({ ...template, items: template.items ?? [] }))}
           basePath="/maintenance/settings"
         />
       </AdminSection>
 
-      <AdminSection title="Maliyet Kategorileri">
+      <AdminSection title="Maliyet Ayarları">
         <div className="grid gap-2 md:grid-cols-3">
           {MAINTENANCE_COST_CATEGORIES.map((category) => (
             <div key={category} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
-              {category.replace(/_/g, " ")}
+              {formatMaintenanceCategory(category)}
             </div>
           ))}
         </div>
       </AdminSection>
 
-      <AdminSection title="Gelişmiş Veri Araçları">
+      <AdminSection title="Gelişmiş Araçlar">
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
           <p className="font-semibold">Bu işlem normal günlük kullanım için gerekli değildir.</p>
           <div className="mt-3 flex flex-wrap gap-2">

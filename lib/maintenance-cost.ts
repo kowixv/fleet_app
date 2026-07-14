@@ -1,21 +1,44 @@
 export const MAINTENANCE_COST_CATEGORIES = [
-  "routine_pm",
-  "tires",
-  "brakes_wheel_end",
+  "preventive_maintenance",
   "engine",
+  "fuel_system",
+  "turbo_air_intake",
   "aftertreatment",
-  "transmission_driveline",
+  "transmission_clutch",
+  "driveline_differential",
+  "cooling_system",
+  "air_system",
+  "brakes_wheel_end",
   "suspension_steering",
-  "cooling",
+  "tires",
   "electrical",
-  "road_service_towing",
-  "driver_damage",
-  "warranty_recovery",
+  "hvac_ac",
+  "apu",
+  "cab_body_glass",
+  "fifth_wheel_coupling",
+  "trailer",
+  "dot_inspection",
   "other",
 ] as const;
 
 export type MaintenanceCostCategory = (typeof MAINTENANCE_COST_CATEGORIES)[number];
+export type LegacyMaintenanceCostCategory =
+  | "routine_pm"
+  | "transmission_driveline"
+  | "cooling"
+  | "road_service_towing"
+  | "driver_damage"
+  | "warranty_recovery";
+export type MaintenanceCostCategoryValue = MaintenanceCostCategory | LegacyMaintenanceCostCategory | string;
 export type PlannedFilter = "all" | "planned" | "unscheduled";
+export type MaintenanceCause =
+  | "normal_wear"
+  | "component_failure"
+  | "road_hazard"
+  | "driver_damage"
+  | "accident_collision"
+  | "previous_repair_failure"
+  | "unknown";
 
 export interface MaintenanceCostBreakdown {
   parts_cost?: number | null;
@@ -25,8 +48,15 @@ export interface MaintenanceCostBreakdown {
   towing_cost?: number | null;
   road_service_cost?: number | null;
   hotel_travel_cost?: number | null;
+  diagnostic_cost?: number | null;
+  freight_shipping_cost?: number | null;
+  core_charge_cost?: number | null;
+  environmental_fee_cost?: number | null;
+  machine_shop_cost?: number | null;
+  sublet_cost?: number | null;
   other_cost?: number | null;
   warranty_recovery?: number | null;
+  refund_credit?: number | null;
   total_cost?: number | null;
 }
 
@@ -43,7 +73,11 @@ export interface MaintenanceCostRow extends MaintenanceCostBreakdown {
   shop: string | null;
   service_type: string | null;
   service_key: string | null;
-  category: MaintenanceCostCategory;
+  category: MaintenanceCostCategoryValue;
+  cause?: MaintenanceCause | string | null;
+  breakdown_occurred?: boolean | null;
+  warranty_claim?: boolean | null;
+  warranty_status?: string | null;
   planned: boolean;
   status: string | null;
   mileage_at_service: number | null;
@@ -96,6 +130,7 @@ export interface MaintenanceCostSummary {
   tireCostPerThousand: number | null;
   roadCallsPer100k: number | null;
   repeatRepairRate30Days: number;
+  totalBreakdownImpact: number;
   byCategory: Array<{ category: MaintenanceCostCategory; totalCost: number }>;
   byShop: Array<{ shop: string; totalCost: number }>;
   unitRanking: UnitCostSummary[];
@@ -120,18 +155,25 @@ export interface MaintenanceCostAlert {
 }
 
 const CATEGORY_KEYWORDS: Array<[MaintenanceCostCategory, RegExp]> = [
-  ["routine_pm", /\b(pm|preventive|inspection|oil change|wet pm|filter)\b/i],
-  ["tires", /\b(tire|tread|steer tire|drive tire)\b/i],
-  ["brakes_wheel_end", /\b(brake|wheel end|hub|seal|drum|rotor|caliper)\b/i],
-  ["engine", /\b(engine|overhead|turbo|injector|fuel pump)\b/i],
-  ["aftertreatment", /\b(dpf|def|scr|regen|aftertreatment|nox)\b/i],
-  ["transmission_driveline", /\b(transmission|clutch|driveshaft|u-joint|driveline)\b/i],
-  ["suspension_steering", /\b(suspension|steering|shock|spring|tie rod|kingpin)\b/i],
-  ["cooling", /\b(coolant|radiator|water pump|thermostat|hose)\b/i],
-  ["electrical", /\b(electrical|battery|alternator|starter|wiring|light)\b/i],
-  ["road_service_towing", /\b(tow|towing|road service|roadside)\b/i],
-  ["driver_damage", /\b(driver damage|accident|collision|damage)\b/i],
-  ["warranty_recovery", /\b(warranty|recovery|credit)\b/i],
+  ["preventive_maintenance", /\b(pm|preventive|oil change|wet pm|lubrication|grease|routine service)\b/i],
+  ["engine", /\b(engine|cylinder|piston|camshaft|crankcase|injector|overhead|head gasket)\b/i],
+  ["fuel_system", /\b(fuel pump|fuel line|fuel rail|fuel filter|fuel water separator)\b/i],
+  ["turbo_air_intake", /\b(turbo|cac|charge air cooler|intercooler|boost leak|intake|air filter)\b/i],
+  ["aftertreatment", /\b(dpf|def|scr|regen|nox|doser|aftertreatment)\b/i],
+  ["transmission_clutch", /\b(transmission|clutch|shifter|gear|gearbox)\b/i],
+  ["driveline_differential", /\b(driveshaft|u-joint|carrier bearing|driveline|differential|axle shaft)\b/i],
+  ["cooling_system", /\b(coolant|radiator|water pump|thermostat|hose|surge tank|egr cooler)\b/i],
+  ["air_system", /\b(air compressor|air dryer|air line|air leak|air valve|governor|air tank)\b/i],
+  ["brakes_wheel_end", /\b(brake|drum|rotor|caliper|hub|wheel seal|bearing)\b/i],
+  ["suspension_steering", /\b(suspension|steering|shock|air bag|spring|tie rod|drag link|kingpin|torque rod)\b/i],
+  ["tires", /\b(tire|tread|alignment tire wear|steer tire|drive tire)\b/i],
+  ["electrical", /\b(electrical|battery|alternator|starter|wiring|wire|sensor|light|headlight|connector)\b/i],
+  ["hvac_ac", /\b(ac|a\/c|hvac|compressor|condenser|evaporator|blower|refrigerant)\b/i],
+  ["apu", /\b(apu|auxiliary power unit|tripac|carrier comfortpro)\b/i],
+  ["cab_body_glass", /\b(windshield|glass|mirror|door|bumper|hood|cab|body panel)\b/i],
+  ["fifth_wheel_coupling", /\b(fifth wheel|kingpin lock|coupling|release handle)\b/i],
+  ["trailer", /\b(trailer|landing gear|trailer abs|trailer light|trailer door)\b/i],
+  ["dot_inspection", /\b(dot|annual inspection|inspection|federal inspection)\b/i],
 ];
 
 function money(value: number | null | undefined): number {
@@ -150,18 +192,46 @@ export function suggestMaintenanceCostCategory(text: string | null | undefined):
   return CATEGORY_KEYWORDS.find(([, pattern]) => pattern.test(source))?.[0] ?? "other";
 }
 
+export function normalizeMaintenanceCostCategory(
+  category: MaintenanceCostCategoryValue | null | undefined,
+  serviceText: string | null | undefined = "",
+): MaintenanceCostCategory {
+  const raw = String(category ?? "").trim();
+  if ((MAINTENANCE_COST_CATEGORIES as readonly string[]).includes(raw)) return raw as MaintenanceCostCategory;
+  if (raw === "routine_pm") return "preventive_maintenance";
+  if (raw === "cooling") return "cooling_system";
+  if (raw === "transmission_driveline") {
+    return /\b(drive\s?shaft|u-joint|carrier bearing|differential|axle shaft|driveline)\b/i.test(serviceText ?? "")
+      ? "driveline_differential"
+      : "transmission_clutch";
+  }
+  if (raw === "road_service_towing" || raw === "driver_damage" || raw === "warranty_recovery") {
+    const suggested = suggestMaintenanceCostCategory(serviceText);
+    return suggested === "other" ? "other" : suggested;
+  }
+  return suggestMaintenanceCostCategory(serviceText) ?? "other";
+}
+
 export function calculateMaintenanceCostTotal(cost: MaintenanceCostBreakdown): number {
   const explicit = cost.total_cost;
   if (explicit != null && Number.isFinite(Number(explicit))) return Math.max(0, Number(explicit));
   return (
     money(cost.parts_cost) +
     money(cost.labor_cost) +
+    money(cost.diagnostic_cost) +
     money(cost.shop_fees) +
     money(cost.tax_cost) +
     money(cost.towing_cost) +
     money(cost.road_service_cost) +
     money(cost.hotel_travel_cost) +
-    money(cost.other_cost)
+    money(cost.freight_shipping_cost) +
+    money(cost.core_charge_cost) +
+    money(cost.environmental_fee_cost) +
+    money(cost.machine_shop_cost) +
+    money(cost.sublet_cost) +
+    money(cost.other_cost) -
+    Math.abs(money(cost.warranty_recovery)) -
+    Math.abs(money(cost.refund_credit))
   );
 }
 
@@ -169,12 +239,24 @@ export function calculateMaintenanceCpmCost(cost: MaintenanceCostBreakdown): num
   return (
     money(cost.parts_cost) +
     money(cost.labor_cost) +
+    money(cost.diagnostic_cost) +
     money(cost.shop_fees) +
+    money(cost.tax_cost) +
     money(cost.towing_cost) +
     money(cost.road_service_cost) +
+    money(cost.freight_shipping_cost) +
+    money(cost.core_charge_cost) +
+    money(cost.environmental_fee_cost) +
+    money(cost.machine_shop_cost) +
+    money(cost.sublet_cost) +
     money(cost.other_cost) -
-    Math.abs(money(cost.warranty_recovery))
+    Math.abs(money(cost.warranty_recovery)) -
+    Math.abs(money(cost.refund_credit))
   );
+}
+
+export function calculateTotalBreakdownImpact(cost: MaintenanceCostBreakdown): number {
+  return calculateMaintenanceCpmCost(cost) + money(cost.hotel_travel_cost);
 }
 
 export function calculateCpm(cost: number, milesDriven: number | null | undefined): number | null {
@@ -223,7 +305,7 @@ export function filterMaintenanceCostRows(
     return (
       (Number.isNaN(rowDate) || (rowDate >= start && rowDate <= end)) &&
       (!filters.vehicleId || row.vehicle_id === filters.vehicleId) &&
-      (!filters.category || filters.category === "all" || row.category === filters.category) &&
+      (!filters.category || filters.category === "all" || normalizeMaintenanceCostCategory(row.category, row.service_type) === filters.category) &&
       (planned === "all" || row.planned === (planned === "planned")) &&
       (!filters.shop || row.shop === filters.shop) &&
       (!filters.status || row.status === filters.status)
@@ -277,6 +359,7 @@ export function summarizeMaintenanceCosts(
   const byShop = new Map<string, number>();
   let totalCost = 0;
   let cpmCost = 0;
+  let totalBreakdownImpact = 0;
   let plannedCost = 0;
   let unscheduledCost = 0;
   let warrantyRecovery = 0;
@@ -288,16 +371,18 @@ export function summarizeMaintenanceCosts(
   for (const row of rows) {
     const total = calculateMaintenanceCostTotal(row);
     const cpm = calculateMaintenanceCpmCost(row);
+    const category = normalizeMaintenanceCostCategory(row.category, row.service_type);
     totalCost += total;
     cpmCost += cpm;
+    totalBreakdownImpact += calculateTotalBreakdownImpact(row);
     if (row.planned) plannedCost += total;
     else unscheduledCost += total;
     warrantyRecovery += Math.abs(money(row.warranty_recovery));
     towingRoadServiceCost += money(row.towing_cost) + money(row.road_service_cost);
     downtimeDays += money(row.downtime_days);
-    if (row.category === "road_service_towing" || money(row.towing_cost) + money(row.road_service_cost) > 0) roadCalls += 1;
-    if (row.category === "tires") tireCost += total;
-    byCategory.set(row.category, (byCategory.get(row.category) ?? 0) + total);
+    if (money(row.towing_cost) + money(row.road_service_cost) > 0) roadCalls += 1;
+    if (category === "tires") tireCost += total;
+    byCategory.set(category, (byCategory.get(category) ?? 0) + total);
     byShop.set(row.shop || "Unknown", (byShop.get(row.shop || "Unknown") ?? 0) + total);
     if (row.vehicle_id) byVehicle.set(row.vehicle_id, [...(byVehicle.get(row.vehicle_id) ?? []), row]);
   }
@@ -308,10 +393,10 @@ export function summarizeMaintenanceCosts(
     const unitCpmCost = unitRows.reduce((sum, row) => sum + calculateMaintenanceCpmCost(row), 0);
     const unitMiles = miles.get(vehicleId) ?? 0;
     const unitTireCost = unitRows
-      .filter((row) => row.category === "tires")
+      .filter((row) => normalizeMaintenanceCostCategory(row.category, row.service_type) === "tires")
       .reduce((sum, row) => sum + calculateMaintenanceCostTotal(row), 0);
     const unitRoadCalls = unitRows.filter(
-      (row) => row.category === "road_service_towing" || money(row.towing_cost) + money(row.road_service_cost) > 0,
+      (row) => money(row.towing_cost) + money(row.road_service_cost) > 0,
     ).length;
     return {
       vehicle_id: vehicleId,
@@ -339,6 +424,7 @@ export function summarizeMaintenanceCosts(
   return {
     totalCost,
     cpmCost,
+    totalBreakdownImpact,
     fleetCpm,
     insufficientMileage: totalMiles <= 0,
     plannedCost,
@@ -411,7 +497,7 @@ export function buildMaintenanceCostAlerts(
 
   for (const unit of summary.unitRanking) {
     const unitRows = rows.filter((row) => row.vehicle_id === unit.vehicle_id);
-    const towingRows = unitRows.filter((row) => row.category === "road_service_towing" || money(row.towing_cost) + money(row.road_service_cost) > 0);
+    const towingRows = unitRows.filter((row) => money(row.towing_cost) + money(row.road_service_cost) > 0);
     if (towingRows.length >= 2) {
       alerts.push({
         type: "recurring_towing",
@@ -449,12 +535,22 @@ export function maintenanceCostRowsToCsv(rows: MaintenanceCostRow[]): string {
     "mileage",
     "parts",
     "labor",
+    "diagnostic",
     "shop_fees",
+    "tax",
     "towing",
     "road_service",
+    "freight_shipping",
+    "core_charge",
+    "environmental_fee",
+    "machine_shop",
+    "sublet",
+    "hotel_travel",
     "other",
     "warranty_recovery",
-    "total",
+    "refund_credit",
+    "direct_maintenance_cost",
+    "total_breakdown_impact",
     "source_type",
     "source_id",
     "invoice_id",
@@ -469,18 +565,28 @@ export function maintenanceCostRowsToCsv(rows: MaintenanceCostRow[]): string {
       row.cost_date,
       row.unit_number,
       row.service_type,
-      row.category,
+      normalizeMaintenanceCostCategory(row.category, row.service_type),
       row.planned ? "planned" : "unscheduled",
       row.shop,
       row.mileage_at_service,
       row.parts_cost,
       row.labor_cost,
+      row.diagnostic_cost,
       row.shop_fees,
+      row.tax_cost,
       row.towing_cost,
       row.road_service_cost,
+      row.freight_shipping_cost,
+      row.core_charge_cost,
+      row.environmental_fee_cost,
+      row.machine_shop_cost,
+      row.sublet_cost,
+      row.hotel_travel_cost,
       row.other_cost,
       row.warranty_recovery,
-      calculateMaintenanceCostTotal(row),
+      row.refund_credit,
+      calculateMaintenanceCpmCost(row),
+      calculateTotalBreakdownImpact(row),
       row.source_type,
       row.source_record_id,
       row.invoice_id,

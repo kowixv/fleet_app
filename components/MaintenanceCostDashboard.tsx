@@ -141,7 +141,8 @@ export default function MaintenanceCostDashboard({
 
       <div className="grid gap-4 md:grid-cols-4">
         <Stat label="Filo bakım CPM" value={cpm(summary.fleetCpm)} accent={summary.fleetCpm != null} />
-        <Stat label="Toplam maliyet" value={usd(summary.totalCost)} />
+        <Stat label="Direct Maintenance Cost" value={usd(summary.cpmCost)} />
+        <Stat label="Total Breakdown Impact" value={usd(summary.totalBreakdownImpact)} />
         <Stat label="Planlı / Plansız" value={`${usd(summary.plannedCost)} / ${usd(summary.unscheduledCost)}`} />
         <Stat label="Warranty recovery" value={usd(summary.warrantyRecovery)} />
         <Stat label="Towing + Road Service" value={usd(summary.towingRoadServiceCost)} />

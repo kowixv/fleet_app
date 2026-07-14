@@ -5,8 +5,11 @@ import {
   calculateCpm,
   calculateMaintenanceCpmCost,
   calculateMaintenanceCostTotal,
+  calculateTotalBreakdownImpact,
   filterMaintenanceCostRows,
   filterMileagePeriodSnapshots,
+  maintenanceCostRowsToCsv,
+  normalizeMaintenanceCostCategory,
   reconcileInvoiceAllocations,
   summarizeMaintenanceCosts,
   type MaintenanceCostRow,
@@ -14,6 +17,7 @@ import {
 } from "./maintenance-cost";
 
 const migration = readFileSync("supabase/migrations/20260713020000_maintenance_cost_analytics.sql", "utf8");
+const categoryCostMigration = readFileSync("supabase/migrations/20260714010000_maintenance_category_cost_contract.sql", "utf8");
 
 function row(overrides: Partial<MaintenanceCostRow>): MaintenanceCostRow {
   return {
@@ -52,6 +56,16 @@ const snapshots: MileagePeriodSnapshot[] = [
   { vehicle_id: "v2", period_start: "2026-07-01", period_end: "2026-07-31", miles_driven: 5000 },
 ];
 
+function expectOrdered(source: string, tokens: string[]) {
+  let previous = -1;
+  for (const token of tokens) {
+    const next = source.indexOf(token, previous + 1);
+    expect(next, `Missing ${token}`).toBeGreaterThanOrEqual(0);
+    expect(next, `${token} is out of order`).toBeGreaterThan(previous);
+    previous = next;
+  }
+}
+
 describe("maintenance cost analytics", () => {
   it("calculates CPM with the requested formula", () => {
     const cost = calculateMaintenanceCpmCost({
@@ -61,23 +75,41 @@ describe("maintenance cost analytics", () => {
       road_service_cost: 50,
       towing_cost: 75,
       other_cost: 20,
-      tax_cost: 999,
+      tax_cost: 30,
+      diagnostic_cost: 15,
+      freight_shipping_cost: 10,
+      core_charge_cost: 40,
+      environmental_fee_cost: 5,
+      machine_shop_cost: 60,
+      sublet_cost: 80,
       hotel_travel_cost: 999,
       warranty_recovery: 70,
+      refund_credit: 15,
     });
-    expect(cost).toBe(400);
-    expect(calculateCpm(cost, 1000)).toBe(0.4);
+    expect(cost).toBe(625);
+    expect(calculateCpm(cost, 1000)).toBe(0.625);
   });
 
-  it("subtracts warranty recovery and keeps total cost separate", () => {
+  it("subtracts warranty recovery and refund credit while excluding hotel from CPM", () => {
     const input = {
       parts_cost: 500,
       labor_cost: 100,
       tax_cost: 30,
+      hotel_travel_cost: 90,
       warranty_recovery: 200,
+      refund_credit: 20,
     };
-    expect(calculateMaintenanceCostTotal(input)).toBe(630);
-    expect(calculateMaintenanceCpmCost(input)).toBe(400);
+    expect(calculateMaintenanceCostTotal(input)).toBe(500);
+    expect(calculateMaintenanceCpmCost(input)).toBe(410);
+    expect(calculateTotalBreakdownImpact(input)).toBe(500);
+  });
+
+  it("normalizes new and legacy maintenance cost categories", () => {
+    expect(normalizeMaintenanceCostCategory("routine_pm", "PM-A")).toBe("preventive_maintenance");
+    expect(normalizeMaintenanceCostCategory("cooling", "Coolant leak")).toBe("cooling_system");
+    expect(normalizeMaintenanceCostCategory("transmission_driveline", "U-joint replacement")).toBe("driveline_differential");
+    expect(normalizeMaintenanceCostCategory("transmission_driveline", "Clutch adjustment")).toBe("transmission_clutch");
+    expect(normalizeMaintenanceCostCategory("road_service_towing", "Towing")).toBe("other");
   });
 
   it("handles zero miles without division", () => {
@@ -169,6 +201,87 @@ describe("maintenance cost analytics", () => {
     expect(migration).toContain("with (security_invoker = true)");
   });
 
+  it("extends the database cost contract for new fields and category compatibility", () => {
+    for (const column of [
+      "diagnostic_cost",
+      "freight_shipping_cost",
+      "core_charge_cost",
+      "environmental_fee_cost",
+      "machine_shop_cost",
+      "sublet_cost",
+      "refund_credit",
+      "cause",
+      "breakdown_occurred",
+    ]) {
+      expect(categoryCostMigration).toContain(`add column if not exists ${column}`);
+    }
+    expect(categoryCostMigration).toContain("'preventive_maintenance'");
+    expect(categoryCostMigration).toContain("'routine_pm'");
+    expect(categoryCostMigration).toContain("create or replace function normalize_maintenance_cost_category");
+    expect(categoryCostMigration).toContain("create or replace view maintenance_cost_fact_v");
+    expect(categoryCostMigration).toContain("total_breakdown_impact");
+    expect(categoryCostMigration).toContain("and e.invoice_hash is null");
+  });
+
+  it("appends new maintenance cost view columns after the original view columns", () => {
+    const viewSql = categoryCostMigration.slice(
+      categoryCostMigration.indexOf("create or replace view maintenance_cost_fact_v"),
+      categoryCostMigration.indexOf("revoke all on maintenance_cost_fact_v"),
+    );
+    const maintenanceBranch = viewSql.slice(0, viewSql.indexOf("union all"));
+    const expenseBranch = viewSql.slice(viewSql.indexOf("union all"));
+    const originalColumnOrder = [
+      "organization_id",
+      "source_record_id",
+      "source_type",
+      "vehicle_id",
+      "unit_number",
+      "invoice_id",
+      "expense_id",
+      "invoice_hash",
+      "cost_date",
+      "shop",
+      "service_type",
+      "service_key",
+      "category",
+      "planned",
+      "status",
+      "mileage_at_service",
+      "parts_cost",
+      "labor_cost",
+      "shop_fees",
+      "tax_cost",
+      "towing_cost",
+      "road_service_cost",
+      "hotel_travel_cost",
+      "other_cost",
+      "warranty_recovery",
+      "total_cost",
+      "cpm_cost",
+      "downtime_start",
+      "downtime_end",
+      "downtime_days",
+    ];
+    const appendedColumnOrder = [
+      "cause",
+      "breakdown_occurred",
+      "diagnostic_cost",
+      "freight_shipping_cost",
+      "core_charge_cost",
+      "environmental_fee_cost",
+      "machine_shop_cost",
+      "sublet_cost",
+      "refund_credit",
+      "total_breakdown_impact",
+    ];
+    expectOrdered(maintenanceBranch, [...originalColumnOrder, ...appendedColumnOrder]);
+    expectOrdered(expenseBranch, [...originalColumnOrder, ...appendedColumnOrder]);
+    expect(maintenanceBranch).toContain("r.cause::text as cause");
+    expect(expenseBranch).toContain("null::text as cause");
+    expect(expenseBranch).toContain("false::boolean as breakdown_occurred");
+    expect(expenseBranch).toContain("0::numeric as refund_credit");
+  });
+
   it("keeps viewer writes blocked by is_org_writer policies and RPC checks", () => {
     expect(migration).toContain("and (select is_org_writer())");
     expect(migration).toContain("Write permission required");
@@ -183,8 +296,17 @@ describe("maintenance cost analytics", () => {
       "20260713000000_maintenance_profiles_templates_combined_intervals.sql",
       "20260713010000_pm_inspection_system.sql",
       "20260713020000_maintenance_cost_analytics.sql",
+      "20260714010000_maintenance_category_cost_contract.sql",
     ].map((file) => files.indexOf(file));
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+  });
+
+  it("exports the direct cost and new cost bucket fields", () => {
+    const csv = maintenanceCostRowsToCsv([row({ diagnostic_cost: 12, refund_credit: 3 })]);
+    expect(csv.split("\n")[0]).toContain("diagnostic");
+    expect(csv.split("\n")[0]).toContain("refund_credit");
+    expect(csv.split("\n")[0]).toContain("direct_maintenance_cost");
+    expect(csv.split("\n")[0]).toContain("total_breakdown_impact");
   });
 });

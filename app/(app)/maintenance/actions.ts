@@ -1,6 +1,7 @@
 "use server";
 
 import { requireWriteRole } from "@/lib/auth";
+import { normalizeMaintenanceCostCategory } from "@/lib/maintenance-cost";
 import { manualMaintenanceCategory, manualServiceOption, normalizeUnitNumber, shouldUpdateMaintenancePlan, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
@@ -112,6 +113,18 @@ export async function saveManualMaintenance(formData: FormData) {
     const partsCost = money(formData.get("parts_cost"));
     const shopFees = money(formData.get("shop_fees"));
     const taxCost = money(formData.get("tax_cost"));
+    const towingCost = money(formData.get("towing_cost"));
+    const roadServiceCost = money(formData.get("road_service_cost"));
+    const hotelTravelCost = money(formData.get("hotel_travel_cost"));
+    const diagnosticCost = money(formData.get("diagnostic_cost"));
+    const freightShippingCost = money(formData.get("freight_shipping_cost"));
+    const coreChargeCost = money(formData.get("core_charge_cost"));
+    const environmentalFeeCost = money(formData.get("environmental_fee_cost"));
+    const machineShopCost = money(formData.get("machine_shop_cost"));
+    const subletCost = money(formData.get("sublet_cost"));
+    const otherCost = money(formData.get("other_cost"));
+    const warrantyRecovery = money(formData.get("warranty_recovery"));
+    const refundCredit = money(formData.get("refund_credit"));
 
     if (!vehicleId) throw new Error("Unit gerekli.");
     if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
@@ -127,6 +140,8 @@ export async function saveManualMaintenance(formData: FormData) {
 
     const updatePlan = shouldUpdateMaintenancePlan(kind, serviceType, formData.get("update_plan") === "on");
     const submissionKey = text(formData.get("submission_key")) ?? crypto.randomUUID();
+    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind, serviceType), serviceType);
+    const plannedValue = text(formData.get("planned"));
     const payload = {
       submission_key: submissionKey,
       vehicle_id: vehicleId,
@@ -145,10 +160,24 @@ export async function saveManualMaintenance(formData: FormData) {
       parts_cost: partsCost,
       shop_fees: shopFees,
       tax_cost: taxCost,
+      towing_cost: towingCost,
+      road_service_cost: roadServiceCost,
+      hotel_travel_cost: hotelTravelCost,
+      diagnostic_cost: diagnosticCost,
+      freight_shipping_cost: freightShippingCost,
+      core_charge_cost: coreChargeCost,
+      environmental_fee_cost: environmentalFeeCost,
+      machine_shop_cost: machineShopCost,
+      sublet_cost: subletCost,
+      other_cost: otherCost,
+      warranty_recovery: warrantyRecovery,
+      refund_credit: refundCredit,
       downtime_start: text(formData.get("downtime_start")),
       downtime_end: text(formData.get("downtime_end")),
-      category: manualMaintenanceCategory(kind, serviceType),
-      planned: kind === "periodic",
+      category,
+      cause: text(formData.get("cause")),
+      breakdown_occurred: formData.get("breakdown_occurred") === "on",
+      planned: plannedValue == null ? kind === "periodic" : plannedValue === "planned",
       update_plan: updatePlan,
       create_missing_rule: false,
     };
@@ -307,6 +336,7 @@ export async function editManualMaintenanceRecord(formData: FormData) {
     const performedDate = dateOnly(formData.get("performed_date"), "Yapılma tarihi");
     const mileage = validateMileageInput(text(formData.get("mileage")));
     const cost = money(formData.get("cost"));
+    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind ?? "periodic", serviceType ?? ""), serviceType);
     if (!recordId) throw new Error("Bakım kaydı gerekli.");
     if (!mileage.ok) throw new Error(mileage.error);
     if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
@@ -316,7 +346,7 @@ export async function editManualMaintenanceRecord(formData: FormData) {
       record_id: recordId,
       entry_kind: kind,
       service_type: serviceType,
-      category: manualMaintenanceCategory(kind, serviceType),
+      category,
       performed_date: performedDate,
       mileage: mileage.mileage,
       cost,

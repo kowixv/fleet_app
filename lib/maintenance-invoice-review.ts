@@ -42,12 +42,21 @@ export interface MaintenanceCostAllocationFields {
   towing_cost: number;
   road_service_cost: number;
   hotel_travel_cost: number;
+  diagnostic_cost: number;
+  freight_shipping_cost: number;
+  core_charge_cost: number;
+  environmental_fee_cost: number;
+  machine_shop_cost: number;
+  sublet_cost: number;
   other_cost: number;
   warranty_recovery: number;
+  refund_credit: number;
   total_cost: number;
   downtime_start: string | null;
   downtime_end: string | null;
   status: string;
+  cause: string | null;
+  breakdown_occurred: boolean;
 }
 
 export interface MaintenanceInvoiceParserMeta {
@@ -78,12 +87,21 @@ export interface MaintenanceImportRecord {
   towing_cost: number;
   road_service_cost: number;
   hotel_travel_cost: number;
+  diagnostic_cost: number;
+  freight_shipping_cost: number;
+  core_charge_cost: number;
+  environmental_fee_cost: number;
+  machine_shop_cost: number;
+  sublet_cost: number;
   other_cost: number;
   warranty_recovery: number;
+  refund_credit: number;
   total_cost: number;
   downtime_start: string | null;
   downtime_end: string | null;
   status: string;
+  cause: string | null;
+  breakdown_occurred: boolean;
 }
 
 export type InvoiceImportStatus = "pending_review" | "completed" | "duplicate" | "failed" | "cancelled";
@@ -128,12 +146,21 @@ export function defaultCostAllocationForService(
     towing_cost: 0,
     road_service_cost: 0,
     hotel_travel_cost: 0,
+    diagnostic_cost: 0,
+    freight_shipping_cost: 0,
+    core_charge_cost: 0,
+    environmental_fee_cost: 0,
+    machine_shop_cost: 0,
+    sublet_cost: 0,
     other_cost: total,
     warranty_recovery: 0,
+    refund_credit: 0,
     total_cost: total,
     downtime_start: null,
     downtime_end: null,
     status: "completed",
+    cause: null,
+    breakdown_occurred: false,
   };
 }
 
@@ -271,12 +298,21 @@ export function normalizeReviewServiceRow(row: ReviewServiceRow): ReviewServiceR
     towing_cost: Number(row.towing_cost ?? allocation.towing_cost),
     road_service_cost: Number(row.road_service_cost ?? allocation.road_service_cost),
     hotel_travel_cost: Number(row.hotel_travel_cost ?? allocation.hotel_travel_cost),
+    diagnostic_cost: Number(row.diagnostic_cost ?? allocation.diagnostic_cost),
+    freight_shipping_cost: Number(row.freight_shipping_cost ?? allocation.freight_shipping_cost),
+    core_charge_cost: Number(row.core_charge_cost ?? allocation.core_charge_cost),
+    environmental_fee_cost: Number(row.environmental_fee_cost ?? allocation.environmental_fee_cost),
+    machine_shop_cost: Number(row.machine_shop_cost ?? allocation.machine_shop_cost),
+    sublet_cost: Number(row.sublet_cost ?? allocation.sublet_cost),
     other_cost: Number(row.other_cost ?? row.cost ?? allocation.other_cost),
     warranty_recovery: Number(row.warranty_recovery ?? allocation.warranty_recovery),
+    refund_credit: Number(row.refund_credit ?? allocation.refund_credit),
     total_cost: Number.isFinite(totalCost) ? totalCost : allocation.total_cost,
     downtime_start: row.downtime_start ?? allocation.downtime_start,
     downtime_end: row.downtime_end ?? allocation.downtime_end,
     status: row.status ?? allocation.status,
+    cause: row.cause ?? allocation.cause,
+    breakdown_occurred: Boolean(row.breakdown_occurred ?? allocation.breakdown_occurred),
   };
 }
 
@@ -334,9 +370,16 @@ export function mergeServiceRows(rows: ReviewServiceRow[], sourceId: string, tar
         ...row,
         parts_used: parts,
         cost: Number(row.cost ?? 0) + Number(source.cost ?? 0),
+        diagnostic_cost: Number(row.diagnostic_cost ?? 0) + Number(source.diagnostic_cost ?? 0),
+        freight_shipping_cost: Number(row.freight_shipping_cost ?? 0) + Number(source.freight_shipping_cost ?? 0),
+        core_charge_cost: Number(row.core_charge_cost ?? 0) + Number(source.core_charge_cost ?? 0),
+        environmental_fee_cost: Number(row.environmental_fee_cost ?? 0) + Number(source.environmental_fee_cost ?? 0),
+        machine_shop_cost: Number(row.machine_shop_cost ?? 0) + Number(source.machine_shop_cost ?? 0),
+        sublet_cost: Number(row.sublet_cost ?? 0) + Number(source.sublet_cost ?? 0),
         other_cost: Number(row.other_cost ?? 0) + Number(source.other_cost ?? 0),
         total_cost: Number(row.total_cost ?? 0) + Number(source.total_cost ?? 0),
         warranty_recovery: Number(row.warranty_recovery ?? 0) + Number(source.warranty_recovery ?? 0),
+        refund_credit: Number(row.refund_credit ?? 0) + Number(source.refund_credit ?? 0),
         notes: [row.notes, source.notes].filter(Boolean).join(" | ") || null,
       };
     });
@@ -463,12 +506,21 @@ export function buildReviewImportRecord({
       towing_cost: allocation.towing_cost,
       road_service_cost: allocation.road_service_cost,
       hotel_travel_cost: allocation.hotel_travel_cost,
+      diagnostic_cost: allocation.diagnostic_cost,
+      freight_shipping_cost: allocation.freight_shipping_cost,
+      core_charge_cost: allocation.core_charge_cost,
+      environmental_fee_cost: allocation.environmental_fee_cost,
+      machine_shop_cost: allocation.machine_shop_cost,
+      sublet_cost: allocation.sublet_cost,
       other_cost: allocation.other_cost,
       warranty_recovery: allocation.warranty_recovery,
+      refund_credit: allocation.refund_credit,
       total_cost: allocation.total_cost,
       downtime_start: allocation.downtime_start,
       downtime_end: allocation.downtime_end,
       status: allocation.status,
+      cause: allocation.cause,
+      breakdown_occurred: allocation.breakdown_occurred,
     },
   };
 }

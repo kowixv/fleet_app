@@ -8,6 +8,7 @@ import {
   reconcileInvoiceAllocations,
   type MaintenanceCostCategory,
 } from "@/lib/maintenance-cost";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   buildFinalImportRecords,
   defaultCostAllocationForService,
@@ -26,6 +27,16 @@ interface ExistingRule {
   id: string;
   summary: string;
 }
+
+const MAINTENANCE_CAUSE_OPTIONS = [
+  ["normal_wear", "Normal Wear"],
+  ["component_failure", "Component Failure"],
+  ["road_hazard", "Road Hazard"],
+  ["driver_damage", "Driver Damage"],
+  ["accident_collision", "Accident / Collision"],
+  ["previous_repair_failure", "Previous Repair Failure"],
+  ["unknown", "Unknown"],
+] as const;
 
 export default function MaintenanceInvoiceReview({
   invoice,
@@ -289,12 +300,22 @@ export default function MaintenanceInvoiceReview({
                     <div className="space-y-2">
                       <select className="input min-w-44" value={row.category} onChange={(event) => updateCost(row.id, { category: event.target.value as MaintenanceCostCategory })}>
                         {MAINTENANCE_COST_CATEGORIES.map((category) => (
-                          <option key={category} value={category}>{category.replace(/_/g, " ")}</option>
+                          <option key={category} value={category}>{formatMaintenanceCategory(category)}</option>
                         ))}
                       </select>
                       <label className="flex items-center gap-2 text-xs text-slate-600">
                         <input type="checkbox" className="h-4 w-4 accent-brand" checked={row.planned} onChange={(event) => updateCost(row.id, { planned: event.target.checked })} />
                         Planlı
+                      </label>
+                      <select className="input min-w-44" value={row.cause ?? ""} onChange={(event) => updateCost(row.id, { cause: event.target.value || null })}>
+                        <option value="">Cause seçilmedi</option>
+                        {MAINTENANCE_CAUSE_OPTIONS.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                      <label className="flex items-center gap-2 text-xs text-slate-600">
+                        <input type="checkbox" className="h-4 w-4 accent-brand" checked={row.breakdown_occurred} onChange={(event) => updateCost(row.id, { breakdown_occurred: event.target.checked })} />
+                        Breakdown occurred
                       </label>
                     </div>
                   </td>
@@ -319,10 +340,18 @@ export default function MaintenanceInvoiceReview({
                       <input className="input w-28" type="number" step="0.01" placeholder="Labor" value={row.labor_cost} onChange={(event) => updateCost(row.id, { labor_cost: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Fees" value={row.shop_fees} onChange={(event) => updateCost(row.id, { shop_fees: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Tax" value={row.tax_cost} onChange={(event) => updateCost(row.id, { tax_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Diagnostic" value={row.diagnostic_cost} onChange={(event) => updateCost(row.id, { diagnostic_cost: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Towing" value={row.towing_cost} onChange={(event) => updateCost(row.id, { towing_cost: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Road svc" value={row.road_service_cost} onChange={(event) => updateCost(row.id, { road_service_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Freight" value={row.freight_shipping_cost} onChange={(event) => updateCost(row.id, { freight_shipping_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Core" value={row.core_charge_cost} onChange={(event) => updateCost(row.id, { core_charge_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Env fee" value={row.environmental_fee_cost} onChange={(event) => updateCost(row.id, { environmental_fee_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Machine" value={row.machine_shop_cost} onChange={(event) => updateCost(row.id, { machine_shop_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Sublet" value={row.sublet_cost} onChange={(event) => updateCost(row.id, { sublet_cost: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Hotel/travel" value={row.hotel_travel_cost} onChange={(event) => updateCost(row.id, { hotel_travel_cost: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Other" value={row.other_cost} onChange={(event) => updateCost(row.id, { other_cost: Number(event.target.value || 0) })} />
                       <input className="input w-28" type="number" step="0.01" placeholder="Warranty" value={row.warranty_recovery} onChange={(event) => updateCost(row.id, { warranty_recovery: Number(event.target.value || 0) })} />
+                      <input className="input w-28" type="number" step="0.01" placeholder="Refund" value={row.refund_credit} onChange={(event) => updateCost(row.id, { refund_credit: Number(event.target.value || 0) })} />
                       <input className="input w-28 font-semibold" type="number" step="0.01" placeholder="Total" value={row.total_cost} onChange={(event) => updateCost(row.id, { total_cost: Number(event.target.value || 0), cost: Number(event.target.value || 0) })} />
                     </div>
                   </td>

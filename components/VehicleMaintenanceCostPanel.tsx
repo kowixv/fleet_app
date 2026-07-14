@@ -1,4 +1,5 @@
 import { usd } from "@/lib/format";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   filterMaintenanceCostRows,
   filterMileagePeriodSnapshots,
@@ -64,7 +65,7 @@ export default function VehicleMaintenanceCostPanel({
             <p className="text-slate-400">Maliyet verisi yok.</p>
           ) : allTime.byCategory.map((row) => (
             <div key={row.category} className="flex justify-between border-b border-slate-100 pb-2">
-              <span>{row.category.replace(/_/g, " ")}</span>
+              <span>{formatMaintenanceCategory(row.category)}</span>
               <span className="font-medium">{usd(row.totalCost)}</span>
             </div>
           ))}

@@ -1,10 +1,13 @@
 "use client";
 
 import { quickCreateMaintenanceVehicle, saveManualMaintenance } from "@/app/(app)/maintenance/actions";
+import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   PERIODIC_SERVICE_OPTIONS,
   REPAIR_SERVICE_OPTIONS,
+  manualMaintenanceCategory,
   manualServiceKey,
   manualServiceKeys,
   normalizeUnitNumber,
@@ -64,6 +67,16 @@ function formatMoney(value: number | null | undefined) {
 function vehicleLabel(vehicle: VehicleOption) {
   return `${vehicle.unit_number}${vehicle.current_mileage == null ? "" : ` - ${Number(vehicle.current_mileage).toLocaleString("en-US")} mi`}`;
 }
+
+const MAINTENANCE_CAUSE_OPTIONS = [
+  ["normal_wear", "Normal Wear"],
+  ["component_failure", "Component Failure"],
+  ["road_hazard", "Road Hazard"],
+  ["driver_damage", "Driver Damage"],
+  ["accident_collision", "Accident / Collision"],
+  ["previous_repair_failure", "Previous Repair Failure"],
+  ["unknown", "Unknown"],
+] as const;
 
 function nextDueText(summary: SaveSummary) {
   if (!summary.rule) return null;
@@ -133,6 +146,7 @@ export default function ManualMaintenanceEntry({
   const [vehicleId, setVehicleId] = useState(initialVehicle?.id ?? "");
   const [unitQuery, setUnitQuery] = useState(initialVehicle?.unit_number ?? "");
   const [serviceType, setServiceType] = useState(initialServiceType ?? PERIODIC_SERVICE_OPTIONS[0].value);
+  const [category, setCategory] = useState(manualMaintenanceCategory(initialKind, initialServiceType ?? PERIODIC_SERVICE_OPTIONS[0].value));
   const [parts, setParts] = useState([""]);
   const [submissionKey, setSubmissionKey] = useState(newSubmissionKey);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
@@ -151,6 +165,10 @@ export default function ManualMaintenanceEntry({
     const selected = vehicles.find((vehicle) => vehicle.id === vehicleId);
     if (selected && !unitQuery) setUnitQuery(selected.unit_number);
   }, [unitQuery, vehicleId, vehicles]);
+
+  useEffect(() => {
+    setCategory(manualMaintenanceCategory(kind, serviceType));
+  }, [kind, serviceType]);
 
   const services = kind === "periodic" ? PERIODIC_SERVICE_OPTIONS : REPAIR_SERVICE_OPTIONS;
   const normalizedQuery = normalizeUnitNumber(unitQuery);
@@ -295,6 +313,14 @@ export default function ManualMaintenanceEntry({
                     </datalist>
                   </div>
                   <div>
+                    <label className="label">Maintenance Category</label>
+                    <select className="input" name="category" value={category} onChange={(event) => setCategory(event.target.value)}>
+                      {MAINTENANCE_COST_CATEGORIES.map((item) => (
+                        <option key={item} value={item}>{formatMaintenanceCategory(item)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
                     <label className="label">{MAINTENANCE_TERMS.performedDate}</label>
                     <input className="input" name="performed_date" type="date" required defaultValue={todayISO()} />
                   </div>
@@ -305,6 +331,13 @@ export default function ManualMaintenanceEntry({
                   <div>
                     <label className="label">{MAINTENANCE_TERMS.totalCost}</label>
                     <input className="input" name="cost" type="number" min="0" step="0.01" placeholder="Opsiyonel" />
+                  </div>
+                  <div>
+                    <label className="label">Planlı / Plansız</label>
+                    <select key={kind} className="input" name="planned" defaultValue={kind === "periodic" ? "planned" : "unscheduled"}>
+                      <option value="planned">Planlı</option>
+                      <option value="unscheduled">Plansız</option>
+                    </select>
                   </div>
                 </div>
 
@@ -340,12 +373,25 @@ export default function ManualMaintenanceEntry({
                 )}
 
                 <details className="rounded-lg border border-slate-200">
-                  <summary className="cursor-pointer px-4 py-3 font-medium">{MAINTENANCE_TERMS.extraDetails}</summary>
+                  <summary className="cursor-pointer px-4 py-3 font-medium">Detaylı Maliyet ve Arıza Bilgileri</summary>
                   <div className="grid gap-3 border-t border-slate-100 p-4 md:grid-cols-2">
                     <div>
                       <label className="label">Shop</label>
                       <input className="input" name="shop_name" />
                     </div>
+                    <div>
+                      <label className="label">Cause</label>
+                      <select className="input" name="cause" defaultValue="">
+                        <option value="">Seçilmedi</option>
+                        {MAINTENANCE_CAUSE_OPTIONS.map(([value, label]) => (
+                          <option key={value} value={value}>{label}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm md:col-span-2">
+                      <input type="checkbox" className="h-4 w-4 accent-brand" name="breakdown_occurred" />
+                      Breakdown occurred
+                    </label>
                     <div>
                       <label className="label">Invoice / Repair Order Number</label>
                       <input className="input" name="invoice_number" />
@@ -382,6 +428,54 @@ export default function ManualMaintenanceEntry({
                     <div>
                       <label className="label">Tax</label>
                       <input className="input" name="tax_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Diagnostic Cost</label>
+                      <input className="input" name="diagnostic_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Towing</label>
+                      <input className="input" name="towing_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Road Service</label>
+                      <input className="input" name="road_service_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Freight / Shipping</label>
+                      <input className="input" name="freight_shipping_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Core Charge</label>
+                      <input className="input" name="core_charge_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Environmental Fee</label>
+                      <input className="input" name="environmental_fee_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Machine Shop</label>
+                      <input className="input" name="machine_shop_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Sublet</label>
+                      <input className="input" name="sublet_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Hotel / Travel</label>
+                      <input className="input" name="hotel_travel_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Other Cost</label>
+                      <input className="input" name="other_cost" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Warranty Recovery</label>
+                      <input className="input" name="warranty_recovery" type="number" min="0" step="0.01" />
+                    </div>
+                    <div>
+                      <label className="label">Refund / Credit</label>
+                      <input className="input" name="refund_credit" type="number" min="0" step="0.01" />
                     </div>
                     <div>
                       <label className="label">Downtime start</label>

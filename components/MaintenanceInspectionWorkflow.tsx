@@ -10,7 +10,9 @@ import {
 import { updateRow } from "@/lib/crud";
 import {
   classifyInspectionResult,
+  findingSeverityLabel,
   hasDoNotDispatchFinding,
+  inspectionTypeLabel,
   validateRequiredInspectionResults,
   type FindingSeverity,
   type InspectionInputType,
@@ -125,7 +127,16 @@ export default function MaintenanceInspectionWorkflow({
   const [workOrderNotes, setWorkOrderNotes] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
 
-  const selectedTemplate = templates.find((template) => template.id === templateId) ?? null;
+  const visibleTemplates = useMemo(() => {
+    const byType = new Map<string, TemplateRow>();
+    for (const template of templates) {
+      const key = inspectionTypeLabel(template.inspection_type, template.name);
+      const existing = byType.get(key);
+      if (!existing || Number(template.version ?? 0) > Number(existing.version ?? 0)) byType.set(key, template);
+    }
+    return [...byType.values()];
+  }, [templates]);
+  const selectedTemplate = templates.find((template) => template.id === templateId) ?? visibleTemplates[0] ?? null;
   const selectedTemplateItems = useMemo(
     () => selectedTemplate?.items.filter((item) => item.active).sort((a, b) => a.sort_order - b.sort_order) ?? [],
     [selectedTemplate],
@@ -256,24 +267,24 @@ export default function MaintenanceInspectionWorkflow({
 
       <div className="card space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-semibold">PM Inspections</h2>
+          <h2 className="font-semibold">Inspection Başlat</h2>
           <button type="button" className="btn-ghost" onClick={() => window.print()}>Yazdırılabilir Özet</button>
         </div>
         <div className="grid gap-3 md:grid-cols-4">
           <div>
-            <label className="label">Vehicle</label>
+            <label className="label">Unit</label>
             <select className="input" value={vehicleId} onChange={(event) => setVehicleId(event.target.value)}>
               {vehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>Unit {vehicle.unit_number}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Checklist</label>
+            <label className="label">Inspection Türü</label>
             <select className="input" value={templateId} onChange={(event) => setTemplateId(event.target.value)}>
-              {templates.map((template) => <option key={template.id} value={template.id}>{template.name} v{template.version}</option>)}
+              {visibleTemplates.map((template) => <option key={template.id} value={template.id}>{inspectionTypeLabel(template.inspection_type, template.name)}</option>)}
             </select>
           </div>
           <div>
-            <label className="label">Related PM Rule</label>
+            <label className="label">İlgili Bakım Hatırlatıcısı</label>
             <select className="input" value={ruleId} onChange={(event) => setRuleId(event.target.value)}>
               <option value="">Yok</option>
               {visibleRules.map((rule) => <option key={rule.id} value={rule.id}>{rule.service_type}</option>)}
@@ -290,7 +301,7 @@ export default function MaintenanceInspectionWorkflow({
             <div className="flex flex-wrap gap-2">
               {drafts.map((draft) => (
                 <button key={draft.id} type="button" className="btn-ghost text-xs" onClick={() => resumeDraft(draft)}>
-                  {vehicles.find((vehicle) => vehicle.id === draft.vehicle_id)?.unit_number ?? "Unit"} - {draft.inspection_type}
+                  {vehicles.find((vehicle) => vehicle.id === draft.vehicle_id)?.unit_number ?? "Unit"} - {inspectionTypeLabel(draft.inspection_type)}
                 </button>
               ))}
             </div>
@@ -305,17 +316,17 @@ export default function MaintenanceInspectionWorkflow({
               <input className="input md:col-span-2" placeholder="Notes" value={notes} onChange={(event) => setNotes(event.target.value)} />
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" className="h-4 w-4 accent-brand" checked={markRuleServiced} onChange={(event) => setMarkRuleServiced(event.target.checked)} />
-                Mark related PM rule serviced
+                İlgili PM hatırlatıcısını servis yapıldı olarak işaretle
               </label>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[980px]">
                 <thead className="border-b border-slate-200 bg-slate-50">
                   <tr>
-                    <th className="th">Section</th>
-                    <th className="th">Item</th>
-                    <th className="th">Value</th>
-                    <th className="th">Threshold</th>
+                    <th className="th">Bölüm</th>
+                    <th className="th">Kontrol</th>
+                    <th className="th">Değer</th>
+                    <th className="th">Eşik</th>
                     <th className="th">Notes</th>
                   </tr>
                 </thead>
@@ -329,7 +340,7 @@ export default function MaintenanceInspectionWorkflow({
                         <td className="td">
                           <div className="font-medium">{item.label}{item.required ? " *" : ""}</div>
                           {item.instructions && <p className="text-xs text-slate-500">{item.instructions}</p>}
-                          {finding && <p className="mt-1 text-xs font-semibold text-red-700">{finding.severity}: {finding.recommended_action}</p>}
+                          {finding && <p className="mt-1 text-xs font-semibold text-red-700">{findingSeverityLabel(finding.severity)}: {finding.recommended_action}</p>}
                         </td>
                         <td className="td">{renderInput(item, result, updateResult)}</td>
                         <td className="td text-xs">
@@ -365,10 +376,10 @@ export default function MaintenanceInspectionWorkflow({
       {showTemplateManagement && (
       <div className="card space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="font-semibold">Checklist Template Yönetimi</h2>
+          <h2 className="font-semibold">Inspection Kontrol Listeleri</h2>
           <div className="flex gap-2">
             <select className="input" value={templateEditorId} onChange={(event) => setTemplateEditorId(event.target.value)}>
-              {templates.map((template) => <option key={template.id} value={template.id}>{template.name} v{template.version}</option>)}
+              {templates.map((template) => <option key={template.id} value={template.id}>{inspectionTypeLabel(template.inspection_type, template.name)}</option>)}
             </select>
             <input
               className="input w-56"
@@ -376,7 +387,7 @@ export default function MaintenanceInspectionWorkflow({
               placeholder={editorTemplate ? `${editorTemplate.name} Copy` : "Yeni checklist adı"}
               onChange={(event) => setCloneName(event.target.value)}
             />
-            <button type="button" className="btn-ghost" disabled={pending} onClick={cloneTemplate}>Kopyala</button>
+            <button type="button" className="btn-ghost" disabled={pending} onClick={cloneTemplate}>Yeni Kontrol Listesi Oluştur</button>
           </div>
         </div>
         {editorTemplate && (
@@ -458,7 +469,7 @@ function FindingsTable({
         <thead className="border-b border-slate-200">
           <tr>
             <th className="th">Unit</th>
-            <th className="th">Severity</th>
+            <th className="th">Önem</th>
             <th className="th">Bulgu</th>
             <th className="th">İşlem</th>
             <th className="th text-right">Work Order</th>
@@ -470,7 +481,7 @@ function FindingsTable({
           ) : findings.map((finding) => (
             <tr key={finding.id}>
               <td className="td">{finding.vehicles?.unit_number ?? "-"}</td>
-              <td className="td"><span className="badge bg-red-100 text-red-700">{finding.severity}</span></td>
+              <td className="td"><span className="badge bg-red-100 text-red-700">{findingSeverityLabel(finding.severity)}</span></td>
               <td className="td">{finding.label ?? "-"}</td>
               <td className="td">{finding.recommended_action ?? finding.notes ?? "-"}</td>
               <td className="td text-right">

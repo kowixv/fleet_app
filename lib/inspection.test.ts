@@ -3,12 +3,15 @@ import { describe, expect, it } from "vitest";
 import {
   classifyInspectionResult,
   cloneTemplateName,
+  findingSeverityLabel,
   hasDoNotDispatchFinding,
+  inspectionTypeLabel,
   validateRequiredInspectionResults,
   type InspectionTemplateItem,
 } from "./inspection";
 
 const migration = readFileSync("supabase/migrations/20260713010000_pm_inspection_system.sql", "utf8");
+const checklistRefreshMigration = readFileSync("supabase/migrations/20260714010000_maintenance_category_cost_contract.sql", "utf8");
 
 const item = (patch: Partial<InspectionTemplateItem>): InspectionTemplateItem => ({
   id: "item-1",
@@ -49,6 +52,26 @@ describe("inspection helpers", () => {
 
   it("uses clone naming for checklist versions", () => {
     expect(cloneTemplateName("PM-A")).toBe("PM-A Copy");
+  });
+
+  it("maps inspection types and finding severities to user-facing labels", () => {
+    expect(inspectionTypeLabel("driver_daily", "Driver daily/pre-trip")).toBe("Hızlı Güvenlik Kontrolü");
+    expect(inspectionTypeLabel("pm_a", "PM-A")).toBe("Temel PM");
+    expect(inspectionTypeLabel("pm_b", "PM-B")).toBe("Detaylı PM");
+    expect(inspectionTypeLabel("annual", "Annual inspection")).toBe("DOT Annual");
+    expect(findingSeverityLabel("monitor")).toBe("Takip Et");
+    expect(findingSeverityLabel("service_soon")).toBe("Yakında Servis");
+    expect(findingSeverityLabel("critical")).toBe("Kritik");
+    expect(findingSeverityLabel("do_not_dispatch")).toBe("Aracı Çıkartma");
+  });
+
+  it("does not apply fixed universal thresholds to MPG, CCA, regen or DPF measurements", () => {
+    for (const label of ["MPG", "Battery CCA", "Regen frequency", "DPF differential pressure"]) {
+      expect(classifyInspectionResult(item({ label, warning_threshold: null, critical_threshold: null }), {
+        template_item_id: "item-1",
+        value_number: 1,
+      })).toBeNull();
+    }
   });
 });
 
@@ -109,5 +132,33 @@ describe("inspection SQL contract", () => {
     const actions = readFileSync("app/(app)/maintenance/inspection-actions.ts", "utf8");
     expect(migration).toContain("values ('inspection-files', 'inspection-files', false)");
     expect(actions).toContain("createSignedUrl");
+  });
+
+  it("keeps inspection template internals out of the normal UI labels", () => {
+    const workflow = readFileSync("components/MaintenanceInspectionWorkflow.tsx", "utf8");
+    const manager = readFileSync("components/InspectionTemplateManager.tsx", "utf8");
+    const helpers = readFileSync("lib/inspection.ts", "utf8");
+    expect(workflow).toContain("Inspection Başlat");
+    expect(helpers).toContain("Temel PM");
+    expect(helpers).toContain("Detaylı PM");
+    expect(workflow).not.toContain("v{template.version}");
+    expect(manager).not.toContain("İlk checklist'i aç");
+    expect(manager).not.toContain(">Kopyala<");
+    expect(manager).toContain("Yeni Kontrol Listesi Oluştur");
+  });
+
+  it("seeds refreshed PM checklist contents without universal metric thresholds", () => {
+    expect(checklistRefreshMigration).toContain("'PM Inspection - Temel'");
+    expect(checklistRefreshMigration).toContain("'PM Inspection - Detaylı'");
+    expect(checklistRefreshMigration).toContain("select seed_pm_inspection_checklists_20260714(id) from organizations");
+    expect(checklistRefreshMigration).toContain("from inspection_template_items");
+    expect(checklistRefreshMigration).toContain("template_id = v_basic_template");
+    expect(checklistRefreshMigration).toContain("'Battery CCA','number','CCA',false,null,null");
+    expect(checklistRefreshMigration).toContain("'Regen frequency','number','miles between regens',false,null,null");
+    expect(checklistRefreshMigration).toContain("'DPF differential pressure','number','kPa',false,null,null");
+    expect(checklistRefreshMigration).toContain("'MPG','number','mpg',false,null,null");
+    const itemRows = checklistRefreshMigration.match(/\(\d+,'[^']+','[^']+','(?:pass_fail|checkbox|number|text|select)'/g) ?? [];
+    expect(itemRows.filter((line) => /^\(\d{2,3},/.test(line))).toHaveLength(34);
+    expect(itemRows.filter((line) => /^\(\d{4},/.test(line))).toHaveLength(26);
   });
 });
