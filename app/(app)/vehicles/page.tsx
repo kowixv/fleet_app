@@ -1,5 +1,5 @@
-import ResourceManager, { Field } from "@/components/ResourceManager";
-import VehicleRemovalActions from "@/components/VehicleRemovalActions";
+import type { Field } from "@/components/ResourceManager";
+import VehicleResourceManager from "@/components/VehicleResourceManager";
 import { requireProfile } from "@/lib/auth";
 import { DEFAULT_PAGE_SIZE, fetchOptions, parsePage } from "@/lib/data";
 import { createClient } from "@/lib/supabase/server";
@@ -120,29 +120,12 @@ export default async function VehiclesPage({
   ];
 
   return (
-    <div className="space-y-4">
-      <div className="flex justify-end">
-        <a className="btn-ghost" href={includeInactive ? "/vehicles" : "/vehicles?showInactive=1"}>
-          {includeInactive ? "Pasif Unitleri Gizle" : "Pasif Unitleri Göster"}
-        </a>
-      </div>
-      <ResourceManager
-        title="Vehicles / Units"
-        table="vehicles"
-        basePath="/vehicles"
-        addLabel="Araç"
-        fields={fields}
-        rows={paged.rows}
-        pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
-        paginationHref={(nextPage) => `/vehicles?page=${nextPage}${includeInactive ? "&showInactive=1" : ""}`}
-        renderActions={(row, actions) => (
-          <VehicleRemovalActions
-            row={{ id: row.id, unit_number: row.unit_number, status: row.status }}
-            startEdit={(vehicle) => actions.startEdit(vehicle as any)}
-            canPermanentDelete={canPermanentDelete}
-          />
-        )}
-      />
-    </div>
+    <VehicleResourceManager
+      fields={fields}
+      rows={paged.rows}
+      pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
+      includeInactive={includeInactive}
+      canPermanentDelete={canPermanentDelete}
+    />
   );
 }
