@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { expandEffectiveMaintenanceRules, isVehicleType, vehicleTypeLabel } from "./maintenance-reminders";
+import { manualServiceKey, manualServiceOption, shouldUpdateMaintenancePlan } from "./manual-maintenance";
 
 describe("maintenance reminders UX contract", () => {
   const nav = readFileSync("components/MaintenanceNav.tsx", "utf8");
@@ -36,6 +37,9 @@ describe("maintenance reminders UX contract", () => {
     expect(manager).toContain("Yapıldı Olarak Kaydet");
     expect(manager).toContain("Unit Türü");
     expect(manager).toContain("vehicle_type");
+    expect(manager).toContain("maintenance-reminder-service-options");
+    expect(manager).toContain("REMINDER_SERVICE_OPTIONS");
+    expect(manager).toContain("Özel servis adı");
     expect(manager).toContain("İlk dolan sınır geçerli olur");
     expect(manager).not.toContain("template_source");
     expect(manager).not.toContain("Template");
@@ -88,6 +92,18 @@ describe("vehicle-type reminder scope contract", () => {
     expect(migration).toContain("maintenance_rules_one_active_type_service_idx");
     expect(migration).toContain("public.manual_maintenance_service_key('periodic', service_type)");
     expect(migration).toContain("An active reminder already exists for this unit type and service.");
+    expect(migration).toContain("public.maintenance_service_key('Battery Replacement')");
+    expect(migration).toContain("public.maintenance_service_key('Battery Set Replacement')");
+    expect(migration).toContain("public.maintenance_service_key('Clutch Replacement')");
+    expect(migration).toContain("public.maintenance_service_key('Clutch Repair')");
+  });
+
+  it("resolves reminder aliases to canonical catalog services", () => {
+    expect(manualServiceOption("periodic", "Battery Set Replacement")?.value).toBe("Battery Replacement");
+    expect(manualServiceOption("periodic", "Replace Batteries")?.value).toBe("Battery Replacement");
+    expect(manualServiceOption("periodic", "Clutch Repair")?.value).toBe("Clutch Replacement");
+    expect(manualServiceKey("Battery Replacement")).toBe("battery replacement");
+    expect(shouldUpdateMaintenancePlan("repair", "Clutch Replacement", true)).toBe(true);
   });
 
   it("defines service-key helpers before indexes that depend on them", () => {
@@ -115,6 +131,9 @@ describe("vehicle-type reminder scope contract", () => {
     expect(migration).toContain("drop trigger if exists vehicles_sync_type_maintenance_states on vehicles");
     expect(migration).toContain("create or replace function public.maintenance_service_key");
     expect(migration).toContain("create or replace function public.manual_maintenance_service_key");
+    expect(migration).toContain("or length(v_service) > 120");
+    expect(migration).toContain("or v_service ~ '[[:cntrl:]]'");
+    expect(migration).toContain("or v_service !~ '[[:alnum:]]'");
   });
 
   it("syncs existing, future, retyped, and reactivated vehicles without overwriting state", () => {
@@ -130,6 +149,7 @@ describe("vehicle-type reminder scope contract", () => {
     expect(migration).toContain("and vehicle_type = v_vehicle_type");
     expect(migration).toContain("v_rule_scope = 'vehicle_type'");
     expect(migration).toContain("on conflict (organization_id, rule_id, vehicle_id) do update");
+    expect(migration).not.toContain("v_update_plan := false");
   });
 
   it("expands type reminders into independent effective rows", () => {

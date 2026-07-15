@@ -33,22 +33,36 @@ parallel safe
 set search_path = public
 as $$
   select case
-    when p_kind = 'periodic' and public.maintenance_service_key(p_service) in (
+    when public.maintenance_service_key(p_service) in (
+      public.maintenance_service_key('Battery Replacement'),
+      public.maintenance_service_key('Batteries Replaced'),
+      public.maintenance_service_key('Battery Set Replacement'),
+      public.maintenance_service_key('Replace Batteries'),
+      public.maintenance_service_key('Truck Batteries')
+    ) then public.maintenance_service_key('Battery Replacement')
+    when public.maintenance_service_key(p_service) in (
+      public.maintenance_service_key('Clutch Replacement'),
+      public.maintenance_service_key('Clutch Repair'),
+      public.maintenance_service_key('Clutch Assembly Replacement'),
+      public.maintenance_service_key('Replace Clutch'),
+      public.maintenance_service_key('Complete Clutch Job')
+    ) then public.maintenance_service_key('Clutch Replacement')
+    when public.maintenance_service_key(p_service) in (
       public.maintenance_service_key('Engine Air Filter'),
       public.maintenance_service_key('Engine Air Filter Replacement')
     ) then public.maintenance_service_key('Engine Air Filter')
-    when p_kind = 'periodic' and public.maintenance_service_key(p_service) in (
+    when public.maintenance_service_key(p_service) in (
       public.maintenance_service_key('Cabin Air Filter'),
       public.maintenance_service_key('Cabin Air Filter Replacement'),
       public.maintenance_service_key('Cabin Air Filter Inspection/Replacement')
     ) then public.maintenance_service_key('Cabin Air Filter Inspection/Replacement')
-    when p_kind = 'periodic' and public.maintenance_service_key(p_service) in (
+    when public.maintenance_service_key(p_service) in (
       public.maintenance_service_key('DOT Annual'),
       public.maintenance_service_key('DOT Inspection'),
       public.maintenance_service_key('Annual DOT'),
       public.maintenance_service_key('Annual Inspection')
     ) then public.maintenance_service_key('DOT Annual')
-    when p_kind = 'periodic' and public.maintenance_service_key(p_service) in (
+    when public.maintenance_service_key(p_service) in (
       public.maintenance_service_key('Drive Axle Oil'),
       public.maintenance_service_key('Drive Axle Oil Change'),
       public.maintenance_service_key('Synthetic Drive Axle Oil')
@@ -260,7 +274,13 @@ begin
   if v_org is null or not (select is_org_writer()) then
     raise exception 'Write permission required.';
   end if;
-  if v_service is null then raise exception 'Maintenance type is required.'; end if;
+  if v_service is null
+    or length(v_service) < 2
+    or length(v_service) > 120
+    or v_service ~ '[[:cntrl:]]'
+    or v_service !~ '[[:alnum:]]' then
+    raise exception 'Valid maintenance type is required.';
+  end if;
   if v_interval_miles is null and v_interval_days is null and v_interval_engine_hours is null then
     raise exception 'At least one interval is required.';
   end if;
@@ -503,7 +523,13 @@ begin
   if v_submission_key is null then raise exception 'Submission key is required.'; end if;
   if v_vehicle is null then raise exception 'Vehicle is required.'; end if;
   if v_kind not in ('periodic', 'repair') then raise exception 'Invalid maintenance type.'; end if;
-  if v_service is null then raise exception 'Service type is required.'; end if;
+  if v_service is null
+    or length(v_service) < 2
+    or length(v_service) > 120
+    or v_service ~ '[[:cntrl:]]'
+    or v_service !~ '[[:alnum:]]' then
+    raise exception 'Valid service type is required.';
+  end if;
   if v_performed_date is null then raise exception 'Performed date is required.'; end if;
   if v_mileage is null or v_mileage < 0 or v_mileage <> trunc(v_mileage) then
     raise exception 'Mileage must be a non-negative whole number.';
@@ -529,9 +555,6 @@ begin
   if not found then raise exception 'Vehicle not found.'; end if;
 
   v_service_key := public.manual_maintenance_service_key(v_kind, v_service);
-  if v_kind = 'repair' then
-    v_update_plan := false;
-  end if;
 
   if jsonb_typeof(coalesce(p_payload->'parts_used', '[]'::jsonb)) = 'array' then
     for v_part in select value from jsonb_array_elements(coalesce(p_payload->'parts_used', '[]'::jsonb))

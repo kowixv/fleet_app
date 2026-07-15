@@ -3,7 +3,7 @@
 import { requireWriteRole } from "@/lib/auth";
 import { normalizeMaintenanceCostCategory } from "@/lib/maintenance-cost";
 import { isVehicleType } from "@/lib/maintenance-reminders";
-import { manualMaintenanceCategory, manualServiceOption, normalizeUnitNumber, shouldUpdateMaintenancePlan, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
+import { manualMaintenanceCategory, normalizeUnitNumber, shouldUpdateMaintenancePlan, validateManualServiceName, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 import { mileageRpcErrorMessage, validateMileageInput } from "@/lib/vehicle-mileage";
@@ -122,14 +122,15 @@ export async function saveMaintenanceReminder(formData: FormData) {
     const intervalEngineHours = wholeNumberOrNull(formData.get("interval_engine_hours"), "Engine saat aralığı");
 
     if (!ruleId && !isVehicleType(vehicleType)) throw new Error("Unit türü gerekli.");
-    if (!serviceType) throw new Error("Bakım türü gerekli.");
+    const serviceValidation = validateManualServiceName(serviceType);
+    if (!serviceValidation.ok) throw new Error(serviceValidation.error ?? "Bakım türü gerekli.");
     if (intervalMiles == null && intervalMonths == null && intervalEngineHours == null) {
       throw new Error("En az bir tekrar aralığı girin.");
     }
 
     const payload = {
       vehicle_type: vehicleType,
-      service_type: serviceType,
+      service_type: serviceValidation.value,
       interval_miles: intervalMiles,
       interval_days: intervalMonths == null ? null : intervalMonths * 30,
       interval_engine_hours: intervalEngineHours,
@@ -191,19 +192,20 @@ export async function saveManualMaintenance(formData: FormData) {
 
     if (!vehicleId) throw new Error("Unit gerekli.");
     if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    if (!serviceType) throw new Error("Bakım / tamir çeşidi gerekli.");
-    if (!manualServiceOption(kind, serviceType)) throw new Error("Geçerli bir servis seçin.");
+    const serviceValidation = validateManualServiceName(serviceType);
+    if (!serviceValidation.ok) throw new Error(serviceValidation.error ?? "Bakım / tamir çeşidi gerekli.");
     if (!mileage.ok) throw new Error(mileage.error);
 
-    const updatePlan = shouldUpdateMaintenancePlan(kind, serviceType, formData.get("update_plan") === "on");
+    const serviceName = serviceValidation.value;
+    const updatePlan = shouldUpdateMaintenancePlan(kind, serviceName, formData.get("update_plan") === "on");
     const submissionKey = text(formData.get("submission_key")) ?? crypto.randomUUID();
-    const category = normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceType), serviceType);
+    const category = normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceName), serviceName);
     const plannedValue = text(formData.get("planned"));
     const payload = {
       submission_key: submissionKey,
       vehicle_id: vehicleId,
       entry_kind: kind,
-      service_type: serviceType,
+      service_type: serviceName,
       performed_date: performedDate,
       mileage: mileage.mileage,
       total_cost: totalCost,
@@ -287,7 +289,7 @@ export async function saveManualMaintenance(formData: FormData) {
       idempotent: Boolean(rpcResult?.idempotent),
       title: kind === "repair" ? "Tamir kaydedildi" : mileage.mileage < Number(previousMileage ?? 0) ? "Geçmiş bakım kaydedildi" : "Bakım kaydedildi",
       unitNumber: afterVehicleRes.data?.unit_number ?? beforeVehicleRes.data?.unit_number ?? null,
-      serviceType,
+      serviceType: serviceName,
       kind,
       mileage: mileage.mileage,
       cost: totalCost,
@@ -298,7 +300,7 @@ export async function saveManualMaintenance(formData: FormData) {
       planUpdated: Boolean(rpcResult?.rule_updated),
       planCreated: Boolean(rpcResult?.rule_created),
       missingRule: Boolean(rpcResult?.missing_rule),
-      historyOnly: kind === "repair" || !rpcResult?.rule_updated,
+      historyOnly: !rpcResult?.rule_updated,
       rule: buildRuleDueSummary(stateRes.data ? { ...ruleRes.data, ...stateRes.data } : ruleRes.data),
     };
     maintenanceRevalidate();
@@ -403,16 +405,17 @@ export async function editManualMaintenanceRecord(formData: FormData) {
     const performedDate = dateOnly(formData.get("performed_date"), "Yapılma tarihi");
     const mileage = validateMileageInput(text(formData.get("mileage")));
     const cost = money(formData.get("cost"));
-    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind ?? "periodic", serviceType ?? ""), serviceType);
     if (!recordId) throw new Error("Bakım kaydı gerekli.");
     if (!mileage.ok) throw new Error(mileage.error);
     if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    if (!serviceType) throw new Error("Bakım / tamir çeşidi gerekli.");
-    if (!manualServiceOption(kind, serviceType)) throw new Error("Geçerli bir servis seçin.");
+    const serviceValidation = validateManualServiceName(serviceType);
+    if (!serviceValidation.ok) throw new Error(serviceValidation.error ?? "Bakım / tamir çeşidi gerekli.");
+    const serviceName = serviceValidation.value;
+    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind, serviceName), serviceName);
     const payload = {
       record_id: recordId,
       entry_kind: kind,
-      service_type: serviceType,
+      service_type: serviceName,
       category,
       performed_date: performedDate,
       mileage: mileage.mileage,
@@ -456,7 +459,7 @@ export async function editManualMaintenanceRecord(formData: FormData) {
         recordUpdated: true,
         unitNumber: (beforeRes.data as any)?.vehicles?.unit_number ?? null,
         previousServiceType: (beforeRes.data as any)?.service_type ?? null,
-        serviceType,
+        serviceType: serviceName,
         kind,
         mileage: mileage.mileage,
         cost,

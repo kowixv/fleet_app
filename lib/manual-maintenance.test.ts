@@ -1,10 +1,17 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  PERIODIC_SERVICE_OPTIONS,
+  REMINDER_SERVICE_OPTIONS,
+  REPAIR_SERVICE_OPTIONS,
+  canonicalManualServiceKey,
+  inferManualMaintenanceCategory,
   isRepairHistoryOnly,
   manualMaintenanceCategory,
+  manualServiceOption,
   manualServiceKeys,
   normalizeUnitNumber,
+  validateManualServiceName,
   shouldUpdateMaintenancePlan,
 } from "./manual-maintenance";
 
@@ -12,12 +19,17 @@ const migration = readFileSync(
   "supabase/migrations/20260713040000_manual_maintenance_daily_workflow.sql",
   "utf8",
 );
+const vehicleTypeReminderMigration = readFileSync(
+  "supabase/migrations/20260714020000_vehicle_type_maintenance_reminders.sql",
+  "utf8",
+);
 
 describe("manual maintenance service safety", () => {
-  it("updates plans only for recurring periodic maintenance when requested", () => {
+  it("updates plans only when explicitly requested", () => {
     expect(shouldUpdateMaintenancePlan("periodic", "PM-A", true)).toBe(true);
     expect(shouldUpdateMaintenancePlan("periodic", "Wet PM / Oil Service", false)).toBe(false);
-    expect(shouldUpdateMaintenancePlan("repair", "Engine Repair", true)).toBe(false);
+    expect(shouldUpdateMaintenancePlan("repair", "Engine Repair", false)).toBe(false);
+    expect(shouldUpdateMaintenancePlan("repair", "Battery Replacement", true)).toBe(true);
   });
 
   it("keeps repair and failure work history-only", () => {
@@ -25,12 +37,74 @@ describe("manual maintenance service safety", () => {
     expect(isRepairHistoryOnly("Coolant Leak Repair")).toBe(true);
     expect(isRepairHistoryOnly("Diagnostic")).toBe(true);
     expect(isRepairHistoryOnly("Towing")).toBe(true);
+    expect(isRepairHistoryOnly("Battery Replacement")).toBe(false);
+    expect(isRepairHistoryOnly("Clutch Repair")).toBe(false);
   });
 
   it("classifies manual entries for cost analytics without forcing allocation fields", () => {
     expect(manualMaintenanceCategory("periodic", "PM-A")).toBe("preventive_maintenance");
     expect(manualMaintenanceCategory("repair", "Tire Repair")).toBe("tires");
     expect(manualMaintenanceCategory("repair", "Road Service")).toBe("other");
+    expect(manualMaintenanceCategory("repair", "Battery Replacement")).toBe("electrical");
+    expect(manualMaintenanceCategory("repair", "Clutch Replacement")).toBe("transmission_clutch");
+  });
+
+  it("accepts battery and clutch catalog aliases as canonical services", () => {
+    expect(manualServiceOption("repair", "Battery Replacement")?.value).toBe("Battery Replacement");
+    expect(manualServiceOption("repair", "Battery Set Replacement")?.value).toBe("Battery Replacement");
+    expect(manualServiceOption("repair", "Batteries Replaced")?.value).toBe("Battery Replacement");
+    expect(manualServiceOption("repair", "Clutch Replacement")?.value).toBe("Clutch Replacement");
+    expect(manualServiceOption("repair", "Clutch Repair")?.value).toBe("Clutch Replacement");
+    expect(manualServiceOption("repair", "Complete Clutch Job")?.value).toBe("Clutch Replacement");
+  });
+
+  it("keeps battery and clutch aliases out of selectable duplicate catalog options", () => {
+    expect(PERIODIC_SERVICE_OPTIONS.some((option) => option.value === "Battery Set Replacement")).toBe(false);
+    expect(REPAIR_SERVICE_OPTIONS.some((option) => option.value === "Battery Set Replacement")).toBe(false);
+    expect(REPAIR_SERVICE_OPTIONS.some((option) => option.value === "Clutch Repair")).toBe(false);
+    expect(REPAIR_SERVICE_OPTIONS.some((option) => option.value === "Clutch Assembly Replacement")).toBe(false);
+    expect(REPAIR_SERVICE_OPTIONS.some((option) => option.value === "Clutch Actuator Replacement")).toBe(true);
+    expect(REPAIR_SERVICE_OPTIONS.some((option) => option.value === "Fan Clutch Replacement")).toBe(true);
+  });
+
+  it("has only one canonical reminder suggestion per alias family", () => {
+    const batterySuggestions = REMINDER_SERVICE_OPTIONS.filter((option) => canonicalManualServiceKey("periodic", option.value) === "battery replacement");
+    const clutchSuggestions = REMINDER_SERVICE_OPTIONS.filter((option) => canonicalManualServiceKey("periodic", option.value) === "clutch replacement");
+    expect(batterySuggestions.map((option) => option.value)).toEqual(["Battery Replacement"]);
+    expect(clutchSuggestions.map((option) => option.value)).toEqual(["Clutch Replacement"]);
+  });
+
+  it("uses identical canonical reminder keys for battery and clutch aliases", () => {
+    expect(canonicalManualServiceKey("periodic", "Battery Set Replacement")).toBe(canonicalManualServiceKey("periodic", "Battery Replacement"));
+    expect(canonicalManualServiceKey("periodic", "Replace Batteries")).toBe(canonicalManualServiceKey("periodic", "Battery Replacement"));
+    expect(canonicalManualServiceKey("repair", "Clutch Repair")).toBe(canonicalManualServiceKey("repair", "Clutch Replacement"));
+    expect(canonicalManualServiceKey("repair", "Clutch Assembly Replacement")).toBe(canonicalManualServiceKey("repair", "Clutch Replacement"));
+  });
+
+  it("accepts valid custom service names and rejects unsafe names", () => {
+    for (const service of [
+      "Battery Cable Replacement",
+      "Clutch Calibration",
+      "PTO Hydraulic Pump Repair",
+      "Sleeper Heater Repair",
+      "Trailer Door Hinge Replacement",
+    ]) {
+      expect(validateManualServiceName(service)).toMatchObject({ ok: true, value: service });
+    }
+    expect(validateManualServiceName("")).toMatchObject({ ok: false });
+    expect(validateManualServiceName("x")).toMatchObject({ ok: false });
+    expect(validateManualServiceName("a".repeat(121))).toMatchObject({ ok: false });
+    expect(validateManualServiceName("Battery\u0001Repair")).toMatchObject({ ok: false });
+    expect(validateManualServiceName("!!!")).toMatchObject({ ok: false });
+  });
+
+  it("infers categories for custom services", () => {
+    expect(inferManualMaintenanceCategory("repair", "Battery Cable Replacement")).toBe("electrical");
+    expect(inferManualMaintenanceCategory("repair", "Clutch Calibration")).toBe("transmission_clutch");
+    expect(inferManualMaintenanceCategory("repair", "PTO Hydraulic Pump Repair")).toBe("other");
+    expect(inferManualMaintenanceCategory("repair", "Sleeper Heater Repair")).toBe("hvac_ac");
+    expect(inferManualMaintenanceCategory("repair", "Trailer Door Hinge Replacement")).toBe("trailer");
+    expect(inferManualMaintenanceCategory("periodic", "Custom Greasing")).toBe("preventive_maintenance");
   });
 
   it("normalizes unit numbers before quick creation", () => {
@@ -62,10 +136,10 @@ describe("manual maintenance SQL contract", () => {
   });
 
   it("updates only the matching active recurring rule", () => {
-    expect(migration).toContain("manual_maintenance_service_key(v_kind, service_type) = v_service_key");
-    expect(migration).toContain("where id = v_rule and organization_id = v_org");
-    expect(migration).toContain("if v_kind = 'repair' then");
-    expect(migration).toContain("v_update_plan := false");
+    expect(vehicleTypeReminderMigration).toContain("public.manual_maintenance_service_key(v_kind, service_type) = v_service_key");
+    expect(vehicleTypeReminderMigration).toContain("where id = v_rule and organization_id = v_org");
+    expect(vehicleTypeReminderMigration).not.toContain("v_update_plan := false");
+    expect(vehicleTypeReminderMigration).toContain("on conflict (organization_id, rule_id, vehicle_id) do update");
   });
 
   it("keeps the normal quick-create path away from the legacy template RPC", () => {
@@ -161,9 +235,10 @@ describe("manual maintenance daily UX contract", () => {
       actions.indexOf("export async function saveManualMaintenance"),
       actions.indexOf("export async function quickCreateMaintenanceVehicle"),
     );
-    expect(saveBlock).toContain("normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceType), serviceType)");
+    expect(saveBlock).toContain("normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceName), serviceName)");
     expect(saveBlock).not.toContain('formData.get("category")');
-    expect(saveBlock.match(/manualServiceOption\(kind, serviceType\)/g)?.length).toBe(1);
+    expect(saveBlock).toContain("validateManualServiceName(serviceType)");
+    expect(saveBlock).not.toContain("manualServiceOption(kind, serviceType)");
   });
 
   it("keeps invoice review category selection available", () => {
@@ -184,10 +259,12 @@ describe("manual maintenance daily UX contract", () => {
     expect(form).toContain("Sonraki bakım");
   });
 
-  it("keeps repair entries history-only in the normal form", () => {
+  it("keeps repair reminder updates explicit in the normal form", () => {
     const form = readFileSync("components/ManualMaintenanceEntry.tsx", "utf8");
     const terms = readFileSync("lib/maintenance-terminology.ts", "utf8");
-    expect(form).toContain("Bu kayıt bakım hatırlatıcısını değiştirmez.");
+    expect(form).toContain("Bu işlem ilgili hatırlatıcıyı güncellesin");
+    expect(form).toContain("Bu servis için aktif hatırlatıcı bulunamadı");
+    expect(form).toContain("shouldDefaultUpdateMaintenancePlan");
     expect(terms).toContain("Sonraki bakımı güncelle");
     expect(terms).toContain("Gelişmiş hatırlatıcı ayarları");
   });

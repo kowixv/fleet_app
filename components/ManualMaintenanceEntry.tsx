@@ -5,9 +5,13 @@ import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import {
   PERIODIC_SERVICE_OPTIONS,
   REPAIR_SERVICE_OPTIONS,
+  isCustomManualService,
+  manualServiceOption,
   manualServiceKey,
   manualServiceKeys,
   normalizeUnitNumber,
+  shouldDefaultUpdateMaintenancePlan,
+  validateManualServiceName,
   type ManualMaintenanceKind,
 } from "@/lib/manual-maintenance";
 import { todayISO } from "@/lib/tz";
@@ -165,18 +169,22 @@ export default function ManualMaintenanceEntry({
   }, [unitQuery, vehicleId, vehicles]);
 
   const services = kind === "periodic" ? PERIODIC_SERVICE_OPTIONS : REPAIR_SERVICE_OPTIONS;
+  const serviceValidation = validateManualServiceName(serviceType);
+  const customService = serviceValidation.ok && isCustomManualService(kind, serviceType);
+  const serviceOption = manualServiceOption(kind, serviceType);
   const normalizedQuery = normalizeUnitNumber(unitQuery);
   const selectedVehicle = vehicles.find((vehicle) => vehicle.id === vehicleId) ?? null;
   const unitMatch = vehicles.find((vehicle) => normalizeUnitNumber(vehicle.unit_number) === normalizedQuery) ?? null;
   const needsQuickCreate = Boolean(normalizedQuery) && !unitMatch;
   const hasActiveRule = useMemo(() => {
-    if (kind !== "periodic" || !vehicleId || !serviceType) return false;
+    if (!vehicleId || !serviceValidation.ok) return false;
     const selectedKeys = new Set(manualServiceKeys(kind, serviceType));
     return activeRules.some((rule) => (
       rule.vehicle_id === vehicleId ||
       (selectedVehicle?.vehicle_type && rule.vehicle_type === selectedVehicle.vehicle_type)
     ) && selectedKeys.has(manualServiceKey(rule.service_type)));
-  }, [activeRules, kind, selectedVehicle?.vehicle_type, serviceType, vehicleId]);
+  }, [activeRules, kind, selectedVehicle?.vehicle_type, serviceType, serviceValidation.ok, vehicleId]);
+  const updatePlanDefault = kind === "periodic" || (kind === "repair" && hasActiveRule && shouldDefaultUpdateMaintenancePlan(kind, serviceType));
 
   function handleUnitChange(value: string) {
     setUnitQuery(value);
@@ -286,11 +294,7 @@ export default function ManualMaintenanceEntry({
                       className="input"
                       required
                       value={kind}
-                      onChange={(event) => {
-                        const nextKind = event.target.value as ManualMaintenanceKind;
-                        setKind(nextKind);
-                        setServiceType((nextKind === "periodic" ? PERIODIC_SERVICE_OPTIONS : REPAIR_SERVICE_OPTIONS)[0].value);
-                      }}
+                      onChange={(event) => setKind(event.target.value as ManualMaintenanceKind)}
                     >
                       <option value="periodic">{MAINTENANCE_TERMS.periodicMaintenance}</option>
                       <option value="repair">{MAINTENANCE_TERMS.repair}</option>
@@ -308,6 +312,7 @@ export default function ManualMaintenanceEntry({
                     <datalist id="manual-service-options">
                       {services.map((service) => <option key={service.value} value={service.value}>{service.label}</option>)}
                     </datalist>
+                    {customService && <p className="mt-1 text-xs text-slate-500">Özel servis adı</p>}
                   </div>
                   <div>
                     <label className="label">{MAINTENANCE_TERMS.performedDate}</label>
@@ -330,11 +335,11 @@ export default function ManualMaintenanceEntry({
                   </div>
                 </div>
 
-                {kind === "periodic" ? (
+                {kind === "periodic" || hasActiveRule ? (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
                     <label className="flex items-center gap-2 font-medium">
-                      <input type="checkbox" name="update_plan" defaultChecked />
-                      {MAINTENANCE_TERMS.updateNextDue}
+                      <input type="checkbox" name="update_plan" defaultChecked={updatePlanDefault} />
+                      {kind === "repair" ? "Bu işlem ilgili hatırlatıcıyı güncellesin" : MAINTENANCE_TERMS.updateNextDue}
                     </label>
                     <details className="mt-2">
                       <summary className="cursor-pointer text-brand">Detay</summary>
@@ -343,7 +348,7 @@ export default function ManualMaintenanceEntry({
                           <p>Bu kayıt aynı bakım hatırlatıcısını günceller.</p>
                         ) : (
                           <div className="space-y-2">
-                            <p>Bu bakım için hatırlatıcı bulunamadı.</p>
+                            <p>Bu servis için aktif hatırlatıcı bulunamadı.</p>
                             <div className="flex flex-wrap gap-2">
                               <span className="badge bg-slate-100 text-slate-700">Sadece geçmişe kaydet</span>
                               <a className="text-brand hover:underline" href={`/maintenance/reminders${vehicleId ? `?vehicleId=${vehicleId}&service=${encodeURIComponent(serviceType)}` : ""}`}>
@@ -357,7 +362,16 @@ export default function ManualMaintenanceEntry({
                   </div>
                 ) : (
                   <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                    Bu kayıt bakım hatırlatıcısını değiştirmez.
+                    <p>Bu servis için aktif hatırlatıcı bulunamadı.</p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <span className="badge bg-slate-100 text-slate-700">Sadece geçmişe kaydet</span>
+                      <a className="text-brand hover:underline" href={`/maintenance/reminders${vehicleId ? `?vehicleId=${vehicleId}&service=${encodeURIComponent(serviceType)}` : ""}`}>
+                        Hatırlatıcı oluştur
+                      </a>
+                    </div>
+                    {serviceOption?.recurring === true && (
+                      <p className="mt-2 text-xs text-slate-500">Bu katalog servisi hatırlatıcıya bağlanabilir; önce aktif hatırlatıcı oluşturun.</p>
+                    )}
                   </div>
                 )}
 

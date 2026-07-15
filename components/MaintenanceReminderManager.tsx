@@ -3,6 +3,7 @@
 import { saveMaintenanceReminder, setMaintenanceReminderActive } from "@/app/(app)/maintenance/actions";
 import { computePM, formatPMRemaining, PM_BADGE, type PMStatus, type PMThresholds } from "@/lib/maintenance";
 import { VEHICLE_TYPE_OPTIONS, vehicleTypeLabel, type ReminderScope } from "@/lib/maintenance-reminders";
+import { REMINDER_SERVICE_OPTIONS, isCustomManualService, validateManualServiceName } from "@/lib/manual-maintenance";
 import { todayISO } from "@/lib/tz";
 import Link from "next/link";
 import { useMemo, useState, useTransition } from "react";
@@ -128,6 +129,8 @@ export default function MaintenanceReminderManager({
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
   const vehicleMap = useMemo(() => new Map(vehicles.map((vehicle) => [vehicle.value, vehicle])), [vehicles]);
+  const serviceValidation = validateManualServiceName(form.service_type);
+  const customService = serviceValidation.ok && isCustomManualService("periodic", form.service_type);
   const groups = useMemo(() => {
     const grouped = new Map<string, ReminderRow[]>();
     for (const row of rows) grouped.set(row.id, [...(grouped.get(row.id) ?? []), row]);
@@ -301,7 +304,19 @@ export default function MaintenanceReminderManager({
               </div>
               <div>
                 <label className="label">Bakım Türü</label>
-                <input className="input" value={form.service_type} onChange={(event) => setForm({ ...form, service_type: event.target.value })} placeholder="PM-A" />
+                <input
+                  className="input"
+                  list="maintenance-reminder-service-options"
+                  value={form.service_type}
+                  onChange={(event) => setForm({ ...form, service_type: event.target.value })}
+                  placeholder="PM-A"
+                />
+                <datalist id="maintenance-reminder-service-options">
+                  {REMINDER_SERVICE_OPTIONS.map((service) => (
+                    <option key={`${service.kind}-${service.value}`} value={service.value}>{service.label}</option>
+                  ))}
+                </datalist>
+                {customService && <p className="mt-1 text-xs text-slate-500">Özel servis adı</p>}
               </div>
               <div>
                 <label className="label">Her Kaç Milde</label>
