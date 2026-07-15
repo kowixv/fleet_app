@@ -1,13 +1,10 @@
 "use client";
 
 import { quickCreateMaintenanceVehicle, saveManualMaintenance } from "@/app/(app)/maintenance/actions";
-import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
-import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   PERIODIC_SERVICE_OPTIONS,
   REPAIR_SERVICE_OPTIONS,
-  manualMaintenanceCategory,
   manualServiceKey,
   manualServiceKeys,
   normalizeUnitNumber,
@@ -20,11 +17,13 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 interface VehicleOption {
   id: string;
   unit_number: string;
+  vehicle_type?: string | null;
   current_mileage: number | null;
 }
 
 interface ActiveRuleOption {
   vehicle_id: string;
+  vehicle_type?: string | null;
   service_type: string;
 }
 
@@ -146,7 +145,6 @@ export default function ManualMaintenanceEntry({
   const [vehicleId, setVehicleId] = useState(initialVehicle?.id ?? "");
   const [unitQuery, setUnitQuery] = useState(initialVehicle?.unit_number ?? "");
   const [serviceType, setServiceType] = useState(initialServiceType ?? PERIODIC_SERVICE_OPTIONS[0].value);
-  const [category, setCategory] = useState(manualMaintenanceCategory(initialKind, initialServiceType ?? PERIODIC_SERVICE_OPTIONS[0].value));
   const [parts, setParts] = useState([""]);
   const [submissionKey, setSubmissionKey] = useState(newSubmissionKey);
   const [message, setMessage] = useState<{ type: "ok" | "error"; text: string } | null>(null);
@@ -166,10 +164,6 @@ export default function ManualMaintenanceEntry({
     if (selected && !unitQuery) setUnitQuery(selected.unit_number);
   }, [unitQuery, vehicleId, vehicles]);
 
-  useEffect(() => {
-    setCategory(manualMaintenanceCategory(kind, serviceType));
-  }, [kind, serviceType]);
-
   const services = kind === "periodic" ? PERIODIC_SERVICE_OPTIONS : REPAIR_SERVICE_OPTIONS;
   const normalizedQuery = normalizeUnitNumber(unitQuery);
   const selectedVehicle = vehicles.find((vehicle) => vehicle.id === vehicleId) ?? null;
@@ -178,8 +172,11 @@ export default function ManualMaintenanceEntry({
   const hasActiveRule = useMemo(() => {
     if (kind !== "periodic" || !vehicleId || !serviceType) return false;
     const selectedKeys = new Set(manualServiceKeys(kind, serviceType));
-    return activeRules.some((rule) => rule.vehicle_id === vehicleId && selectedKeys.has(manualServiceKey(rule.service_type)));
-  }, [activeRules, kind, serviceType, vehicleId]);
+    return activeRules.some((rule) => (
+      rule.vehicle_id === vehicleId ||
+      (selectedVehicle?.vehicle_type && rule.vehicle_type === selectedVehicle.vehicle_type)
+    ) && selectedKeys.has(manualServiceKey(rule.service_type)));
+  }, [activeRules, kind, selectedVehicle?.vehicle_type, serviceType, vehicleId]);
 
   function handleUnitChange(value: string) {
     setUnitQuery(value);
@@ -311,14 +308,6 @@ export default function ManualMaintenanceEntry({
                     <datalist id="manual-service-options">
                       {services.map((service) => <option key={service.value} value={service.value}>{service.label}</option>)}
                     </datalist>
-                  </div>
-                  <div>
-                    <label className="label">Maintenance Category</label>
-                    <select className="input" name="category" value={category} onChange={(event) => setCategory(event.target.value)}>
-                      {MAINTENANCE_COST_CATEGORIES.map((item) => (
-                        <option key={item} value={item}>{formatMaintenanceCategory(item)}</option>
-                      ))}
-                    </select>
                   </div>
                   <div>
                     <label className="label">{MAINTENANCE_TERMS.performedDate}</label>

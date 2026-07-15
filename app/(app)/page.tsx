@@ -10,13 +10,16 @@ import {
   type PMResult,
 } from "@/lib/maintenance";
 import { createClient } from "@/lib/supabase/server";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { todayISO, weekRange } from "@/lib/tz";
 
 export const dynamic = "force-dynamic";
 
 interface DashboardRule {
   id: string;
-  vehicle_id: string;
+  vehicle_id: string | null;
+  vehicle_type?: string | null;
+  effective_vehicle_id?: string;
   service_type: string;
   interval_type: "mileage" | "date";
   interval_miles: number | null;
@@ -25,7 +28,7 @@ interface DashboardRule {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
-  vehicles: { unit_number: string; current_mileage: number | null } | null;
+  vehicles: { id?: string; unit_number: string; vehicle_type?: string; current_mileage: number | null } | null;
 }
 
 interface PMAlert { rule: DashboardRule; pm: PMResult }
@@ -41,6 +44,7 @@ export default async function Dashboard() {
     vehiclesRes,
     settleRes,
     rulesRes,
+    statesRes,
     settingsRes,
     profilesRes,
     maintenanceCostRes,
@@ -51,12 +55,13 @@ export default async function Dashboard() {
       supabase.from("loads").select("gross_amount").gte("delivery_date", start).lte("delivery_date", end),
       supabase.from("expenses").select("amount").gte("date", start).lte("date", end),
       supabase.from("imported_loads").select("id", { count: "exact", head: true }).eq("status", "pending"),
-      supabase.from("vehicles").select("status"),
+      supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status"),
       supabase.from("settlements").select("status, our_commission_earned"),
       supabase
         .from("maintenance_rules")
-        .select("*, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
+        .select("*")
         .eq("active", true),
+      supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
       supabase
         .from("settings")
         .select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount")
@@ -88,6 +93,7 @@ export default async function Dashboard() {
     vehiclesRes.error ??
     settleRes.error ??
     rulesRes.error ??
+    statesRes.error ??
     settingsRes.error ??
     profilesRes.error ??
     maintenanceCostRes.error ??
@@ -98,7 +104,8 @@ export default async function Dashboard() {
   const gross = (loadsRes.data ?? []).reduce((sum, load) => sum + Number(load.gross_amount || 0), 0);
   const expenses = (expRes.data ?? []).reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
   const pendingImported = importedRes.count ?? 0;
-  const activeVehicles = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "active").length;
+  const activeVehicleRows = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "active");
+  const activeVehicles = activeVehicleRows.length;
   const inRepair = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "in_repair").length;
   const pendingSettlements = (settleRes.data ?? []).filter(
     (settlement) => settlement.status === "draft" || settlement.status === "pending_review",
@@ -119,7 +126,11 @@ export default async function Dashboard() {
     ]),
   );
 
-  const pmAlerts: PMAlert[] = ((rulesRes.data ?? []) as unknown as DashboardRule[])
+  const pmAlerts: PMAlert[] = (expandEffectiveMaintenanceRules(
+    (rulesRes.data ?? []) as any[],
+    activeVehicleRows as any[],
+    (statesRes.data ?? []) as any[],
+  ) as unknown as DashboardRule[])
     .map((rule) => ({
       rule,
       pm: computePM(
@@ -127,7 +138,7 @@ export default async function Dashboard() {
         Number(rule.vehicles?.current_mileage ?? 0),
         thresholds,
         todayISO(),
-        engineHoursByVehicle.get(rule.vehicle_id) ?? null,
+        engineHoursByVehicle.get(rule.effective_vehicle_id ?? rule.vehicle_id ?? "") ?? null,
       ),
     }))
     .filter(({ pm }) => pm.status !== "ok")

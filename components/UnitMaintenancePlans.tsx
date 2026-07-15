@@ -20,7 +20,8 @@ interface RuleRow {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
-  vehicle_id: string;
+  vehicle_id: string | null;
+  effective_vehicle_id?: string;
   active: boolean;
 }
 
@@ -77,10 +78,10 @@ export default function UnitMaintenancePlans({
                   </details>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`}>
+                  <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${rule.effective_vehicle_id ?? rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`}>
                     Bakım Ekle
                   </Link>
-                  <Link className="btn-ghost" href={`/maintenance/reminders?vehicleId=${rule.vehicle_id}&service=${encodeURIComponent(rule.service_type)}`}>Düzenle</Link>
+                  <Link className="btn-ghost" href={`/maintenance/reminders?vehicleId=${rule.effective_vehicle_id ?? rule.vehicle_id}&service=${encodeURIComponent(rule.service_type)}`}>Düzenle</Link>
                 </div>
               </div>
             </div>

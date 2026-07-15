@@ -145,6 +145,33 @@ describe("manual maintenance daily UX contract", () => {
     expect(form).not.toContain("template");
   });
 
+  it("does not show a duplicate Maintenance Category dropdown in the manual form", () => {
+    const form = readFileSync("components/ManualMaintenanceEntry.tsx", "utf8");
+    expect(form).toContain("service_type");
+    expect(form).toContain("MAINTENANCE_TERMS.serviceType");
+    expect(form).not.toContain("Maintenance Category");
+    expect(form).not.toContain('name="category"');
+    expect(form).not.toContain("MAINTENANCE_COST_CATEGORIES");
+    expect(form).not.toContain("formatMaintenanceCategory");
+  });
+
+  it("derives manual maintenance category on the server from service_type", () => {
+    const actions = readFileSync("app/(app)/maintenance/actions.ts", "utf8");
+    const saveBlock = actions.slice(
+      actions.indexOf("export async function saveManualMaintenance"),
+      actions.indexOf("export async function quickCreateMaintenanceVehicle"),
+    );
+    expect(saveBlock).toContain("normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceType), serviceType)");
+    expect(saveBlock).not.toContain('formData.get("category")');
+    expect(saveBlock.match(/manualServiceOption\(kind, serviceType\)/g)?.length).toBe(1);
+  });
+
+  it("keeps invoice review category selection available", () => {
+    const review = readFileSync("components/MaintenanceInvoiceReview.tsx", "utf8");
+    expect(review).toContain("category");
+    expect(review).toContain("MAINTENANCE_COST_CATEGORIES");
+  });
+
   it("shows plain-language save summaries for periodic, repair, and historical entries", () => {
     const form = readFileSync("components/ManualMaintenanceEntry.tsx", "utf8");
     const actions = readFileSync("app/(app)/maintenance/actions.ts", "utf8");

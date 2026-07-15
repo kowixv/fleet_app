@@ -1,6 +1,7 @@
 import Link from "next/link";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { PM_BADGE, computePM, type PMResult, type PMThresholds } from "@/lib/maintenance";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -9,12 +10,16 @@ export const dynamic = "force-dynamic";
 interface VehicleRow {
   id: string;
   unit_number: string;
+  vehicle_type: string;
   current_mileage: number | null;
 }
 
 interface RuleRow {
   id: string;
-  vehicle_id: string;
+  vehicle_id: string | null;
+  vehicle_type?: string | null;
+  effective_vehicle_id?: string;
+  vehicles?: { id: string; unit_number: string; vehicle_type: string; current_mileage: number | null } | null;
   service_type: string;
   interval_miles: number | null;
   interval_days: number | null;
@@ -47,18 +52,19 @@ export default async function MaintenanceUnitsPage({
   const q = String(Array.isArray(params.q) ? params.q[0] : params.q ?? "").trim().toLowerCase();
   const statusFilter = String(Array.isArray(params.status) ? params.status[0] : params.status ?? "all");
   const supabase = await createClient();
-  const [vehiclesRes, rulesRes, settingsRes, profilesRes, findingsRes, historyRes] = await Promise.all([
-    supabase.from("vehicles").select("id, unit_number, current_mileage").eq("status", "active").order("unit_number"),
+  const [vehiclesRes, rulesRes, statesRes, settingsRes, profilesRes, findingsRes, historyRes] = await Promise.all([
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").eq("status", "active").order("unit_number"),
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
+      .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active")
       .eq("active", true),
+    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours").single(),
     supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
     supabase.from("inspection_findings").select("vehicle_id, severity").eq("status", "open").in("severity", ["critical", "do_not_dispatch"]),
     supabase.from("maintenance_records").select("vehicle_id, performed_date").order("performed_date", { ascending: false }).limit(500),
   ]);
-  const error = vehiclesRes.error ?? rulesRes.error ?? settingsRes.error ?? profilesRes.error ?? findingsRes.error ?? historyRes.error;
+  const error = vehiclesRes.error ?? rulesRes.error ?? statesRes.error ?? settingsRes.error ?? profilesRes.error ?? findingsRes.error ?? historyRes.error;
   if (error) throw new Error(`Araç bakım listesi yüklenemedi: ${error.message}`);
 
   const settings = settingsRes.data;
@@ -68,8 +74,15 @@ export default async function MaintenanceUnitsPage({
     dueSoonEngineHours: Number(settings?.pm_due_soon_engine_hours ?? 100),
   };
   const rulesByVehicle = new Map<string, RuleRow[]>();
-  for (const rule of (rulesRes.data ?? []) as RuleRow[]) {
-    rulesByVehicle.set(rule.vehicle_id, [...(rulesByVehicle.get(rule.vehicle_id) ?? []), rule]);
+  const effectiveRules = expandEffectiveMaintenanceRules(
+    (rulesRes.data ?? []) as any[],
+    (vehiclesRes.data ?? []) as any[],
+    (statesRes.data ?? []) as any[],
+  ) as unknown as RuleRow[];
+  for (const rule of effectiveRules) {
+    const vehicleId = rule.effective_vehicle_id ?? rule.vehicle_id;
+    if (!vehicleId) continue;
+    rulesByVehicle.set(vehicleId, [...(rulesByVehicle.get(vehicleId) ?? []), rule]);
   }
   const engineHours = new Map(
     ((profilesRes.data ?? []) as Array<{ vehicle_id: string; engine_hours: number | null }>).map((row) => [

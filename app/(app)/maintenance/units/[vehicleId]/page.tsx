@@ -11,6 +11,7 @@ import {
   type PMResult,
   type PMStatus,
 } from "@/lib/maintenance";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import {
   filterMaintenanceCostRows,
   filterMileagePeriodSnapshots,
@@ -88,11 +89,10 @@ export default async function MaintenanceUnitDetailPage({
   const tab = selectedTab(query.tab);
   const supabase = await createClient();
   const [vehicleRes, rulesRes, settingsRes, profileRes, criticalFindingsRes] = await Promise.all([
-    supabase.from("vehicles").select("id, unit_number, current_mileage, vin, year, make, model").eq("id", vehicleId).single(),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, status").eq("id", vehicleId).single(),
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, service_type, active, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
-      .eq("vehicle_id", vehicleId)
+      .select("id, vehicle_id, vehicle_type, service_type, active, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
       .order("created_at", { ascending: false }),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount").single(),
     supabase.from("vehicle_maintenance_profiles").select("*").eq("vehicle_id", vehicleId).maybeSingle(),
@@ -116,7 +116,17 @@ export default async function MaintenanceUnitDetailPage({
     dueSoonDays: Number(settings?.pm_due_soon_days ?? 7),
     dueSoonEngineHours: Number(settings?.pm_due_soon_engine_hours ?? 100),
   };
-  const rules = ((rulesRes.data ?? []) as any[]).filter((rule) => rule.active);
+  const statesRes = await supabase
+    .from("maintenance_rule_vehicle_states")
+    .select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours")
+    .eq("vehicle_id", vehicleId);
+  if (statesRes.error) throw new Error(`AraÃ§ hatÄ±rlatÄ±cÄ± state yÃ¼klenemedi: ${statesRes.error.message}`);
+  const rules = expandEffectiveMaintenanceRules(
+    ((rulesRes.data ?? []) as any[]).filter((rule) => rule.vehicle_id === vehicleId || (rule.vehicle_id == null && rule.vehicle_type === vehicle.vehicle_type)),
+    [vehicle],
+    (statesRes.data ?? []) as any[],
+    true,
+  ).filter((rule) => rule.active);
   const rulesWithPm = rules.map((rule) => ({
     rule,
     pm: computePM(rule, Number(vehicle.current_mileage ?? 0), thresholds, todayISO(), profile?.engine_hours ?? null),

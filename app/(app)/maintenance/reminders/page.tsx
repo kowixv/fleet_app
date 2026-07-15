@@ -1,6 +1,7 @@
 import MaintenanceNav from "@/components/MaintenanceNav";
 import MaintenanceReminderManager, { type ReminderRow } from "@/components/MaintenanceReminderManager";
 import { computePM, type PMThresholds } from "@/lib/maintenance";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 import Link from "next/link";
@@ -30,17 +31,18 @@ export default async function MaintenanceRemindersPage({
   const tab = tabFrom(params.tab);
   const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
   const supabase = await createClient();
-  const [rulesRes, vehiclesRes, profilesRes, settingsRes] = await Promise.all([
+  const [rulesRes, vehiclesRes, profilesRes, settingsRes, statesRes] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, service_type, interval_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
+      .select("id, vehicle_id, vehicle_type, service_type, interval_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active, created_at")
       .order("active", { ascending: false })
       .order("created_at", { ascending: false }),
-    supabase.from("vehicles").select("id, unit_number, current_mileage").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").order("unit_number"),
     supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours").single(),
+    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
   ]);
-  const error = rulesRes.error ?? vehiclesRes.error ?? profilesRes.error ?? settingsRes.error;
+  const error = rulesRes.error ?? vehiclesRes.error ?? profilesRes.error ?? settingsRes.error ?? statesRes.error;
   if (error) throw new Error(`Bakım hatırlatıcıları yüklenemedi: ${error.message}`);
 
   const thresholds: PMThresholds = {
@@ -54,18 +56,28 @@ export default async function MaintenanceRemindersPage({
       profile.engine_hours == null ? null : Number(profile.engine_hours),
     ]),
   );
-  const vehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; current_mileage: number | null }>).map((vehicle) => ({
+  const vehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null; status: string | null }>).map((vehicle) => ({
     value: vehicle.id,
     label: vehicle.unit_number,
+    vehicleType: vehicle.vehicle_type,
     currentMileage: vehicle.current_mileage == null ? null : Number(vehicle.current_mileage),
     engineHours: profiles.get(vehicle.id) ?? null,
   }));
   const vehicleById = new Map(vehicles.map((vehicle) => [vehicle.value, vehicle]));
-  const rows = ((rulesRes.data ?? []) as unknown as ReminderRow[]).filter((row) => {
+  const effectiveRows = expandEffectiveMaintenanceRules(
+    (rulesRes.data ?? []) as any[],
+    ((vehiclesRes.data ?? []) as any[]).map((vehicle) => ({
+      ...vehicle,
+      engine_hours: profiles.get(vehicle.id) ?? null,
+    })),
+    (statesRes.data ?? []) as any[],
+    tab === "inactive",
+  ) as unknown as ReminderRow[];
+  const rows = effectiveRows.filter((row) => {
     if (tab === "inactive") return !row.active;
     if (!row.active) return false;
     if (tab === "all") return true;
-    const vehicle = vehicleById.get(row.vehicle_id);
+    const vehicle = vehicleById.get(row.effective_vehicle_id);
     const pm = computePM(
       row,
       Number(row.vehicles?.current_mileage ?? vehicle?.currentMileage ?? 0),
@@ -76,6 +88,7 @@ export default async function MaintenanceRemindersPage({
     if (tab === "overdue") return pm.status === "overdue" || pm.status === "due_now";
     return pm.status === "due_soon" || pm.status === "warning";
   });
+  const defaultVehicle = first(params.vehicleId) ? vehicleById.get(first(params.vehicleId)!) : null;
 
   return (
     <div className="space-y-5">
@@ -97,7 +110,7 @@ export default async function MaintenanceRemindersPage({
         rows={rows}
         vehicles={vehicles}
         thresholds={thresholds}
-        defaultVehicleId={first(params.vehicleId)}
+        defaultVehicleType={defaultVehicle?.vehicleType ?? "truck"}
         defaultService={first(params.service)}
       />
     </div>

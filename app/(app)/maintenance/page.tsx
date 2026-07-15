@@ -3,6 +3,7 @@ import ManualMaintenanceEntry from "@/components/ManualMaintenanceEntry";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { usd } from "@/lib/format";
 import { computePM, type PMResult, type PMStatus, type PMThresholds } from "@/lib/maintenance";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
@@ -18,8 +19,10 @@ interface RuleRow {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
-  vehicle_id: string;
-  vehicles: { unit_number: string; current_mileage: number | null } | null;
+  vehicle_id: string | null;
+  vehicle_type?: string | null;
+  effective_vehicle_id?: string;
+  vehicles: { id?: string; unit_number: string; vehicle_type?: string; current_mileage: number | null } | null;
 }
 
 interface FindingRow {
@@ -82,7 +85,7 @@ function buildPMActions(
         Number(rule.vehicles?.current_mileage ?? 0),
         thresholds,
         todayISO(),
-        engineHoursByVehicle[rule.vehicle_id] ?? null,
+        engineHoursByVehicle[rule.effective_vehicle_id ?? rule.vehicle_id ?? ""] ?? null,
       ),
     }))
     .filter(({ pm }) => pm.status === "overdue" || pm.status === "due_now" || pm.status === "due_soon")
@@ -92,7 +95,7 @@ function buildPMActions(
       unit: rule.vehicles?.unit_number ?? "-",
       issue: rule.service_type,
       detail: formatAttentionAmount(pm),
-      href: `/maintenance?add=1&vehicleId=${rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`,
+      href: `/maintenance?add=1&vehicleId=${rule.effective_vehicle_id ?? rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`,
       action: "Bakım Ekle",
       badge: STATUS_BADGE[pm.status],
     }));
@@ -202,11 +205,12 @@ export default async function MaintenanceOverviewPage({
   const params = await searchParams;
   const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
   const supabase = await createClient();
-  const [rulesResult, settingsResult, profilesResult, findingsResult, vehiclesResult, recentResult, highCostResult] = await Promise.all([
+  const [rulesResult, statesResult, settingsResult, profilesResult, findingsResult, vehiclesResult, recentResult, highCostResult] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("id, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, vehicle_id, vehicles!maintenance_rules_vehicle_id_fkey(unit_number, current_mileage)")
+      .select("id, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, vehicle_id, vehicle_type, active")
       .eq("active", true),
+    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
     supabase
       .from("settings")
       .select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount")
@@ -219,7 +223,7 @@ export default async function MaintenanceOverviewPage({
       .in("severity", ["critical", "do_not_dispatch"])
       .order("created_at", { ascending: false })
       .limit(12),
-    supabase.from("vehicles").select("id, unit_number, current_mileage").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").eq("status", "active").order("unit_number"),
     supabase
       .from("maintenance_records")
       .select("id, service_type, performed_date, mileage, cost, total_cost, shop_name, source, vehicles!maintenance_records_vehicle_id_fkey(unit_number)")
@@ -239,6 +243,7 @@ export default async function MaintenanceOverviewPage({
 
   const firstError =
     rulesResult.error ??
+    statesResult.error ??
     settingsResult.error ??
     profilesResult.error ??
     findingsResult.error ??
@@ -259,13 +264,21 @@ export default async function MaintenanceOverviewPage({
       profile.engine_hours == null ? null : Number(profile.engine_hours),
     ]),
   );
-  const ruleRows = (rulesResult.data ?? []) as unknown as RuleRow[];
+  const ruleRows = expandEffectiveMaintenanceRules(
+    (rulesResult.data ?? []) as any[],
+    (vehiclesResult.data ?? []) as any[],
+    (statesResult.data ?? []) as any[],
+  ) as unknown as RuleRow[];
   const pmActions = buildPMActions(ruleRows, thresholds, engineHoursByVehicle);
   const overdueCount = pmActions.filter((item) => item.badge.label === "Gecikmiş" || item.badge.label === "Bugün").length;
   const dueSoonCount = pmActions.filter((item) => item.badge.label === "Yakında").length;
   const findings = (findingsResult.data ?? []) as unknown as FindingRow[];
-  const vehicles = (vehiclesResult.data ?? []) as Array<{ id: string; unit_number: string; current_mileage: number | null }>;
-  const activeRules = ruleRows.map((rule) => ({ vehicle_id: rule.vehicle_id, service_type: rule.service_type }));
+  const vehicles = (vehiclesResult.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null }>;
+  const activeRules = ruleRows.map((rule) => ({
+    vehicle_id: rule.effective_vehicle_id ?? rule.vehicle_id ?? "",
+    vehicle_type: rule.vehicle_type ?? rule.vehicles?.vehicle_type ?? null,
+    service_type: rule.service_type,
+  }));
 
   const findingActions: ActionItem[] = findings.map((finding) => ({
     kind: "finding",

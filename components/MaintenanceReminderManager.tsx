@@ -1,21 +1,27 @@
 "use client";
 
-import { createRow, updateRow } from "@/lib/crud";
-import { computePM, formatPMRemaining, PM_BADGE, type PMThresholds } from "@/lib/maintenance";
+import { saveMaintenanceReminder, setMaintenanceReminderActive } from "@/app/(app)/maintenance/actions";
+import { computePM, formatPMRemaining, PM_BADGE, type PMStatus, type PMThresholds } from "@/lib/maintenance";
+import { VEHICLE_TYPE_OPTIONS, vehicleTypeLabel, type ReminderScope } from "@/lib/maintenance-reminders";
 import { todayISO } from "@/lib/tz";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 
 interface VehicleOption {
   value: string;
   label: string;
+  vehicleType: string;
   currentMileage: number | null;
   engineHours: number | null;
 }
 
 export interface ReminderRow {
   id: string;
-  vehicle_id: string;
+  vehicle_id: string | null;
+  vehicle_type: string | null;
+  scope: ReminderScope;
+  effective_vehicle_id: string;
+  state_id: string | null;
   service_type: string;
   interval_type: "mileage" | "date";
   interval_miles: number | null;
@@ -25,33 +31,32 @@ export interface ReminderRow {
   last_done_date: string | null;
   last_done_engine_hours: number | null;
   active: boolean;
-  vehicles: { unit_number: string; current_mileage: number | null } | null;
+  vehicles: { id: string; unit_number: string; vehicle_type: string; current_mileage: number | null } | null;
 }
 
 interface FormState {
-  vehicle_id: string;
+  vehicle_type: string;
   service_type: string;
   interval_miles: string;
-  interval_days: string;
-  warning_miles: string;
-  warning_days: string;
+  interval_months: string;
+  interval_engine_hours: string;
 }
 
 const EMPTY: FormState = {
-  vehicle_id: "",
+  vehicle_type: "truck",
   service_type: "",
   interval_miles: "",
-  interval_days: "",
-  warning_miles: "",
-  warning_days: "",
+  interval_months: "",
+  interval_engine_hours: "",
 };
 
-function wholeNumber(value: string): number | null {
-  if (value.trim() === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) return Number.NaN;
-  return parsed;
-}
+const STATUS_ORDER: Record<PMStatus, number> = {
+  overdue: 0,
+  due_now: 1,
+  due_soon: 2,
+  warning: 3,
+  ok: 4,
+};
 
 function formatIntervals(row: ReminderRow) {
   const parts = [];
@@ -85,43 +90,56 @@ function formatNextDue(row: ReminderRow) {
   return parts.join(" / ") || "-";
 }
 
+function groupSummary(rows: ReminderRow[], thresholds: PMThresholds, vehicleMap: Map<string, VehicleOption>) {
+  const activeRows = rows.filter((row) => row.active && row.effective_vehicle_id);
+  const results = activeRows.map((row) => {
+    const vehicle = vehicleMap.get(row.effective_vehicle_id);
+    return computePM(row, Number(row.vehicles?.current_mileage ?? vehicle?.currentMileage ?? 0), thresholds, todayISO(), vehicle?.engineHours ?? null);
+  });
+  const status = [...results].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])[0]?.status ?? "ok";
+  return {
+    status,
+    overdue: results.filter((pm) => pm.status === "overdue" || pm.status === "due_now").length,
+    soon: results.filter((pm) => pm.status === "due_soon" || pm.status === "warning").length,
+    ok: results.filter((pm) => pm.status === "ok").length,
+  };
+}
+
 export default function MaintenanceReminderManager({
   rows,
   vehicles,
   thresholds,
-  defaultVehicleId,
+  defaultVehicleType = "truck",
   defaultService,
-  basePath = "/maintenance/reminders",
 }: {
   rows: ReminderRow[];
   vehicles: VehicleOption[];
   thresholds: PMThresholds;
-  defaultVehicleId?: string;
+  defaultVehicleType?: string;
   defaultService?: string;
-  basePath?: string;
 }) {
-  const [open, setOpen] = useState(Boolean(defaultVehicleId || defaultService));
+  const [open, setOpen] = useState(Boolean(defaultService));
   const [editing, setEditing] = useState<ReminderRow | null>(null);
   const [form, setForm] = useState<FormState>({
     ...EMPTY,
-    vehicle_id: defaultVehicleId ?? "",
+    vehicle_type: defaultVehicleType,
     service_type: defaultService ?? "",
-    warning_miles: String(thresholds.dueSoonMiles),
-    warning_days: String(thresholds.dueSoonDays),
   });
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [isPending, startTransition] = useTransition();
   const vehicleMap = useMemo(() => new Map(vehicles.map((vehicle) => [vehicle.value, vehicle])), [vehicles]);
+  const groups = useMemo(() => {
+    const grouped = new Map<string, ReminderRow[]>();
+    for (const row of rows) grouped.set(row.id, [...(grouped.get(row.id) ?? []), row]);
+    return [...grouped.values()].map((groupRows) => ({
+      rule: groupRows[0],
+      rows: groupRows.sort((a, b) => (a.vehicles?.unit_number ?? "").localeCompare(b.vehicles?.unit_number ?? "")),
+    }));
+  }, [rows]);
 
   function startAdd() {
     setEditing(null);
-    setForm({
-      ...EMPTY,
-      vehicle_id: defaultVehicleId ?? "",
-      service_type: defaultService ?? "",
-      warning_miles: String(thresholds.dueSoonMiles),
-      warning_days: String(thresholds.dueSoonDays),
-    });
+    setForm({ ...EMPTY, vehicle_type: defaultVehicleType, service_type: defaultService ?? "" });
     setError("");
     setOpen(true);
   }
@@ -129,67 +147,42 @@ export default function MaintenanceReminderManager({
   function startEdit(row: ReminderRow) {
     setEditing(row);
     setForm({
-      vehicle_id: row.vehicle_id,
+      vehicle_type: row.vehicle_type ?? defaultVehicleType,
       service_type: row.service_type,
       interval_miles: row.interval_miles == null ? "" : String(row.interval_miles),
-      interval_days: row.interval_days == null ? "" : String(Math.round(Number(row.interval_days) / 30)),
-      warning_miles: String(thresholds.dueSoonMiles),
-      warning_days: String(thresholds.dueSoonDays),
+      interval_months: row.interval_days == null ? "" : String(Math.round(Number(row.interval_days) / 30)),
+      interval_engine_hours: row.interval_engine_hours == null ? "" : String(row.interval_engine_hours),
     });
     setError("");
     setOpen(true);
   }
 
-  async function save() {
-    const intervalMiles = wholeNumber(form.interval_miles);
-    const intervalMonths = wholeNumber(form.interval_days);
-    if (!form.vehicle_id || !form.service_type.trim()) {
-      setError("Unit ve bakım türü gerekli.");
-      return;
-    }
-    if ([intervalMiles, intervalMonths].some(Number.isNaN)) {
-      setError("Tekrar aralığı pozitif tam sayı olmalı.");
-      return;
-    }
-    if (intervalMiles == null && intervalMonths == null) {
-      setError("En az bir tekrar aralığı girin.");
-      return;
-    }
-    const vehicle = vehicleMap.get(form.vehicle_id);
-    const intervalDays = intervalMonths == null ? null : intervalMonths * 30;
-    const values = {
-      vehicle_id: form.vehicle_id,
-      service_type: form.service_type.trim(),
-      interval_type: intervalMiles != null ? "mileage" : "date",
-      interval_miles: intervalMiles,
-      interval_days: intervalDays,
-      interval_engine_hours: null,
-      last_done_mileage: intervalMiles == null ? null : vehicle?.currentMileage ?? 0,
-      last_done_date: intervalDays == null ? null : todayISO(),
-      last_done_engine_hours: null,
-      active: true,
-      service_category: null,
-      description: null,
-      checklist_reference: null,
-    };
+  function save() {
+    setError("");
+    const formData = new FormData();
+    if (editing) formData.set("rule_id", editing.id);
+    formData.set("vehicle_type", form.vehicle_type);
+    formData.set("service_type", form.service_type);
+    formData.set("interval_miles", form.interval_miles);
+    formData.set("interval_months", form.interval_months);
+    formData.set("interval_engine_hours", form.interval_engine_hours);
 
-    setBusy(true);
-    const result = editing
-      ? await updateRow("maintenance_rules", editing.id, values, basePath)
-      : await createRow("maintenance_rules", values, basePath);
-    setBusy(false);
-    if (result?.error) setError(result.error);
-    else setOpen(false);
+    startTransition(async () => {
+      const result = await saveMaintenanceReminder(formData);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      setOpen(false);
+    });
   }
 
-  async function deactivate(id: string) {
-    const result = await updateRow("maintenance_rules", id, { active: false }, basePath);
-    if (result?.error) setError(result.error);
-  }
-
-  async function reactivate(id: string) {
-    const result = await updateRow("maintenance_rules", id, { active: true }, basePath);
-    if (result?.error) setError(result.error);
+  function setActive(id: string, active: boolean) {
+    setError("");
+    startTransition(async () => {
+      const result = await setMaintenanceReminderActive(id, active);
+      if (!result.ok) setError(result.error);
+    });
   }
 
   return (
@@ -197,62 +190,93 @@ export default function MaintenanceReminderManager({
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-xl font-bold">Bakım Hatırlatıcıları</h1>
-          <p className="mt-1 text-sm text-slate-500">İlk dolan sınır geçerli olur.</p>
+          <p className="mt-1 text-sm text-slate-500">Yeni hatırlatıcılar unit türüne göre açılır; her unit kendi son yapılan bilgisini ayrı tutar.</p>
         </div>
         <button type="button" className="btn-primary" onClick={startAdd}>+ Hatırlatıcı Ekle</button>
       </div>
 
       {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
-        <table className="w-full min-w-[820px]">
-          <thead className="border-b border-slate-200 bg-slate-50">
-            <tr>
-              <th className="th">Unit</th>
-              <th className="th">Bakım</th>
-              <th className="th">Tekrar Aralığı</th>
-              <th className="th">Son Yapılan</th>
-              <th className="th">Sonraki Bakım</th>
-              <th className="th">Durum</th>
-              <th className="th text-right">İşlem</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {rows.length === 0 ? (
-              <tr><td className="td text-slate-400" colSpan={7}>Bakım hatırlatıcısı yok.</td></tr>
-            ) : rows.map((row) => {
-              const vehicle = vehicleMap.get(row.vehicle_id);
-              const pm = row.active
-                ? computePM(row, Number(row.vehicles?.current_mileage ?? vehicle?.currentMileage ?? 0), thresholds, todayISO(), vehicle?.engineHours ?? null)
-                : null;
-              return (
-                <tr key={row.id} className="hover:bg-slate-50">
-                  <td className="td font-medium">{row.vehicles?.unit_number ?? vehicle?.label ?? "-"}</td>
-                  <td className="td">{row.service_type}</td>
-                  <td className="td">{formatIntervals(row)}</td>
-                  <td className="td">{formatLastDone(row)}</td>
-                  <td className="td">{formatNextDue(row)}</td>
-                  <td className="td">
-                    {pm ? (
-                      <span className={`badge ${PM_BADGE[pm.status]}`}>{formatPMRemaining(pm)}</span>
-                    ) : (
-                      <span className="badge bg-slate-100 text-slate-600">Pasif</span>
-                    )}
-                  </td>
-                  <td className="td text-right">
-                    <Link className="mr-3 text-brand hover:underline" href={`/maintenance?add=1&vehicleId=${row.vehicle_id}&type=periodic&service=${encodeURIComponent(row.service_type)}`}>Yapıldı Olarak Kaydet</Link>
-                    <button type="button" className="mr-3 text-brand hover:underline" onClick={() => startEdit(row)}>Düzenle</button>
-                    {row.active ? (
-                      <button type="button" className="text-red-600 hover:underline" onClick={() => deactivate(row.id)}>Pasifleştir</button>
-                    ) : (
-                      <button type="button" className="text-brand hover:underline" onClick={() => reactivate(row.id)}>Aktif Et</button>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+      <div className="space-y-3">
+        {groups.length === 0 ? (
+          <div className="rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-400">Bakım hatırlatıcısı yok.</div>
+        ) : groups.map(({ rule, rows: groupRows }) => {
+          const summary = groupSummary(groupRows, thresholds, vehicleMap);
+          const isType = rule.scope === "vehicle_type";
+          return (
+            <div key={rule.id} className="rounded-lg border border-slate-200 bg-white p-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-semibold">
+                      {isType ? vehicleTypeLabel(rule.vehicle_type) : `Unit ${rule.vehicles?.unit_number ?? "-"}`} · {rule.service_type}
+                    </h2>
+                    <span className={`badge ${rule.active ? PM_BADGE[summary.status] : "bg-slate-100 text-slate-600"}`}>
+                      {rule.active ? (summary.overdue > 0 ? "Gecikmiş" : summary.soon > 0 ? "Yaklaşan" : "Tamam") : "Pasif"}
+                    </span>
+                  </div>
+                  <p className="mt-1 text-sm text-slate-600">
+                    {isType
+                      ? `${groupRows.length} unit · ${summary.overdue} gecikmiş · ${summary.soon} yaklaşıyor`
+                      : `${formatLastDone(rule)} son yapılan`}
+                  </p>
+                  <p className="mt-1 text-sm text-slate-500">Tekrar: {formatIntervals(rule)}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" className="btn-ghost" onClick={() => startEdit(rule)}>Düzenle</button>
+                  {rule.active ? (
+                    <button type="button" className="btn-ghost text-red-600" disabled={isPending} onClick={() => setActive(rule.id, false)}>Pasifleştir</button>
+                  ) : (
+                    <button type="button" className="btn-ghost" disabled={isPending} onClick={() => setActive(rule.id, true)}>Aktif Et</button>
+                  )}
+                </div>
+              </div>
+              <details className="mt-3">
+                <summary className="cursor-pointer text-sm font-medium text-brand">Unit Detayları</summary>
+                <div className="mt-3 overflow-x-auto">
+                  <table className="w-full min-w-[760px] text-sm">
+                    <thead className="border-b border-slate-200 bg-slate-50">
+                      <tr>
+                        <th className="th">Unit</th>
+                        <th className="th">Current mileage</th>
+                        <th className="th">Son Yapılan</th>
+                        <th className="th">Sonraki Bakım</th>
+                        <th className="th">Durum</th>
+                        <th className="th text-right">İşlem</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {groupRows.map((row) => {
+                        const vehicle = vehicleMap.get(row.effective_vehicle_id);
+                        const pm = row.active && row.effective_vehicle_id
+                          ? computePM(row, Number(row.vehicles?.current_mileage ?? vehicle?.currentMileage ?? 0), thresholds, todayISO(), vehicle?.engineHours ?? null)
+                          : null;
+                        return (
+                          <tr key={`${row.id}-${row.effective_vehicle_id || "scope"}`}>
+                            <td className="td font-medium">{row.vehicles?.unit_number ?? "-"}</td>
+                            <td className="td">{row.vehicles?.current_mileage == null ? "-" : Number(row.vehicles.current_mileage).toLocaleString("en-US")}</td>
+                            <td className="td">{formatLastDone(row)}</td>
+                            <td className="td">{formatNextDue(row)}</td>
+                            <td className="td">
+                              {pm ? <span className={`badge ${PM_BADGE[pm.status]}`}>{formatPMRemaining(pm)}</span> : <span className="badge bg-slate-100 text-slate-600">Pasif</span>}
+                            </td>
+                            <td className="td text-right">
+                              {row.effective_vehicle_id ? (
+                                <Link className="text-brand hover:underline" href={`/maintenance?add=1&vehicleId=${row.effective_vehicle_id}&type=periodic&service=${encodeURIComponent(row.service_type)}`}>
+                                  Yapıldı Olarak Kaydet
+                                </Link>
+                              ) : "-"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            </div>
+          );
+        })}
       </div>
 
       {open && (
@@ -264,11 +288,16 @@ export default function MaintenanceReminderManager({
             </div>
             <div className="grid gap-3 md:grid-cols-2">
               <div>
-                <label className="label">Unit</label>
-                <select className="input" value={form.vehicle_id} onChange={(event) => setForm({ ...form, vehicle_id: event.target.value })}>
-                  <option value="">Seçin</option>
-                  {vehicles.map((vehicle) => <option key={vehicle.value} value={vehicle.value}>{vehicle.label}</option>)}
-                </select>
+                <label className="label">Unit Türü</label>
+                {editing?.scope === "vehicle" ? (
+                  <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
+                    Eski unit-specific hatırlatıcı: Unit {editing.vehicles?.unit_number ?? "-"}
+                  </div>
+                ) : (
+                  <select className="input" value={form.vehicle_type} onChange={(event) => setForm({ ...form, vehicle_type: event.target.value })}>
+                    {VEHICLE_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                  </select>
+                )}
               </div>
               <div>
                 <label className="label">Bakım Türü</label>
@@ -280,21 +309,17 @@ export default function MaintenanceReminderManager({
               </div>
               <div>
                 <label className="label">Her Kaç Ayda</label>
-                <input className="input" type="number" min="1" step="1" value={form.interval_days} onChange={(event) => setForm({ ...form, interval_days: event.target.value })} />
+                <input className="input" type="number" min="1" step="1" value={form.interval_months} onChange={(event) => setForm({ ...form, interval_months: event.target.value })} />
               </div>
               <div>
-                <label className="label">Kaç Mil Kala Uyar</label>
-                <input className="input" type="number" min="0" step="1" value={form.warning_miles} onChange={(event) => setForm({ ...form, warning_miles: event.target.value })} />
+                <label className="label">Her Kaç Engine Saatte</label>
+                <input className="input" type="number" min="1" step="1" value={form.interval_engine_hours} onChange={(event) => setForm({ ...form, interval_engine_hours: event.target.value })} />
               </div>
-              <div>
-                <label className="label">Kaç Gün Kala Uyar</label>
-                <input className="input" type="number" min="1" step="1" value={form.warning_days} onChange={(event) => setForm({ ...form, warning_days: event.target.value })} />
-              </div>
-              <p className="md:col-span-2 text-sm text-slate-500">İlk dolan sınır geçerli olur. Uyarı değerleri mevcut genel ayarlara göre hesaplanır.</p>
+              <p className="md:col-span-2 text-sm text-slate-500">İlk dolan sınır geçerli olur. Type reminder kaydı, matching unitlerin son yapılan bilgisini ayrı saklar.</p>
               {error && <p className="md:col-span-2 text-sm text-red-600">{error}</p>}
               <div className="md:col-span-2 flex justify-end gap-2">
                 <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>Vazgeç</button>
-                <button type="button" className="btn-primary" disabled={busy} onClick={save}>{busy ? "Kaydediliyor..." : "Kaydet"}</button>
+                <button type="button" className="btn-primary" disabled={isPending} onClick={save}>{isPending ? "Kaydediliyor..." : "Kaydet"}</button>
               </div>
             </div>
           </div>

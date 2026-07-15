@@ -2,6 +2,7 @@
 
 import { requireWriteRole } from "@/lib/auth";
 import { normalizeMaintenanceCostCategory } from "@/lib/maintenance-cost";
+import { isVehicleType } from "@/lib/maintenance-reminders";
 import { manualMaintenanceCategory, manualServiceOption, normalizeUnitNumber, shouldUpdateMaintenancePlan, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
@@ -100,6 +101,68 @@ function buildRuleDueSummary(rule: any | null): RuleDueSummary | null {
   };
 }
 
+function wholeNumberOrNull(value: FormDataEntryValue | null, label: string): number | null {
+  const raw = text(value);
+  if (!raw) return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+    throw new Error(`${label} pozitif tam sayı olmalı.`);
+  }
+  return parsed;
+}
+
+export async function saveMaintenanceReminder(formData: FormData) {
+  await requireWriteRole();
+  try {
+    const ruleId = text(formData.get("rule_id"));
+    const vehicleType = text(formData.get("vehicle_type"));
+    const serviceType = text(formData.get("service_type"));
+    const intervalMiles = wholeNumberOrNull(formData.get("interval_miles"), "Mil aralığı");
+    const intervalMonths = wholeNumberOrNull(formData.get("interval_months"), "Ay aralığı");
+    const intervalEngineHours = wholeNumberOrNull(formData.get("interval_engine_hours"), "Engine saat aralığı");
+
+    if (!ruleId && !isVehicleType(vehicleType)) throw new Error("Unit türü gerekli.");
+    if (!serviceType) throw new Error("Bakım türü gerekli.");
+    if (intervalMiles == null && intervalMonths == null && intervalEngineHours == null) {
+      throw new Error("En az bir tekrar aralığı girin.");
+    }
+
+    const payload = {
+      vehicle_type: vehicleType,
+      service_type: serviceType,
+      interval_miles: intervalMiles,
+      interval_days: intervalMonths == null ? null : intervalMonths * 30,
+      interval_engine_hours: intervalEngineHours,
+      active: formData.get("active") !== "false",
+    };
+    const supabase = await createClient();
+    const { data, error } = await supabase.rpc("save_maintenance_reminder", {
+      p_rule_id: ruleId,
+      p_payload: payload,
+    });
+    if (error) return { ok: false as const, error: error.message };
+    maintenanceRevalidate();
+    revalidatePath("/maintenance/reminders");
+    return { ok: true as const, ruleId: data as string };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function setMaintenanceReminderActive(ruleId: string, active: boolean) {
+  await requireWriteRole();
+  if (!ruleId) return { ok: false as const, error: "Hatırlatıcı gerekli." };
+  const supabase = await createClient();
+  const { error } = await supabase.rpc("set_maintenance_reminder_active", {
+    p_rule_id: ruleId,
+    p_active: active,
+  });
+  if (error) return { ok: false as const, error: error.message };
+  maintenanceRevalidate();
+  revalidatePath("/maintenance/reminders");
+  return { ok: true as const };
+}
+
 export async function saveManualMaintenance(formData: FormData) {
   await requireWriteRole();
   try {
@@ -130,17 +193,11 @@ export async function saveManualMaintenance(formData: FormData) {
     if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
     if (!serviceType) throw new Error("Bakım / tamir çeşidi gerekli.");
     if (!manualServiceOption(kind, serviceType)) throw new Error("Geçerli bir servis seçin.");
-    if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    if (!serviceType) throw new Error("Bakım / tamir çeşidi gerekli.");
-    if (!manualServiceOption(kind, serviceType)) throw new Error("Geçerli bir servis seçin.");
-    if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    if (!serviceType) throw new Error("Bakım / tamir çeşidi gerekli.");
-    if (!manualServiceOption(kind, serviceType)) throw new Error("Geçerli bir servis seçin.");
     if (!mileage.ok) throw new Error(mileage.error);
 
     const updatePlan = shouldUpdateMaintenancePlan(kind, serviceType, formData.get("update_plan") === "on");
     const submissionKey = text(formData.get("submission_key")) ?? crypto.randomUUID();
-    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind, serviceType), serviceType);
+    const category = normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceType), serviceType);
     const plannedValue = text(formData.get("planned"));
     const payload = {
       submission_key: submissionKey,
@@ -199,19 +256,29 @@ export async function saveManualMaintenance(formData: FormData) {
       rule_created?: boolean;
       missing_rule?: boolean;
       idempotent?: boolean;
+      rule_scope?: string | null;
     } | null;
-    const [afterVehicleRes, ruleRes] = await Promise.all([
+    const [afterVehicleRes, ruleRes, stateRes] = await Promise.all([
       supabase.from("vehicles").select("id, unit_number, current_mileage").eq("id", vehicleId).maybeSingle(),
       rpcResult?.rule_id
         ? supabase
             .from("maintenance_rules")
-            .select("id, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
+            .select("id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
             .eq("id", rpcResult.rule_id)
+            .maybeSingle()
+        : Promise.resolve({ data: null, error: null } as any),
+      rpcResult?.rule_id && rpcResult.rule_scope === "vehicle_type"
+        ? supabase
+            .from("maintenance_rule_vehicle_states")
+            .select("last_done_mileage, last_done_date, last_done_engine_hours")
+            .eq("rule_id", rpcResult.rule_id)
+            .eq("vehicle_id", vehicleId)
             .maybeSingle()
         : Promise.resolve({ data: null, error: null } as any),
     ]);
     if (afterVehicleRes.error) return { ok: false as const, error: afterVehicleRes.error.message };
     if (ruleRes.error) return { ok: false as const, error: ruleRes.error.message };
+    if (stateRes.error) return { ok: false as const, error: stateRes.error.message };
 
     const previousMileage = beforeVehicleRes.data?.current_mileage == null ? null : Number(beforeVehicleRes.data.current_mileage);
     const currentMileage = afterVehicleRes.data?.current_mileage == null ? null : Number(afterVehicleRes.data.current_mileage);
@@ -232,7 +299,7 @@ export async function saveManualMaintenance(formData: FormData) {
       planCreated: Boolean(rpcResult?.rule_created),
       missingRule: Boolean(rpcResult?.missing_rule),
       historyOnly: kind === "repair" || !rpcResult?.rule_updated,
-      rule: buildRuleDueSummary(ruleRes.data),
+      rule: buildRuleDueSummary(stateRes.data ? { ...ruleRes.data, ...stateRes.data } : ruleRes.data),
     };
     maintenanceRevalidate();
     revalidatePath(`/maintenance/units/${vehicleId}`);

@@ -1,5 +1,6 @@
 import { createServiceClient } from "@/lib/supabase/server";
 import { computePM, formatPMWhichever } from "@/lib/maintenance";
+import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { sendMessage, escapeHtml } from "@/lib/telegram";
 import { safeEqual, secretMisconfigured } from "@/lib/secure";
 import { todayISO } from "@/lib/tz";
@@ -17,17 +18,19 @@ export async function GET(req: Request) {
   }
 
   const supabase = createServiceClient();
-  const [rulesResult, settingsResult, groupsResult, profilesResult] = await Promise.all([
+  const [rulesResult, statesResult, vehiclesResult, settingsResult, groupsResult, profilesResult] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("*, vehicles!maintenance_rules_vehicle_id_fkey(id, unit_number, current_mileage)")
+      .select("*")
       .eq("active", true),
+    supabase.from("maintenance_rule_vehicle_states").select("id, organization_id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
+    supabase.from("vehicles").select("id, organization_id, unit_number, vehicle_type, current_mileage, status").eq("status", "active"),
     supabase.from("settings").select("organization_id, pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours"),
     supabase.from("telegram_groups").select("organization_id, chat_id, vehicle_id, active"),
     supabase.from("vehicle_maintenance_profiles").select("organization_id, vehicle_id, engine_hours"),
   ]);
 
-  const queryError = rulesResult.error ?? settingsResult.error ?? groupsResult.error ?? profilesResult.error;
+  const queryError = rulesResult.error ?? statesResult.error ?? vehiclesResult.error ?? settingsResult.error ?? groupsResult.error ?? profilesResult.error;
   if (queryError) {
     console.error("pm-check query failed", queryError);
     return Response.json({ ok: false, error: queryError.message }, { status: 500 });
@@ -63,26 +66,33 @@ export async function GET(req: Request) {
   let alertsFound = 0;
   let alertsMapped = 0;
 
-  for (const rule of rulesResult.data ?? []) {
+  const effectiveRules = expandEffectiveMaintenanceRules(
+    (rulesResult.data ?? []) as any[],
+    (vehiclesResult.data ?? []) as any[],
+    (statesResult.data ?? []) as any[],
+  );
+
+  for (const rule of effectiveRules) {
     const vehicle = rule.vehicles as { id: string; unit_number: string; current_mileage: number | null } | null;
     if (!vehicle) continue;
-    const thresholds = thresholdsByOrg.get(rule.organization_id) ?? { dueSoonMiles: 2_000, dueSoonDays: 7, dueSoonEngineHours: 100 };
+    const organizationId = rule.organization_id ?? "";
+    const thresholds = thresholdsByOrg.get(organizationId) ?? { dueSoonMiles: 2_000, dueSoonDays: 7, dueSoonEngineHours: 100 };
     const pm = computePM(
       rule,
       Number(vehicle.current_mileage ?? 0),
       thresholds,
       todayISO(),
-      engineHoursByOrgVehicle.get(`${rule.organization_id}:${vehicle.id}`) ?? null,
+      engineHoursByOrgVehicle.get(`${organizationId}:${vehicle.id}`) ?? null,
     );
     if (pm.status === "ok") continue;
     alertsFound++;
 
-    const chats = chatsByOrgVehicle.get(`${rule.organization_id}:${vehicle.id}`) ?? [];
+    const chats = chatsByOrgVehicle.get(`${organizationId}:${vehicle.id}`) ?? [];
     if (chats.length === 0) continue;
     alertsMapped++;
     const line = `- Unit ${escapeHtml(vehicle.unit_number)} - ${escapeHtml(rule.service_type)}: ${escapeHtml(pm.label)} (${escapeHtml(formatPMWhichever(pm))})`;
     for (const chatId of chats) {
-      const key = `${rule.organization_id}:${chatId}`;
+      const key = `${organizationId}:${chatId}`;
       const group = linesByChat.get(key) ?? { chatId, lines: [] };
       group.lines.push(line);
       linesByChat.set(key, group);
