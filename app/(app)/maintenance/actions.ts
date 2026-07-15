@@ -2,6 +2,19 @@
 
 import { requireWriteRole } from "@/lib/auth";
 import { normalizeMaintenanceCostCategory } from "@/lib/maintenance-cost";
+import {
+  engineModelMatchesRequirement,
+  findExistingProgramReminder,
+  isMaintenancePackageLevel,
+  isMaintenanceProgramVehicleType,
+  maintenanceProgramPreset,
+  presetIsInPackage,
+  summarizeMaintenanceProgramStatuses,
+  validateMaintenanceProgramIntervals,
+  type MaintenancePackageLevel,
+  type MaintenanceProgramExistingRule,
+  type MaintenanceProgramVehicleType,
+} from "@/lib/maintenance-program-presets";
 import { isVehicleType } from "@/lib/maintenance-reminders";
 import { manualMaintenanceCategory, normalizeUnitNumber, shouldUpdateMaintenancePlan, validateManualServiceName, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
@@ -147,6 +160,202 @@ export async function saveMaintenanceReminder(formData: FormData) {
     return { ok: true as const, ruleId: data as string };
   } catch (error) {
     return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export interface MaintenanceProgramSelectionInput {
+  presetId: string;
+  intervalMiles: number | null;
+  intervalDays: number | null;
+  intervalEngineHours: number | null;
+  vehicleIds?: string[];
+}
+
+export interface MaintenanceProgramInstallInput {
+  selectedVehicleType: MaintenanceProgramVehicleType;
+  selectedPackage: MaintenancePackageLevel;
+  selections: MaintenanceProgramSelectionInput[];
+}
+
+export interface MaintenanceProgramInstallItemResult {
+  presetId: string;
+  title: string;
+  vehicleId?: string;
+  unitNumber?: string;
+  status: "created" | "skipped" | "failed";
+  message: string;
+}
+
+export interface MaintenanceProgramInstallResult {
+  ok: boolean;
+  created: number;
+  skipped: number;
+  failed: number;
+  results: MaintenanceProgramInstallItemResult[];
+  error?: string;
+}
+
+function isDuplicateReminderError(message: string): boolean {
+  return /already exists|duplicate|unique|mevcut/i.test(message);
+}
+
+function maintenanceProgramSummary(results: MaintenanceProgramInstallItemResult[]): MaintenanceProgramInstallResult {
+  return { ...summarizeMaintenanceProgramStatuses(results), results };
+}
+
+export async function installMaintenanceProgram(input: MaintenanceProgramInstallInput): Promise<MaintenanceProgramInstallResult> {
+  const profile = await requireWriteRole();
+  const results: MaintenanceProgramInstallItemResult[] = [];
+
+  try {
+    if (!isMaintenanceProgramVehicleType(input?.selectedVehicleType)) throw new Error("Geçerli bir araç türü seçin.");
+    if (!isMaintenancePackageLevel(input?.selectedPackage)) throw new Error("Geçerli bir bakım paketi seçin.");
+    if (!Array.isArray(input?.selections) || input.selections.length === 0) throw new Error("En az bir bakım seçin.");
+
+    const selections = [...new Map(input.selections.map((selection) => [selection.presetId, selection])).values()];
+    if (selections.length > 60) throw new Error("Tek seferde en fazla 60 bakım kurulabilir.");
+
+    const supabase = await createClient();
+    const [{ data: activeVehicles, error: vehiclesError }, { data: existingData, error: existingError }] = await Promise.all([
+      supabase
+        .from("vehicles")
+        .select("id, unit_number, vehicle_type, status")
+        .eq("organization_id", profile.organization_id)
+        .eq("vehicle_type", input.selectedVehicleType)
+        .eq("status", "active"),
+      supabase
+        .from("maintenance_rules")
+        .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, active")
+        .eq("organization_id", profile.organization_id)
+        .eq("active", true),
+    ]);
+    if (vehiclesError) throw new Error(vehiclesError.message);
+    if (existingError) throw new Error(existingError.message);
+
+    const vehicles = (activeVehicles ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; status: string }>;
+    const vehicleById = new Map(vehicles.map((vehicle) => [vehicle.id, vehicle]));
+    const vehicleIds = vehicles.map((vehicle) => vehicle.id);
+    const profilesResult = vehicleIds.length > 0
+      ? await supabase
+          .from("vehicle_maintenance_profiles")
+          .select("vehicle_id, engine_model")
+          .eq("organization_id", profile.organization_id)
+          .in("vehicle_id", vehicleIds)
+      : { data: [], error: null };
+    if (profilesResult.error) throw new Error(profilesResult.error.message);
+    const engineModelByVehicle = new Map(
+      ((profilesResult.data ?? []) as Array<{ vehicle_id: string; engine_model: string | null }>).map((row) => [row.vehicle_id, row.engine_model]),
+    );
+    const hasReliableEngineData = vehicles.some((vehicle) => Boolean(engineModelByVehicle.get(vehicle.id)?.trim()));
+    const existingRules = (existingData ?? []) as MaintenanceProgramExistingRule[];
+
+    for (const selection of selections) {
+      const preset = maintenanceProgramPreset(selection.presetId);
+      if (!preset || preset.installMode !== "reminder") {
+        results.push({ presetId: selection.presetId, title: selection.presetId, status: "failed", message: "Geçersiz veya reference-only bakım seçimi." });
+        continue;
+      }
+      if (!presetIsInPackage(preset, input.selectedVehicleType, input.selectedPackage)) {
+        results.push({ presetId: preset.id, title: preset.titleTr, status: "failed", message: "Bakım seçilen araç türü veya pakete uygulanamaz." });
+        continue;
+      }
+
+      const intervals = {
+        intervalMiles: selection.intervalMiles,
+        intervalDays: selection.intervalDays,
+        intervalEngineHours: selection.intervalEngineHours,
+      };
+      const intervalValidation = validateMaintenanceProgramIntervals(intervals);
+      if (!intervalValidation.ok) {
+        results.push({ presetId: preset.id, title: preset.titleTr, status: "failed", message: intervalValidation.error });
+        continue;
+      }
+      const payload = {
+        service_type: preset.serviceType,
+        interval_miles: intervals.intervalMiles,
+        interval_days: intervals.intervalDays,
+        interval_engine_hours: intervals.intervalEngineHours,
+        active: true,
+      };
+
+      if (!preset.engineRequirement) {
+        const existing = findExistingProgramReminder(preset, existingRules, input.selectedVehicleType);
+        if (existing) {
+          results.push({ presetId: preset.id, title: preset.titleTr, status: "skipped", message: "Zaten mevcut." });
+          continue;
+        }
+        const { data, error } = await supabase.rpc("save_maintenance_reminder", {
+          p_rule_id: null,
+          p_payload: { ...payload, vehicle_type: input.selectedVehicleType },
+        });
+        if (error) {
+          results.push({
+            presetId: preset.id,
+            title: preset.titleTr,
+            status: isDuplicateReminderError(error.message) ? "skipped" : "failed",
+            message: isDuplicateReminderError(error.message) ? "Zaten mevcut." : error.message,
+          });
+          continue;
+        }
+        existingRules.push({ id: String(data), vehicle_id: null, vehicle_type: input.selectedVehicleType, service_type: preset.serviceType, interval_miles: intervals.intervalMiles, interval_days: intervals.intervalDays, interval_engine_hours: intervals.intervalEngineHours, active: true });
+        results.push({ presetId: preset.id, title: preset.titleTr, status: "created", message: "Oluşturuldu." });
+        continue;
+      }
+
+      const selectedVehicleIds = [...new Set(selection.vehicleIds ?? [])];
+      if (selectedVehicleIds.length === 0) {
+        results.push({ presetId: preset.id, title: preset.titleTr, status: "failed", message: "Engine-specific bakım için en az bir unit seçin." });
+        continue;
+      }
+
+      for (const vehicleId of selectedVehicleIds) {
+        const vehicle = vehicleById.get(vehicleId);
+        if (!vehicle) {
+          results.push({ presetId: preset.id, title: preset.titleTr, vehicleId, status: "failed", message: "Aktif ve uygun unit bulunamadı." });
+          continue;
+        }
+        const engineModel = engineModelByVehicle.get(vehicleId);
+        if (hasReliableEngineData && !engineModelMatchesRequirement(engineModel, preset.engineRequirement)) {
+          results.push({ presetId: preset.id, title: preset.titleTr, vehicleId, unitNumber: vehicle.unit_number, status: "failed", message: "Unit engine modeli bu preset ile eşleşmiyor." });
+          continue;
+        }
+        const existing = findExistingProgramReminder(preset, existingRules, input.selectedVehicleType, vehicleId);
+        if (existing) {
+          results.push({ presetId: preset.id, title: preset.titleTr, vehicleId, unitNumber: vehicle.unit_number, status: "skipped", message: "Zaten mevcut." });
+          continue;
+        }
+        const { data, error } = await supabase.rpc("save_vehicle_maintenance_reminder", {
+          p_vehicle_id: vehicleId,
+          p_payload: payload,
+        });
+        if (error) {
+          results.push({
+            presetId: preset.id,
+            title: preset.titleTr,
+            vehicleId,
+            unitNumber: vehicle.unit_number,
+            status: isDuplicateReminderError(error.message) ? "skipped" : "failed",
+            message: isDuplicateReminderError(error.message) ? "Zaten mevcut." : error.message,
+          });
+          continue;
+        }
+        const rpcResult = data as { rule_id?: string; created?: boolean } | null;
+        const status = rpcResult?.created === false ? "skipped" as const : "created" as const;
+        if (rpcResult?.rule_id) {
+          existingRules.push({ id: rpcResult.rule_id, vehicle_id: vehicleId, vehicle_type: null, service_type: preset.serviceType, interval_miles: intervals.intervalMiles, interval_days: intervals.intervalDays, interval_engine_hours: intervals.intervalEngineHours, active: true });
+        }
+        results.push({ presetId: preset.id, title: preset.titleTr, vehicleId, unitNumber: vehicle.unit_number, status, message: status === "created" ? "Oluşturuldu." : "Zaten mevcut." });
+      }
+    }
+
+    const summary = maintenanceProgramSummary(results);
+    if (summary.created > 0) {
+      maintenanceRevalidate();
+      revalidatePath("/maintenance/reminders");
+    }
+    return summary;
+  } catch (error) {
+    return { ...maintenanceProgramSummary(results), ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

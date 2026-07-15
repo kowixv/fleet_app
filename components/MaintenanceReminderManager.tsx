@@ -1,7 +1,9 @@
 "use client";
 
 import { saveMaintenanceReminder, setMaintenanceReminderActive } from "@/app/(app)/maintenance/actions";
+import MaintenanceProgramInstaller, { type MaintenanceProgramVehicle } from "@/components/MaintenanceProgramInstaller";
 import { computePM, formatPMRemaining, PM_BADGE, type PMStatus, type PMThresholds } from "@/lib/maintenance";
+import type { MaintenanceProgramExistingRule } from "@/lib/maintenance-program-presets";
 import { VEHICLE_TYPE_OPTIONS, vehicleTypeLabel, type ReminderScope } from "@/lib/maintenance-reminders";
 import { REMINDER_SERVICE_OPTIONS, isCustomManualService, validateManualServiceName } from "@/lib/manual-maintenance";
 import { todayISO } from "@/lib/tz";
@@ -110,12 +112,16 @@ export default function MaintenanceReminderManager({
   rows,
   vehicles,
   thresholds,
+  installerVehicles,
+  installerExistingRules,
   defaultVehicleType = "truck",
   defaultService,
 }: {
   rows: ReminderRow[];
   vehicles: VehicleOption[];
   thresholds: PMThresholds;
+  installerVehicles: MaintenanceProgramVehicle[];
+  installerExistingRules: MaintenanceProgramExistingRule[];
   defaultVehicleType?: string;
   defaultService?: string;
 }) {
@@ -195,7 +201,10 @@ export default function MaintenanceReminderManager({
           <h1 className="text-xl font-bold">Bakım Hatırlatıcıları</h1>
           <p className="mt-1 text-sm text-slate-500">Yeni hatırlatıcılar unit türüne göre açılır; her unit kendi son yapılan bilgisini ayrı tutar.</p>
         </div>
-        <button type="button" className="btn-primary" onClick={startAdd}>+ Hatırlatıcı Ekle</button>
+        <div className="flex flex-wrap gap-2">
+          <MaintenanceProgramInstaller vehicles={installerVehicles} existingRules={installerExistingRules} />
+          <button type="button" className="btn-ghost" onClick={startAdd}>+ Hatırlatıcı Ekle</button>
+        </div>
       </div>
 
       {error && <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p>}

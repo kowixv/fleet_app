@@ -38,7 +38,7 @@ export default async function MaintenanceRemindersPage({
       .order("active", { ascending: false })
       .order("created_at", { ascending: false }),
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").order("unit_number"),
-    supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
+    supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours, engine_model"),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours").single(),
     supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
   ]);
@@ -50,12 +50,14 @@ export default async function MaintenanceRemindersPage({
     dueSoonDays: Number(settingsRes.data?.pm_due_soon_days ?? 7),
     dueSoonEngineHours: Number(settingsRes.data?.pm_due_soon_engine_hours ?? 100),
   };
+  const profileRows = (profilesRes.data ?? []) as Array<{ vehicle_id: string; engine_hours: number | null; engine_model: string | null }>;
   const profiles = new Map(
-    ((profilesRes.data ?? []) as Array<{ vehicle_id: string; engine_hours: number | null }>).map((profile) => [
+    profileRows.map((profile) => [
       profile.vehicle_id,
       profile.engine_hours == null ? null : Number(profile.engine_hours),
     ]),
   );
+  const engineModels = new Map(profileRows.map((profile) => [profile.vehicle_id, profile.engine_model]));
   const vehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null; status: string | null }>).map((vehicle) => ({
     value: vehicle.id,
     label: vehicle.unit_number,
@@ -89,6 +91,24 @@ export default async function MaintenanceRemindersPage({
     return pm.status === "due_soon" || pm.status === "warning";
   });
   const defaultVehicle = first(params.vehicleId) ? vehicleById.get(first(params.vehicleId)!) : null;
+  const installerVehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; status: string | null }>)
+    .filter((vehicle) => vehicle.status === "active" && (vehicle.vehicle_type === "truck" || vehicle.vehicle_type === "box_truck"))
+    .map((vehicle) => ({
+      id: vehicle.id,
+      unitNumber: vehicle.unit_number,
+      vehicleType: vehicle.vehicle_type,
+      engineModel: engineModels.get(vehicle.id) ?? null,
+    }));
+  const installerExistingRules = ((rulesRes.data ?? []) as Array<{
+    id: string;
+    vehicle_id: string | null;
+    vehicle_type: string | null;
+    service_type: string;
+    interval_miles: number | null;
+    interval_days: number | null;
+    interval_engine_hours: number | null;
+    active: boolean;
+  }>).filter((rule) => rule.active);
 
   return (
     <div className="space-y-5">
@@ -110,6 +130,8 @@ export default async function MaintenanceRemindersPage({
         rows={rows}
         vehicles={vehicles}
         thresholds={thresholds}
+        installerVehicles={installerVehicles}
+        installerExistingRules={installerExistingRules}
         defaultVehicleType={defaultVehicle?.vehicleType ?? "truck"}
         defaultService={first(params.service)}
       />
