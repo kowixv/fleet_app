@@ -30,6 +30,7 @@ export interface StatementData {
   companyName: string;
   scac?: string | null;
   sourceNote?: string;
+  status?: string;
   payeeName: string;
   payeeRole: string;
   unitNumber?: string | null;
@@ -39,9 +40,10 @@ export interface StatementData {
   grossRevenue: number;
   netPay: number;
   ourCommission: number;
-  lineItems: { labelEn: string; labelTr: string; amount: number }[];
-  loads: { reference?: string; route?: string; type?: string; grossAmount: number }[];
-  expenses: { category: string; amount: number }[];
+  lineItems: { key?: string; labelEn: string; labelTr: string; amount: number }[];
+  calculationRows?: { key: string; labelEn: string; labelTr: string; amount: number; role: string }[];
+  loads: { reference?: string; route?: string; type?: string; grossAmount: number; usageGroup?: string }[];
+  expenses: { category: string; amount: number; usageGroup?: string }[];
   notes?: string | null;
 }
 
@@ -92,6 +94,7 @@ const s = StyleSheet.create({
   sign: { marginTop: 34, flexDirection: "row", justifyContent: "space-between" },
   signBox: { width: "45%", borderTopWidth: 1, borderTopColor: c.ink, paddingTop: 4 },
   note: { marginTop: 12, fontSize: 7, color: c.sub },
+  void: { marginTop: 8, padding: 6, backgroundColor: "#fee2e2", color: "#991b1b", fontFamily: "Helvetica-Bold", textAlign: "center" },
 });
 
 function Info({ label, value }: { label: string; value: string }) {
@@ -115,6 +118,7 @@ export function StatementDocument({ data }: { data: StatementData }) {
             {data.scac ? `   SCAC: ${data.scac}` : ""}
           </Text>
           {data.sourceNote ? <Text style={s.sub}>{tr(data.sourceNote)}</Text> : null}
+          {data.status === "void" ? <Text style={s.void}>VOID / IPTAL</Text> : null}
         </View>
 
         {/* Info grid */}
@@ -130,16 +134,16 @@ export function StatementDocument({ data }: { data: StatementData }) {
         {/* Calculation */}
         <View style={s.section}>
           <Text style={s.sectionTitle}>Calculation / Hesaplama</Text>
-          <View style={s.summaryRow}>
-            <Text style={s.summaryLabel}>Gross revenue / Brut gelir</Text>
-            <Text style={s.bold}>{money(data.grossRevenue)}</Text>
-          </View>
-          {data.lineItems.map((li, i) => (
+          {(data.calculationRows && data.calculationRows.length > 0 ? data.calculationRows : [
+            { key: "gross", labelEn: "Gross revenue", labelTr: "Brut gelir", amount: data.grossRevenue, role: "base" },
+            ...data.lineItems.map((li, i) => ({ key: `${li.key ?? "item"}-${i}`, labelEn: li.labelEn, labelTr: li.labelTr, amount: li.amount, role: "deduction" })),
+            { key: "net", labelEn: "Net Pay", labelTr: "Net Odeme", amount: data.netPay, role: "net" },
+          ]).map((li, i) => (
             <View key={i} style={s.summaryRow}>
               <Text style={s.summaryLabel}>
                 {tr(li.labelEn)} / {tr(li.labelTr)}
               </Text>
-              <Text>{money(li.amount)}</Text>
+              <Text style={li.role === "net" ? s.bold : undefined}>{money(li.amount)}</Text>
             </View>
           ))}
           <View style={s.net}>
@@ -162,7 +166,7 @@ export function StatementDocument({ data }: { data: StatementData }) {
               <View key={i} style={s.td}>
                 <Text style={s.cId}>{l.reference ?? "-"}</Text>
                 <Text style={s.cRoute}>{tr(l.route) || "-"}</Text>
-                <Text style={s.cType}>{tr(l.type) || "-"}</Text>
+                <Text style={s.cType}>{tr(l.usageGroup ?? l.type) || "-"}</Text>
                 <Text style={s.cAmt}>{money(l.grossAmount)}</Text>
               </View>
             ))}
@@ -183,7 +187,7 @@ export function StatementDocument({ data }: { data: StatementData }) {
             <Text style={s.sectionTitle}>Expense Details / Masraf Detaylari</Text>
             {data.expenses.map((e, i) => (
               <View key={i} style={s.summaryRow}>
-                <Text style={s.summaryLabel}>{tr(e.category)}</Text>
+                <Text style={s.summaryLabel}>{tr(e.category)} {e.usageGroup ? `(${e.usageGroup})` : ""}</Text>
                 <Text>{money(e.amount)}</Text>
               </View>
             ))}

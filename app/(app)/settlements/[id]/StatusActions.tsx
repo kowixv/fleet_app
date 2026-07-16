@@ -1,71 +1,80 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { setSettlementStatus, deleteSettlement } from "../actions";
+import { deleteDraftSettlement, updateSettlementStatus, voidSettlement } from "../actions";
 
-export default function StatusActions({
-  id,
-  status,
-}: {
-  id: string;
-  status: string;
-}) {
+const NEXT_STATUSES: Record<string, string[]> = {
+  draft: ["pending_review", "finalized", "void"],
+  pending_review: ["draft", "finalized", "void"],
+  finalized: ["paid", "void"],
+  paid: ["void"],
+  void: [],
+};
+
+const LABELS: Record<string, string> = {
+  draft: "Draft",
+  pending_review: "Review",
+  finalized: "Finalize",
+  paid: "Mark Paid",
+  void: "Void",
+};
+
+export default function StatusActions({ id, status }: { id: string; status: string }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const locked = status === "paid";
+  const [voidReason, setVoidReason] = useState("");
+  const nextStatuses = NEXT_STATUSES[status] ?? [];
+  const canDelete = status === "draft" || status === "pending_review";
 
-  const change = (s: string) =>
+  function change(next: string) {
     start(async () => {
       setError(null);
-      const res = await setSettlementStatus(id, s);
-      if (res?.error) setError(res.error);
+      const result = next === "void"
+        ? await voidSettlement(id, voidReason)
+        : await updateSettlementStatus(id, next);
+      if (result?.error) setError(result.error);
     });
+  }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-3">
+      {nextStatuses.includes("void") && (
+        <div>
+          <label className="label">Void reason</label>
+          <input value={voidReason} onChange={(event) => setVoidReason(event.target.value)} className="input" placeholder="Required before void" />
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-2">
-        {status !== "finalized" && status !== "paid" && (
-          <button onClick={() => change("finalized")} disabled={pending} className="btn-primary text-sm">
-            Finalize
+        {nextStatuses.map((next) => (
+          <button
+            key={next}
+            onClick={() => change(next)}
+            disabled={pending || (next === "void" && voidReason.trim().length < 3)}
+            className={next === "void" ? "btn-ghost text-sm text-red-600" : "btn-primary text-sm"}
+          >
+            {LABELS[next] ?? next}
           </button>
-        )}
-        {status === "finalized" && (
-          <button onClick={() => change("paid")} disabled={pending} className="btn-primary text-sm">
-            Paid olarak işaretle
-          </button>
-        )}
-        {!locked && (
-          <button onClick={() => change("pending_review")} disabled={pending} className="btn-ghost text-sm">
-            Review'a al
-          </button>
-        )}
-        {status !== "void" && (
-          <button onClick={() => change("void")} disabled={pending} className="btn-ghost text-sm text-red-600">
-            Void
-          </button>
-        )}
-        {status !== "finalized" && status !== "paid" && (
+        ))}
+        {canDelete && (
           <button
             onClick={() => {
-              if (confirm("Settlement silinsin mi? Bağlı load/masraflar serbest bırakılır."))
+              if (confirm("Delete this Draft/Review settlement? Linked usage will be removed atomically.")) {
                 start(async () => {
                   setError(null);
-                  const res = await deleteSettlement(id);
-                  if (res?.error) setError(res.error);
+                  const result = await deleteDraftSettlement(id);
+                  if (result?.error) setError(result.error);
                 });
+              }
             }}
             disabled={pending}
             className="btn-ghost text-sm text-red-600"
           >
-            Sil
+            Delete Draft
           </button>
         )}
       </div>
-      {error && (
-        <p className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-          {error}
-        </p>
-      )}
+      {status === "void" && <p className="text-xs text-slate-500">Void is terminal. This settlement cannot be reopened.</p>}
+      {error && <p className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
     </div>
   );
 }

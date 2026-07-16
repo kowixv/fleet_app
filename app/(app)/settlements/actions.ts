@@ -1,113 +1,288 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
+import { computeSettlement, type ExpenseInput, type LoadInput, type SettlementConfig, type SettlementType } from "@/lib/settlement/engine";
+import {
+  ELIGIBLE_LOAD_STATUSES,
+  activeUsageGroupsBlockedBy,
+  canTransitionSettlementStatus,
+  configSnapshot,
+  expenseAppliesToUsageGroup,
+  expenseTargetingReason,
+  usageGroupForSettlementType,
+  validateInclusivePeriod,
+  validateNonNegativeMoney,
+  validatePercentFraction,
+} from "@/lib/settlement/workflow";
+import { resolveConfig } from "@/lib/settlement/resolve";
+import { STALE_SETTLEMENT_PREVIEW_MESSAGE, stableSettlementRevision } from "@/lib/settlement/revision";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { computeSettlement, type LoadInput, type ExpenseInput, type SettlementType } from "@/lib/settlement/engine";
-import { resolveConfig } from "@/lib/settlement/resolve";
 
-const num = (v: FormDataEntryValue | null) =>
-  v === null || v === "" ? null : Number(v);
+type SettlementInputPayload = {
+  settlement_type?: string;
+  vehicle_id?: string | null;
+  driver_id?: string | null;
+  owner_id?: string | null;
+  company_id?: string | null;
+  external_carrier_id?: string | null;
+  week_start?: string | null;
+  week_end?: string | null;
+  external_net_pay?: string | number | null;
+  ov_driver_pct?: string | number | null;
+  ov_company_pct?: string | number | null;
+  ov_commission?: string | number | null;
+  selected_load_ids?: string[];
+  selected_expense_ids?: string[];
+  preview_revision?: string | null;
+};
 
-export async function createSettlement(
-  formData: FormData,
-): Promise<{ error: string } | void> {
-  const profile = await requireWriteRole();
+type PreviewRow = Record<string, any> & { unavailable_reason?: string; targeting_reason?: string };
+
+function cleanId(value: unknown) {
+  const s = typeof value === "string" ? value.trim() : "";
+  return s || null;
+}
+
+function cleanDate(value: unknown) {
+  const s = typeof value === "string" ? value.trim() : "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+function optionalNumber(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+  const n = Number(value);
+  if (!Number.isFinite(n)) throw new Error("Numeric values must be finite.");
+  return n;
+}
+
+function optionalPercentFromUi(value: unknown, label: string) {
+  const n = optionalNumber(value);
+  if (n === null) return null;
+  return validatePercentFraction(n / 100, label);
+}
+
+function settlementType(value: unknown): SettlementType {
+  if (
+    value === "company_driver" ||
+    value === "box_truck_driver" ||
+    value === "owner_operator" ||
+    value === "managed_investor" ||
+    value === "external_carrier_statement"
+  ) return value;
+  throw new Error("Invalid settlement type.");
+}
+
+function lineItemsForPersistence(result: ReturnType<typeof computeSettlement>) {
+  return result.lineItems.map((li, i) => ({
+    key: li.key,
+    label_en: li.labelEn,
+    label_tr: li.labelTr,
+    amount: li.amount,
+    is_our_revenue: li.isOurRevenue ?? false,
+    sort_order: i,
+  }));
+}
+
+function routeForLoad(load: any) {
+  return load.route || `${load.pickup_location ?? ""} -> ${load.delivery_location ?? ""}`.trim();
+}
+
+async function assertOrgRow(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  table: string,
+  id: string | null,
+  organizationId: string,
+  label: string,
+  select = "id",
+) {
+  if (!id) return null;
+  const { data, error } = await supabase
+    .from(table)
+    .select(select)
+    .eq("id", id)
+    .eq("organization_id", organizationId)
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error(`${label} does not belong to this organization.`);
+  return data as any;
+}
+
+async function buildSettlementPreview(input: SettlementInputPayload, organizationId: string) {
   const supabase = await createClient();
+  const type = settlementType(input.settlement_type);
+  const usageGroup = usageGroupForSettlementType(type);
+  const vehicleId = cleanId(input.vehicle_id);
+  const driverId = cleanId(input.driver_id);
+  const ownerId = cleanId(input.owner_id);
+  const companyId = cleanId(input.company_id);
+  const externalCarrierId = cleanId(input.external_carrier_id);
+  const weekStart = cleanDate(input.week_start);
+  const weekEnd = cleanDate(input.week_end);
+  const externalNetPay = optionalNumber(input.external_net_pay);
+  const overrides = {
+    driverPayPct: optionalPercentFromUi(input.ov_driver_pct, "Driver pay override"),
+    companyFeePct: optionalPercentFromUi(input.ov_company_pct, "Company fee override"),
+    commissionAmount: validateNonNegativeMoney(optionalNumber(input.ov_commission), "Commission override"),
+  };
 
-  const settlementType = String(formData.get("settlement_type")) as SettlementType;
-  const vehicleId = (formData.get("vehicle_id") as string) || null;
-  const driverId = (formData.get("driver_id") as string) || null;
-  const ownerId = (formData.get("owner_id") as string) || null;
-  const companyId = (formData.get("company_id") as string) || null;
-  const externalCarrierId = (formData.get("external_carrier_id") as string) || null;
-  const weekStart = (formData.get("week_start") as string) || null;
-  const weekEnd = (formData.get("week_end") as string) || null;
-  const externalNetPay = num(formData.get("external_net_pay"));
+  if (type === "external_carrier_statement") {
+    if (!externalCarrierId) throw new Error("External carrier is required.");
+    if (externalNetPay === null || externalNetPay < 0) throw new Error("External net pay must be zero or greater.");
+  } else {
+    if (!vehicleId) throw new Error("Vehicle is required.");
+    validateInclusivePeriod(weekStart, weekEnd);
+  }
+  if ((type === "company_driver" || type === "box_truck_driver") && !driverId) throw new Error("Driver is required.");
+  if (type === "owner_operator" && !ownerId) throw new Error("Owner is required.");
+  if (type === "managed_investor" && !ownerId) throw new Error("Investor is required.");
 
-  const ovDriver = num(formData.get("ov_driver_pct"));
-  const ovCompany = num(formData.get("ov_company_pct"));
-  const ovCommission = num(formData.get("ov_commission"));
+  const vehicle = await assertOrgRow(
+    supabase,
+    "vehicles",
+    vehicleId,
+    organizationId,
+    "Vehicle",
+    "*, companies!vehicles_company_id_fkey(id, name), people!vehicles_owner_id_fkey(id, full_name, type), external_carriers!vehicles_external_carrier_id_fkey(id, name)",
+  );
+  if (type === "box_truck_driver" && vehicle?.vehicle_type !== "box_truck") {
+    throw new Error("Box Truck Driver settlements require a box truck vehicle.");
+  }
 
-  // Resolve config inputs
-  const { data: vehicle } = vehicleId
-    ? await supabase.from("vehicles").select("*").eq("id", vehicleId).single()
-    : { data: null };
-  const personId = ownerId || driverId;
-  const { data: person } = personId
-    ? await supabase.from("people").select("*").eq("id", personId).single()
-    : { data: null };
+  const driver = await assertOrgRow(supabase, "people", driverId, organizationId, "Driver", "id, full_name, type, default_pay_pct");
+  if (driver && !["company_driver", "external_carrier_driver"].includes(driver.type)) {
+    throw new Error("Selected driver has an invalid person type.");
+  }
 
-  // Settings for default commission
+  const owner = await assertOrgRow(supabase, "people", ownerId, organizationId, "Owner / Investor", "id, full_name, type, default_pay_pct");
+  if (type === "owner_operator" && owner?.type !== "owner_operator") throw new Error("Owner Operator settlements require an owner_operator person.");
+  if (type === "managed_investor" && owner?.type !== "investor") throw new Error("Managed Investor settlements require an investor person.");
+
+  await assertOrgRow(supabase, "companies", companyId, organizationId, "Company", "id, name");
+  await assertOrgRow(supabase, "external_carriers", externalCarrierId, organizationId, "External carrier", "id, name");
+
   const { data: settings } = await supabase
-    .from("settings").select("default_commission").eq("organization_id", profile.organization_id).single();
+    .from("settings")
+    .select("default_commission")
+    .eq("organization_id", organizationId)
+    .maybeSingle();
 
-  const config = resolveConfig(
-    settlementType,
-    vehicle as any,
-    person as any,
+  const config: SettlementConfig = resolveConfig(
+    type,
+    vehicle,
+    owner ?? driver,
     {
-      driverPayPct: ovDriver === null ? undefined : ovDriver / 100,
-      companyFeePct: ovCompany === null ? undefined : ovCompany / 100,
-      commissionAmount: ovCommission === null ? undefined : ovCommission,
+      driverPayPct: overrides.driverPayPct,
+      companyFeePct: overrides.companyFeePct,
+      commissionAmount: overrides.commissionAmount,
     },
     settings?.default_commission ?? 250,
   );
 
-  // Gather loads + expenses for the period (skip for external carrier statement)
-  let loads: any[] = [];
-  let expenses: any[] = [];
-  if (settlementType !== "external_carrier_statement" && vehicleId && weekStart && weekEnd) {
-    const loadsRes = await supabase
+  const sources = {
+    driver_pay_pct: overrides.driverPayPct !== null ? "settlement_override" : vehicle?.default_driver_pay_pct != null ? "vehicle_settlement_configuration" : driver?.default_pay_pct != null ? "person_default" : "fallback",
+    company_fee_pct: overrides.companyFeePct !== null ? "settlement_override" : vehicle?.company_fee_pct != null ? "vehicle_settlement_configuration" : "fallback",
+    management_commission_amount: overrides.commissionAmount !== null ? "settlement_override" : vehicle?.management_commission_amount != null ? "vehicle_settlement_configuration" : "organization_default",
+  };
+
+  let availableLoads: PreviewRow[] = [];
+  let unavailableLoads: PreviewRow[] = [];
+  let availableExpenses: PreviewRow[] = [];
+  let unavailableExpenses: PreviewRow[] = [];
+
+  if (usageGroup && vehicleId && weekStart && weekEnd) {
+    const { data: loadsRaw, error: loadsError } = await supabase
       .from("loads")
       .select("*")
+      .eq("organization_id", organizationId)
       .eq("vehicle_id", vehicleId)
       .gte("delivery_date", weekStart)
       .lte("delivery_date", weekEnd)
-      .is("settlement_id", null)
-      .in("status", ["delivered", "paid", "booked"]);
-    loads = loadsRes.data ?? [];
+      .order("delivery_date", { ascending: true });
+    if (loadsError) throw new Error(loadsError.message);
 
-    const expRes = await supabase
+    const loads = loadsRaw ?? [];
+    const loadIds = loads.map((load: any) => load.id);
+    const activeLoadIds = new Set<string>();
+    if (loadIds.length > 0) {
+      const { data: links, error } = await supabase
+        .from("settlement_load_links")
+        .select("load_id")
+        .eq("organization_id", organizationId)
+        .in("usage_group", activeUsageGroupsBlockedBy(usageGroup))
+        .is("released_at", null)
+        .in("load_id", loadIds);
+      if (error) throw new Error(error.message);
+      for (const link of links ?? []) activeLoadIds.add((link as any).load_id);
+    }
+
+    for (const load of loads) {
+      const gross = Number(load.gross_amount);
+      let unavailableReason = "";
+      if (!(ELIGIBLE_LOAD_STATUSES as readonly string[]).includes(load.status)) unavailableReason = "invalid load status";
+      else if (!Number.isFinite(gross) || gross < 0) unavailableReason = "invalid gross amount";
+      else if (activeLoadIds.has(load.id)) unavailableReason = "already used in this usage group";
+      const row = { ...load, unavailable_reason: unavailableReason || undefined };
+      if (unavailableReason) unavailableLoads.push(row);
+      else availableLoads.push(row);
+    }
+
+    const { data: expensesRaw, error: expensesError } = await supabase
       .from("expenses")
       .select("*")
+      .eq("organization_id", organizationId)
       .eq("vehicle_id", vehicleId)
       .gte("date", weekStart)
       .lte("date", weekEnd)
-      .is("settlement_id", null)
-      .eq("deduct_from_settlement", true);
-    const allExpenses: any[] = expRes.data ?? [];
+      .eq("deduct_from_settlement", true)
+      .order("date", { ascending: true });
+    if (expensesError) throw new Error(expensesError.message);
 
-    // Filter expenses by targeting flags. An expense with none of the targeting
-    // flags set is considered universal (applies to any settlement type).
-    // If at least one targeting flag is set, it only applies to matching types.
-    expenses = allExpenses.filter((e) => {
-      const hasTargeting = e.deduct_from_driver || e.deduct_from_owner || e.deduct_from_investor;
-      if (!hasTargeting) return true;
-      if (settlementType === "company_driver" || settlementType === "box_truck_driver") {
-        return e.deduct_from_driver;
-      }
-      if (settlementType === "owner_operator") {
-        return e.deduct_from_owner;
-      }
-      if (settlementType === "managed_investor") {
-        return e.deduct_from_investor;
-      }
-      return false;
-    });
+    const expenses = expensesRaw ?? [];
+    const expenseIds = expenses.map((expense: any) => expense.id);
+    const activeExpenseIds = new Set<string>();
+    if (expenseIds.length > 0) {
+      const { data: links, error } = await supabase
+        .from("settlement_expense_links")
+        .select("expense_id")
+        .eq("organization_id", organizationId)
+        .in("usage_group", activeUsageGroupsBlockedBy(usageGroup))
+        .is("released_at", null)
+        .in("expense_id", expenseIds);
+      if (error) throw new Error(error.message);
+      for (const link of links ?? []) activeExpenseIds.add((link as any).expense_id);
+    }
+
+    for (const expense of expenses) {
+      let unavailableReason = "";
+      if (!expenseAppliesToUsageGroup(expense, usageGroup)) unavailableReason = "wrong expense targeting";
+      else if (activeExpenseIds.has(expense.id)) unavailableReason = "already used in this usage group";
+      const row = { ...expense, targeting_reason: expenseTargetingReason(expense), unavailable_reason: unavailableReason || undefined };
+      if (unavailableReason) unavailableExpenses.push(row);
+      else availableExpenses.push(row);
+    }
   }
 
-  const loadInputs: LoadInput[] = loads.map((l) => ({
-    id: l.id,
-    reference: l.load_number,
-    route: l.route || `${l.pickup_location ?? ""} -> ${l.delivery_location ?? ""}`,
-    type: l.load_source,
-    grossAmount: Number(l.gross_amount) || 0,
+  const selectedLoadIds = new Set(input.selected_load_ids ?? availableLoads.map((load) => load.id));
+  const selectedExpenseIds = new Set(input.selected_expense_ids ?? availableExpenses.map((expense) => expense.id));
+  const selectedLoads = availableLoads.filter((load) => selectedLoadIds.has(load.id));
+  const selectedExpenses = availableExpenses.filter((expense) => selectedExpenseIds.has(expense.id));
+  const staleLoadIds = [...selectedLoadIds].filter((id) => !availableLoads.some((load) => load.id === id));
+  const staleExpenseIds = [...selectedExpenseIds].filter((id) => !availableExpenses.some((expense) => expense.id === id));
+
+  const loadInputs: LoadInput[] = selectedLoads.map((load) => ({
+    id: load.id,
+    reference: load.load_number,
+    route: routeForLoad(load),
+    type: load.load_source,
+    grossAmount: Number(load.gross_amount) || 0,
   }));
-  const expenseInputs: ExpenseInput[] = expenses.map((e) => ({
-    category: e.category,
-    amount: Number(e.amount) || 0,
+  const expenseInputs: ExpenseInput[] = selectedExpenses.map((expense) => ({
+    category: expense.category,
+    amount: Number(expense.amount) || 0,
+    labelEn: expense.notes || expense.category,
+    labelTr: expense.notes || expense.category,
   }));
 
   const result = computeSettlement({
@@ -116,68 +291,236 @@ export async function createSettlement(
     expenses: expenseInputs,
     externalNetPay: externalNetPay ?? undefined,
   });
-
-  // Persist settlement atomically in the database.
-  const lineItems = result.lineItems.map((li, i) => ({
-    key: li.key,
-    label_en: li.labelEn,
-    label_tr: li.labelTr,
-    amount: li.amount,
-    is_our_revenue: li.isOurRevenue ?? false,
-    sort_order: i,
-  }));
-
-  const { data: settlementId, error } = await supabase.rpc("create_settlement_atomic", {
-    p_settlement_type: settlementType,
-    p_company_id: companyId,
-    p_external_carrier_id: externalCarrierId,
-    p_vehicle_id: vehicleId,
-    p_driver_id: driverId,
-    p_owner_id: ownerId,
-    p_week_start: weekStart,
-    p_week_end: weekEnd,
-    p_config: config as any,
-    p_gross_revenue: result.grossRevenue,
-    p_total_deductions: result.totalDeductions,
-    p_our_commission_earned: result.ourCommissionEarned,
-    p_net_pay: result.netPay,
-    p_external_net_pay: externalNetPay,
-    p_line_items: lineItems,
-    p_load_ids: loads.map((l) => l.id),
-    p_expense_ids: expenses.map((e) => e.id),
+  const configForPersistence = configSnapshot(config, sources);
+  const lineItems = lineItemsForPersistence(result);
+  const revision = stableSettlementRevision({
+    business: { type, usageGroup, vehicleId, driverId, ownerId, companyId, externalCarrierId, weekStart, weekEnd, externalNetPay },
+    overrides,
+    config: configForPersistence,
+    selectedLoads: selectedLoads.map((load) => ({
+      id: load.id,
+      vehicle_id: load.vehicle_id,
+      driver_id: load.driver_id,
+      status: load.status,
+      load_number: load.load_number,
+      delivery_date: load.delivery_date,
+      gross_amount: load.gross_amount,
+      total_miles: load.total_miles,
+      company_id: load.company_id,
+      external_carrier_id: load.external_carrier_id,
+    })),
+    selectedExpenses: selectedExpenses.map((expense) => ({
+      id: expense.id,
+      vehicle_id: expense.vehicle_id,
+      driver_id: expense.driver_id,
+      owner_id: expense.owner_id,
+      date: expense.date,
+      category: expense.category,
+      amount: expense.amount,
+      deduct_from_settlement: expense.deduct_from_settlement,
+      deduct_from_driver: expense.deduct_from_driver,
+      deduct_from_owner: expense.deduct_from_owner,
+      deduct_from_investor: expense.deduct_from_investor,
+      company_id: expense.company_id,
+      external_carrier_id: expense.external_carrier_id,
+    })),
+    result: {
+      grossRevenue: result.grossRevenue,
+      totalDeductions: result.totalDeductions,
+      ourCommissionEarned: result.ourCommissionEarned,
+      netPay: result.netPay,
+      calculationBaseAmount: result.calculationBaseAmount,
+      calculationBaseLabel: result.calculationBaseLabel,
+      payableLabel: result.payableLabel,
+      calculationRows: result.calculationRows,
+    },
+    lineItems,
   });
 
-  if (error || !settlementId) {
-    return { error: error?.message ?? "Settlement oluşturulamadı." };
+  return {
+    input: { type, usageGroup, vehicleId, driverId, ownerId, companyId, externalCarrierId, weekStart, weekEnd, externalNetPay },
+    config,
+    configSnapshot: configForPersistence,
+    availableLoads,
+    unavailableLoads,
+    availableExpenses,
+    unavailableExpenses,
+    selectedLoadIds: selectedLoads.map((load) => load.id),
+    selectedExpenseIds: selectedExpenses.map((expense) => expense.id),
+    staleLoadIds,
+    staleExpenseIds,
+    revision,
+    result,
+    lineItems,
+    warnings: [
+      selectedLoads.length === 0 && usageGroup ? "No eligible loads selected." : null,
+      staleLoadIds.length > 0 || staleExpenseIds.length > 0 ? "Selection changed since preview." : null,
+    ].filter(Boolean),
+  };
+}
+
+export async function previewSettlement(input: SettlementInputPayload) {
+  try {
+    const profile = await requireWriteRole();
+    return { ok: true as const, preview: await buildSettlementPreview(input, profile.organization_id) };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function createSettlementFromSelection(input: SettlementInputPayload): Promise<{ ok: false; error: string } | void> {
+  let settlementId: string | null = null;
+  try {
+    const profile = await requireWriteRole();
+    const preview = await buildSettlementPreview(input, profile.organization_id);
+    if (preview.staleLoadIds.length > 0 || preview.staleExpenseIds.length > 0) {
+      return { ok: false, error: STALE_SETTLEMENT_PREVIEW_MESSAGE };
+    }
+    if (!input.preview_revision || input.preview_revision !== preview.revision) {
+      return { ok: false, error: STALE_SETTLEMENT_PREVIEW_MESSAGE };
+    }
+
+    const service = createServiceClient();
+    const { data, error } = await service.rpc("create_settlement_with_links_atomic", {
+      p_organization_id: profile.organization_id,
+      p_created_by: profile.id,
+      p_settlement_type: preview.input.type,
+      p_usage_group: preview.input.usageGroup,
+      p_company_id: preview.input.companyId,
+      p_external_carrier_id: preview.input.externalCarrierId,
+      p_vehicle_id: preview.input.vehicleId,
+      p_driver_id: preview.input.driverId,
+      p_owner_id: preview.input.ownerId,
+      p_week_start: preview.input.weekStart,
+      p_week_end: preview.input.weekEnd,
+      p_config: preview.configSnapshot as any,
+      p_gross_revenue: preview.result.grossRevenue,
+      p_total_deductions: preview.result.totalDeductions,
+      p_our_commission_earned: preview.result.ourCommissionEarned,
+      p_net_pay: preview.result.netPay,
+      p_external_net_pay: preview.input.externalNetPay,
+      p_line_items: preview.lineItems as any,
+      p_load_ids: preview.selectedLoadIds,
+      p_expense_ids: preview.selectedExpenseIds,
+    });
+    if (error) return { ok: false, error: error.message };
+    settlementId = data as string;
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
   revalidatePath("/settlements");
   redirect(`/settlements/${settlementId}`);
 }
 
-export async function setSettlementStatus(id: string, status: string) {
-  await requireWriteRole();
-  const supabase = await createClient();
-  // Lock: a paid settlement can only be voided.
-  const { data: cur } = await supabase.from("settlements").select("status").eq("id", id).single();
-  if (cur?.status === "paid" && status !== "void")
-    return { error: "Paid settlement düzenlenemez." };
-  const { error } = await supabase.from("settlements").update({ status }).eq("id", id);
-  if (error) return { error: error.message };
-  revalidatePath(`/settlements/${id}`);
+export async function updateSettlementStatus(id: string, status: string) {
+  try {
+    await requireWriteRole();
+    const supabase = await createClient();
+    const { data: current, error: readError } = await supabase.from("settlements").select("status").eq("id", id).single();
+    if (readError) return { error: readError.message };
+    if (!canTransitionSettlementStatus(current.status, status)) return { error: "Invalid settlement status transition." };
+    const { error } = await supabase.rpc("transition_settlement_status", {
+      p_settlement_id: id,
+      p_new_status: status,
+      p_void_reason: null,
+    });
+    if (error) return { error: error.message };
+    revalidatePath(`/settlements/${id}`);
+    revalidatePath("/settlements");
+    return { ok: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function voidSettlement(id: string, reason: string) {
+  try {
+    await requireWriteRole();
+    const trimmed = reason.trim();
+    if (trimmed.length < 3) return { error: "Void reason is required." };
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("transition_settlement_status", {
+      p_settlement_id: id,
+      p_new_status: "void",
+      p_void_reason: trimmed,
+    });
+    if (error) return { error: error.message };
+    revalidatePath(`/settlements/${id}`);
+    revalidatePath("/settlements");
+    return { ok: true };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function deleteDraftSettlement(id: string) {
+  try {
+    await requireWriteRole();
+    const supabase = await createClient();
+    const { error } = await supabase.rpc("delete_draft_settlement", { p_settlement_id: id });
+    if (error) return { error: error.message };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
   revalidatePath("/settlements");
-  return { ok: true };
+  redirect("/settlements");
+}
+
+export async function saveVehicleSettlementConfig(input: Record<string, unknown>) {
+  try {
+    const profile = await requireWriteRole();
+    const vehicleId = cleanId(input.vehicle_id);
+    if (!vehicleId) return { ok: false as const, error: "Vehicle is required." };
+    const ownershipType = String(input.ownership_type || "");
+    if (!["company_owned", "owner_operator", "investor_managed", "external_carrier_statement", "partner_carrier"].includes(ownershipType)) {
+      return { ok: false as const, error: "Invalid ownership type." };
+    }
+    const commissionType = String(input.management_commission_type || "none");
+    if (!["none", "flat", "percent"].includes(commissionType)) return { ok: false as const, error: "Invalid commission type." };
+
+    const companyId = cleanId(input.company_id);
+    const ownerId = cleanId(input.owner_id);
+    const externalCarrierId = cleanId(input.external_carrier_id);
+    const supabase = await createClient();
+    await assertOrgRow(supabase, "vehicles", vehicleId, profile.organization_id, "Vehicle");
+    await assertOrgRow(supabase, "companies", companyId, profile.organization_id, "Company");
+    await assertOrgRow(supabase, "people", ownerId, profile.organization_id, "Owner / Investor");
+    await assertOrgRow(supabase, "external_carriers", externalCarrierId, profile.organization_id, "External carrier");
+
+    const commissionAmount = commissionType === "percent"
+      ? validatePercentFraction((optionalNumber(input.management_commission_amount) ?? 0) / 100, "Management commission")
+      : validateNonNegativeMoney(optionalNumber(input.management_commission_amount) ?? 0, "Management commission");
+
+    const patch = {
+      ownership_type: ownershipType,
+      company_id: companyId,
+      owner_id: ownerId,
+      external_carrier_id: externalCarrierId,
+      default_driver_pay_pct: optionalPercentFromUi(input.default_driver_pay_pct, "Default driver pay"),
+      company_fee_pct: optionalPercentFromUi(input.company_fee_pct, "Company fee"),
+      company_fee_is_our_revenue: input.company_fee_is_our_revenue === "on" || input.company_fee_is_our_revenue === true,
+      external_carrier_fee_pct: optionalPercentFromUi(input.external_carrier_fee_pct, "External carrier fee"),
+      management_commission_type: commissionType,
+      management_commission_amount: commissionType === "percent" ? commissionAmount : commissionAmount,
+    };
+    const { error } = await supabase
+      .from("vehicles")
+      .update(patch)
+      .eq("id", vehicleId)
+      .eq("organization_id", profile.organization_id);
+    if (error) return { ok: false as const, error: error.message };
+    revalidatePath("/settlements/settings");
+    revalidatePath("/settlements");
+    return { ok: true as const };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function setSettlementStatus(id: string, status: string) {
+  return updateSettlementStatus(id, status);
 }
 
 export async function deleteSettlement(id: string) {
-  await requireWriteRole();
-  const supabase = await createClient();
-  const { data: s } = await supabase.from("settlements").select("status").eq("id", id).single();
-  if (s?.status === "finalized" || s?.status === "paid")
-    return { error: "Finalized/Paid settlement silinemez." };
-  // Release linked loads/expenses
-  await supabase.from("loads").update({ settlement_id: null }).eq("settlement_id", id);
-  await supabase.from("expenses").update({ settlement_id: null }).eq("settlement_id", id);
-  await supabase.from("settlements").delete().eq("id", id);
-  revalidatePath("/settlements");
-  redirect("/settlements");
+  return deleteDraftSettlement(id);
 }

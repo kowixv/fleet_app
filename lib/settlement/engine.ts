@@ -75,10 +75,32 @@ export interface LineItem {
   isOurRevenue?: boolean;
 }
 
+export interface CalculationRow {
+  key: string;
+  labelEn: string;
+  labelTr: string;
+  amount: number;
+  role: "gross" | "base" | "addition" | "deduction" | "net";
+  isOurRevenue?: boolean;
+}
+
+export interface RateSummary {
+  key: string;
+  label: string;
+  value: number | null;
+  source?: string;
+}
+
 export interface SettlementResult {
   settlementType: SettlementType;
   payee: Payee;
   grossRevenue: number;
+  calculationBaseLabel: string;
+  calculationBaseAmount: number;
+  payableLabel: string;
+  payableAmount: number;
+  calculationRows: CalculationRow[];
+  rateSummaries: RateSummary[];
   lineItems: LineItem[];
   totalDeductions: number; // sum of the negative line items, as a positive number
   ourCommissionEarned: number;
@@ -111,6 +133,14 @@ function commissionAmount(c: ManagementCommission, base: number): number {
   if (c.onlyIfPositiveBase && base <= 0) return 0;
   if (c.type === "flat") return round2(c.amount);
   return round2(base * c.amount); // percent
+}
+
+function rate(key: string, label: string, value: number | null): RateSummary {
+  return { key, label, value };
+}
+
+function netRow(labelEn: string, labelTr: string, amount: number): CalculationRow {
+  return { key: "net_pay", labelEn, labelTr, amount, role: "net" };
 }
 
 /**
@@ -146,6 +176,33 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
       settlementType: t,
       payee: "carrier",
       grossRevenue: externalNet,
+      calculationBaseLabel: "External Carrier Net",
+      calculationBaseAmount: externalNet,
+      payableLabel: "Final Carrier Payment",
+      payableAmount: externalNet,
+      calculationRows: [
+        {
+          key: "external_net_pay",
+          labelEn: "External Carrier Net",
+          labelTr: "Dis carrier net odeme",
+          amount: externalNet,
+          role: "base",
+        },
+        ...(commission > 0
+          ? [{
+              key: "our_commission",
+              labelEn: "Management Commission",
+              labelTr: "Yonetim komisyonu",
+              amount: -commission,
+              role: "deduction" as const,
+              isOurRevenue: true,
+            }]
+          : []),
+        netRow("Final Carrier Payment", "Final carrier odemesi", round2(externalNet - commission)),
+      ],
+      rateSummaries: [
+        rate("management_commission", "Management Commission", config.managementCommission.amount),
+      ],
       lineItems,
       totalDeductions: commission,
       ourCommissionEarned: commission,
@@ -173,6 +230,29 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
       settlementType: t,
       payee: "driver",
       grossRevenue: gross,
+      calculationBaseLabel: "Driver Gross Pay",
+      calculationBaseAmount: driverPay,
+      payableLabel: "Net Driver Pay",
+      payableAmount: driverPay,
+      calculationRows: [
+        {
+          key: "fleet_gross",
+          labelEn: "Fleet Gross Revenue",
+          labelTr: "Fleet brut gelir",
+          amount: gross,
+          role: "gross",
+        },
+        {
+          key: "driver_pay",
+          labelEn: `Driver Gross Pay (${(pct * 100).toFixed(0)}%)`,
+          labelTr: `Sofor brut payi (%${(pct * 100).toFixed(0)})`,
+          amount: driverPay,
+          role: "base",
+        },
+        ...expenses.map((e) => ({ ...expenseLine(e), role: "deduction" as const })),
+        netRow("Net Driver Pay", "Net sofor odemesi", round2(driverPay - deductions)),
+      ],
+      rateSummaries: [rate("driver_pay_pct", "Driver Pay", pct)],
       lineItems,
       totalDeductions: deductions,
       ourCommissionEarned: 0,
@@ -209,6 +289,28 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
       settlementType: t,
       payee: "owner",
       grossRevenue: gross,
+      calculationBaseLabel: "Gross Revenue",
+      calculationBaseAmount: gross,
+      payableLabel: "Net Owner Pay",
+      payableAmount: gross,
+      calculationRows: [
+        {
+          key: "gross_revenue",
+          labelEn: "Gross Revenue",
+          labelTr: "Brut gelir",
+          amount: gross,
+          role: "base",
+        },
+        ...lineItems.map((li) => ({
+          ...li,
+          role: li.amount < 0 ? "deduction" as const : "addition" as const,
+        })),
+        netRow("Net Owner Pay", "Net owner odemesi", round2(gross - companyFee - expenseTotal - commission)),
+      ],
+      rateSummaries: [
+        rate("company_fee_pct", "Company Fee", config.companyFeePct),
+        rate("management_commission", "Management Commission", config.managementCommission.amount),
+      ],
       lineItems,
       totalDeductions: round2(companyFee + expenseTotal + commission),
       ourCommissionEarned: round2((feeIsOurs ? companyFee : 0) + commission),
@@ -251,6 +353,29 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     settlementType: "managed_investor",
     payee: "investor",
     grossRevenue: gross,
+    calculationBaseLabel: "Gross Revenue",
+    calculationBaseAmount: gross,
+    payableLabel: "Net Investor Profit",
+    payableAmount: gross,
+    calculationRows: [
+      {
+        key: "gross_revenue",
+        labelEn: "Gross Revenue",
+        labelTr: "Brut gelir",
+        amount: gross,
+        role: "base",
+      },
+      ...lineItems.map((li) => ({
+        ...li,
+        role: li.amount < 0 ? "deduction" as const : "addition" as const,
+      })),
+      netRow("Net Investor Profit", "Net investor kari", round2(gross - extFee - driverPay - expenseTotal - commission)),
+    ],
+    rateSummaries: [
+      rate("external_carrier_fee_pct", "External Carrier Fee", config.externalCarrierFeePct),
+      rate("driver_pay_pct", "Driver Pay", config.driverPayPct ?? 0),
+      rate("management_commission", "Management Commission", config.managementCommission.amount),
+    ],
     lineItems,
     totalDeductions: round2(extFee + driverPay + expenseTotal + commission),
     ourCommissionEarned: commission,

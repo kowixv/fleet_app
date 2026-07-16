@@ -10,6 +10,7 @@ const NAV: { href: string; label: string; group?: string }[] = [
   { href: "/tracking", label: "🗺 Tracking" },
   { href: "/expenses", label: "Expenses" },
   { href: "/settlements", label: "Settlements" },
+  { href: "/settlements/settings", label: "Settlement Settings" },
   { href: "/vehicles", label: "Vehicles / Units", group: "Kayıtlar" },
   { href: "/people", label: "Drivers / Owners" },
   { href: "/companies", label: "Companies" },

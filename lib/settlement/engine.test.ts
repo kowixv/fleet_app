@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { computeSettlement, type SettlementInput } from "./engine";
+import { displayedCalculationReconciles } from "./workflow";
 
 describe("settlement engine — brief examples", () => {
   it("Model 1: company driver (976.19 * 33% = 322.14)", () => {
@@ -18,6 +19,9 @@ describe("settlement engine — brief examples", () => {
     expect(r.grossRevenue).toBe(976.19);
     expect(r.netPay).toBe(322.14);
     expect(r.ourCommissionEarned).toBe(0);
+    expect(r.calculationBaseLabel).toBe("Driver Gross Pay");
+    expect(r.calculationBaseAmount).toBe(322.14);
+    expect(displayedCalculationReconciles(r)).toBe(true);
   });
 
   it("Model 2: box truck driver (relay 357.81 + street 1600 = 1957.81 * 20% = 391.56)", () => {
@@ -97,6 +101,9 @@ describe("settlement engine — brief examples", () => {
     });
     expect(r.netPay).toBe(6421.19);
     expect(r.ourCommissionEarned).toBe(250);
+    expect(r.calculationBaseLabel).toBe("External Carrier Net");
+    expect(r.calculationRows.filter((row) => row.key === "external_net_pay")).toHaveLength(1);
+    expect(displayedCalculationReconciles(r)).toBe(true);
   });
 
   it("Model 5 rule: no commission when external net <= 0", () => {
@@ -128,5 +135,39 @@ describe("settlement engine — brief examples", () => {
     });
     const sum = r.lineItems.reduce((s, l) => s + l.amount, r.grossRevenue);
     expect(r.netPay).toBe(Math.round(sum * 100) / 100);
+    expect(displayedCalculationReconciles(r)).toBe(true);
+  });
+
+  it("supports zero gross and negative net after deductions", () => {
+    const r = computeSettlement({
+      config: {
+        settlementType: "company_driver",
+        companyFeePct: 0,
+        driverPayPct: 0,
+        externalCarrierFeePct: 0,
+        managementCommission: { type: "none", amount: 0 },
+      },
+      loads: [{ grossAmount: 0 }],
+      expenses: [{ category: "fuel", amount: 50 }],
+    });
+    expect(r.grossRevenue).toBe(0);
+    expect(r.netPay).toBe(-50);
+    expect(displayedCalculationReconciles(r)).toBe(true);
+  });
+
+  it("keeps explicit zero override behavior in the resolved config shape", () => {
+    const r = computeSettlement({
+      config: {
+        settlementType: "owner_operator",
+        companyFeePct: 0,
+        driverPayPct: null,
+        externalCarrierFeePct: 0,
+        managementCommission: { type: "none", amount: 0 },
+      },
+      loads: [{ grossAmount: 1000 }],
+      expenses: [],
+    });
+    expect(r.netPay).toBe(1000);
+    expect(r.totalDeductions).toBe(0);
   });
 });

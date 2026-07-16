@@ -13,6 +13,13 @@ import {
   type SettlementType,
 } from "@/lib/settlement/engine";
 import { resolveConfig } from "@/lib/settlement/resolve";
+import { STALE_SETTLEMENT_PREVIEW_MESSAGE, stableSettlementRevision } from "@/lib/settlement/revision";
+import {
+  activeUsageGroupsBlockedBy,
+  configSnapshot,
+  expenseAppliesToUsageGroup,
+  usageGroupForSettlementType,
+} from "@/lib/settlement/workflow";
 import { usd } from "@/lib/format";
 import { localISODate } from "@/lib/format";
 import { escapeHtml } from "@/lib/telegram";
@@ -30,6 +37,11 @@ export interface PendingCommand {
 }
 
 type Result = { ok: boolean; message: string };
+type PreparedSettlement = Result & {
+  payload?: Record<string, unknown>;
+  rpc?: Record<string, unknown>;
+  revision?: string;
+};
 
 const PERSON_TYPES = ["company_driver", "owner_operator", "investor", "external_carrier_driver"];
 const VEHICLE_TYPES = ["truck", "box_truck", "hotshot", "trailer", "other"];
@@ -67,6 +79,18 @@ async function findVehicle(supabase: any, orgId: string, unit: unknown) {
     .eq("organization_id", orgId)
     .ilike("unit_number", u);
   return { row: data?.[0] ?? null, count: data?.length ?? 0 };
+}
+async function findSettlementVehicle(supabase: any, orgId: string, data: Record<string, unknown>) {
+  const vehicleId = str(data.vehicle_id);
+  if (vehicleId) {
+    const { data: rows } = await supabase
+      .from("vehicles")
+      .select("*")
+      .eq("organization_id", orgId)
+      .eq("id", vehicleId);
+    return { row: rows?.[0] ?? null, count: rows?.length ?? 0 };
+  }
+  return findVehicle(supabase, orgId, data.vehicle_unit);
 }
 async function findPerson(supabase: any, orgId: string, name: unknown) {
   const n = str(name);
@@ -289,15 +313,20 @@ function deriveSettlementType(vehicle: any, override: unknown): SettlementType {
 
 /**
  * Resolve a vehicle + week, gather unsettled loads/expenses, compute the
- * settlement, and return a preview message plus a payload ready for the RPC.
+ * settlement, and return a preview message plus a confirmation-safe payload.
  * Returns ok:false (no payload) when something is missing.
  */
-export async function prepareSettlement(
+function stringArray(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.map((item) => str(item)).filter(Boolean) as string[];
+}
+
+async function buildPreparedSettlement(
   supabase: any,
   orgId: string,
   data: Record<string, unknown>,
-): Promise<Result & { payload?: Record<string, unknown> }> {
-  const veh = await findVehicle(supabase, orgId, data.vehicle_unit);
+): Promise<PreparedSettlement> {
+  const veh = await findSettlementVehicle(supabase, orgId, data);
   if (!veh.row) return { ok: false, message: `Araç bulunamadı: ${escapeHtml(str(data.vehicle_unit) ?? "")}` };
   if (veh.count > 1) return { ok: false, message: "Birden fazla araç eşleşti; lütfen belirginleştirin." };
   const vehicle = veh.row;
@@ -327,16 +356,38 @@ export async function prepareSettlement(
   // Gather unsettled loads + expenses in the period (skip for external statements).
   let loads: any[] = [];
   let expenses: any[] = [];
+  const selectedLoadIds = stringArray(data.selected_load_ids);
+  const selectedExpenseIds = stringArray(data.selected_expense_ids);
   if (settlementType !== "external_carrier_statement") {
+    const usageGroup = usageGroupForSettlementType(settlementType);
+    if (!usageGroup) return { ok: false, message: "Bu settlement tipi normal load/expense kullanmaz." };
     const loadsRes = await supabase
       .from("loads").select("*")
       .eq("organization_id", orgId)
       .eq("vehicle_id", vehicle.id)
       .gte("delivery_date", range.start)
       .lte("delivery_date", range.end)
-      .is("settlement_id", null)
-      .in("status", ["delivered", "paid", "booked"]);
-    loads = loadsRes.data ?? [];
+      .in("status", ["delivered", "paid"]);
+    const candidateLoads = loadsRes.data ?? [];
+    if (candidateLoads.length > 0) {
+      const { data: activeLinks } = await supabase
+        .from("settlement_load_links")
+        .select("load_id")
+        .eq("organization_id", orgId)
+        .in("usage_group", activeUsageGroupsBlockedBy(usageGroup))
+        .is("released_at", null)
+        .in("load_id", candidateLoads.map((load: any) => load.id));
+      const used = new Set((activeLinks ?? []).map((link: any) => link.load_id));
+      loads = candidateLoads.filter((load: any) => !used.has(load.id));
+    }
+    if (selectedLoadIds) {
+      const availableLoadIds = new Set(loads.map((load: any) => load.id));
+      if (selectedLoadIds.some((id) => !availableLoadIds.has(id))) {
+        return { ok: false, message: STALE_SETTLEMENT_PREVIEW_MESSAGE };
+      }
+      const selected = new Set(selectedLoadIds);
+      loads = loads.filter((load: any) => selected.has(load.id));
+    }
 
     const expRes = await supabase
       .from("expenses").select("*")
@@ -344,17 +395,28 @@ export async function prepareSettlement(
       .eq("vehicle_id", vehicle.id)
       .gte("date", range.start)
       .lte("date", range.end)
-      .is("settlement_id", null)
       .eq("deduct_from_settlement", true);
     const allExpenses: any[] = expRes.data ?? [];
-    expenses = allExpenses.filter((e) => {
-      const hasTargeting = e.deduct_from_driver || e.deduct_from_owner || e.deduct_from_investor;
-      if (!hasTargeting) return true;
-      if (settlementType === "company_driver" || settlementType === "box_truck_driver") return e.deduct_from_driver;
-      if (settlementType === "owner_operator") return e.deduct_from_owner;
-      if (settlementType === "managed_investor") return e.deduct_from_investor;
-      return false;
-    });
+    const targetedExpenses = allExpenses.filter((e) => expenseAppliesToUsageGroup(e, usageGroup));
+    if (targetedExpenses.length > 0) {
+      const { data: activeLinks } = await supabase
+        .from("settlement_expense_links")
+        .select("expense_id")
+        .eq("organization_id", orgId)
+        .in("usage_group", activeUsageGroupsBlockedBy(usageGroup))
+        .is("released_at", null)
+        .in("expense_id", targetedExpenses.map((expense: any) => expense.id));
+      const used = new Set((activeLinks ?? []).map((link: any) => link.expense_id));
+      expenses = targetedExpenses.filter((expense: any) => !used.has(expense.id));
+    }
+    if (selectedExpenseIds) {
+      const availableExpenseIds = new Set(expenses.map((expense: any) => expense.id));
+      if (selectedExpenseIds.some((id) => !availableExpenseIds.has(id))) {
+        return { ok: false, message: STALE_SETTLEMENT_PREVIEW_MESSAGE };
+      }
+      const selected = new Set(selectedExpenseIds);
+      expenses = expenses.filter((expense: any) => selected.has(expense.id));
+    }
   }
 
   if (loads.length === 0 && settlementType !== "external_carrier_statement") {
@@ -376,6 +438,8 @@ export async function prepareSettlement(
   }));
 
   const result = computeSettlement({ config, loads: loadInputs, expenses: expenseInputs });
+  const usageGroup = usageGroupForSettlementType(settlementType);
+  const configForPersistence = configSnapshot(config);
   const lineItems = result.lineItems.map((li, i) => ({
     key: li.key,
     label_en: li.labelEn,
@@ -384,27 +448,101 @@ export async function prepareSettlement(
     is_our_revenue: li.isOurRevenue ?? false,
     sort_order: i,
   }));
+  const revision = stableSettlementRevision({
+    business: {
+      organization_id: orgId,
+      settlement_type: settlementType,
+      usage_group: usageGroup,
+      vehicle_id: vehicle.id,
+      driver_id: vehicle.assigned_driver_id ?? null,
+      owner_id: vehicle.owner_id ?? null,
+      company_id: vehicle.company_id ?? null,
+      external_carrier_id: vehicle.external_carrier_id ?? null,
+      week_start: range.start,
+      week_end: range.end,
+      external_net_pay: null,
+    },
+    config: configForPersistence,
+    selectedLoads: loads.map((load: any) => ({
+      id: load.id,
+      vehicle_id: load.vehicle_id,
+      driver_id: load.driver_id,
+      status: load.status,
+      load_number: load.load_number,
+      delivery_date: load.delivery_date,
+      gross_amount: load.gross_amount,
+      total_miles: load.total_miles,
+      company_id: load.company_id,
+      external_carrier_id: load.external_carrier_id,
+    })),
+    selectedExpenses: expenses.map((expense: any) => ({
+      id: expense.id,
+      vehicle_id: expense.vehicle_id,
+      driver_id: expense.driver_id,
+      owner_id: expense.owner_id,
+      date: expense.date,
+      category: expense.category,
+      amount: expense.amount,
+      deduct_from_settlement: expense.deduct_from_settlement,
+      deduct_from_driver: expense.deduct_from_driver,
+      deduct_from_owner: expense.deduct_from_owner,
+      deduct_from_investor: expense.deduct_from_investor,
+      company_id: expense.company_id,
+      external_carrier_id: expense.external_carrier_id,
+    })),
+    result: {
+      grossRevenue: result.grossRevenue,
+      totalDeductions: result.totalDeductions,
+      ourCommissionEarned: result.ourCommissionEarned,
+      netPay: result.netPay,
+      calculationBaseAmount: result.calculationBaseAmount,
+      calculationBaseLabel: result.calculationBaseLabel,
+      payableLabel: result.payableLabel,
+      calculationRows: result.calculationRows,
+    },
+    lineItems,
+  });
 
+  const rpc = {
+    p_organization_id: orgId,
+    p_created_by: null,
+    p_settlement_type: settlementType,
+    p_usage_group: usageGroup,
+    p_company_id: vehicle.company_id ?? null,
+    p_external_carrier_id: vehicle.external_carrier_id ?? null,
+    p_vehicle_id: vehicle.id,
+    p_driver_id: vehicle.assigned_driver_id ?? null,
+    p_owner_id: vehicle.owner_id ?? null,
+    p_week_start: range.start,
+    p_week_end: range.end,
+    p_config: configForPersistence,
+    p_gross_revenue: result.grossRevenue,
+    p_total_deductions: result.totalDeductions,
+    p_our_commission_earned: result.ourCommissionEarned,
+    p_net_pay: result.netPay,
+    p_external_net_pay: null,
+    p_line_items: lineItems,
+    p_load_ids: loads.map((l) => l.id),
+    p_expense_ids: expenses.map((e) => e.id),
+  };
   const payload = {
-    rpc: {
-      p_settlement_type: settlementType,
-      p_company_id: vehicle.company_id ?? null,
-      p_external_carrier_id: vehicle.external_carrier_id ?? null,
-      p_vehicle_id: vehicle.id,
-      p_driver_id: vehicle.assigned_driver_id ?? null,
-      p_owner_id: vehicle.owner_id ?? null,
-      p_week_start: range.start,
-      p_week_end: range.end,
-      p_config: config,
-      p_gross_revenue: result.grossRevenue,
-      p_total_deductions: result.totalDeductions,
-      p_our_commission_earned: result.ourCommissionEarned,
-      p_net_pay: result.netPay,
-      p_external_net_pay: null,
-      p_line_items: lineItems,
-      p_load_ids: loads.map((l) => l.id),
-      p_expense_ids: expenses.map((e) => e.id),
-      p_organization_id: orgId,
+    settlement: {
+      organization_id: orgId,
+      data: {
+        vehicle_unit: vehicle.unit_number,
+        vehicle_id: vehicle.id,
+        settlement_type: settlementType,
+        driver_id: vehicle.assigned_driver_id ?? null,
+        owner_id: vehicle.owner_id ?? null,
+        company_id: vehicle.company_id ?? null,
+        external_carrier_id: vehicle.external_carrier_id ?? null,
+        week_start: range.start,
+        week_end: range.end,
+        external_net_pay: null,
+      },
+      selected_load_ids: loads.map((l) => l.id),
+      selected_expense_ids: expenses.map((e) => e.id),
+      preview_revision: revision,
     },
   };
 
@@ -420,15 +558,34 @@ export async function prepareSettlement(
     `Oluşturulsun mu?`,
   ].join("\n");
 
-  return { ok: true, message, payload };
+  return { ok: true, message, payload, rpc, revision };
+}
+
+export async function prepareSettlement(
+  supabase: any,
+  orgId: string,
+  data: Record<string, unknown>,
+): Promise<Result & { payload?: Record<string, unknown> }> {
+  const prepared = await buildPreparedSettlement(supabase, orgId, data);
+  return { ok: prepared.ok, message: prepared.message, payload: prepared.payload };
 }
 
 async function runSettlement(supabase: any, orgId: string, payload: Record<string, unknown>): Promise<Result> {
-  const rpc = payload?.rpc as Record<string, unknown> | undefined;
+  const pending = payload?.settlement as Record<string, unknown> | undefined;
+  const rpc = pending;
   if (!rpc) return { ok: false, message: "Settlement verisi bulunamadı, lütfen tekrar deneyin." };
+  const data = {
+    ...((pending?.data as Record<string, unknown> | undefined) ?? {}),
+    selected_load_ids: pending?.selected_load_ids,
+    selected_expense_ids: pending?.selected_expense_ids,
+  };
+  const fresh = await buildPreparedSettlement(supabase, orgId, data);
+  if (!fresh.ok || !fresh.rpc || !fresh.revision || fresh.revision !== pending?.preview_revision) {
+    return { ok: false, message: STALE_SETTLEMENT_PREVIEW_MESSAGE };
+  }
   // Belt-and-braces: never trust a stored org id over the command's own org.
-  const { data: settlementId, error } = await supabase.rpc("create_settlement_atomic", {
-    ...rpc,
+  const { data: settlementId, error } = await supabase.rpc("create_settlement_with_links_atomic", {
+    ...fresh.rpc,
     p_organization_id: orgId,
   });
   if (error || !settlementId) {
