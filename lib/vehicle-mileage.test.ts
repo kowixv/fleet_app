@@ -49,7 +49,7 @@ describe("vehicle mileage write contract", () => {
 
   it("keeps Vehicles page independent of maintenance rules while retaining the mileage RPC component", () => {
     expect(vehiclePage).not.toContain("maintenance_rules");
-    expect(vehiclePage).toContain("Current Mileage");
+    expect(vehiclePage).not.toContain("Current Mileage");
     expect(mileageComponent).toContain('updateMileage(vehicleId, parsed.mileage)');
     expect(mileageComponent).not.toContain("maintenance_rules");
   });

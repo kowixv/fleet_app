@@ -116,7 +116,7 @@ create table if not exists vehicles (
   management_commission_type text default 'none' check (management_commission_type in ('none','flat','percent')),
   management_commission_amount numeric default 0,
   -- Identity --
-  vin text, year int, make text, model text, plate text,
+  vin text, year int, make text, model text, plate text, truck_color text,
   current_mileage numeric default 0,
   status text not null default 'active' check (status in ('active','in_repair','inactive')),
   notes text,

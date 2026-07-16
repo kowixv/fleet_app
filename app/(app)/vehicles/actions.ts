@@ -2,6 +2,16 @@
 
 import { requireProfile, requireWriteRole } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import {
+  generatedVehicleUnitNumber,
+  isGeneratedUnitNumberCollision,
+  isVehicleFormType,
+  isVehicleStatus,
+  normalizeUpperText,
+  optionalNonNegativeNumber,
+  optionalPercentFraction,
+  optionalText,
+} from "@/lib/vehicle-form";
 import { revalidatePath } from "next/cache";
 
 function num(value: unknown): number | null {
@@ -22,6 +32,161 @@ function revalidateVehicleMaintenance() {
   revalidatePath("/maintenance/units");
   revalidatePath("/maintenance/settings");
   revalidatePath("/");
+}
+
+function intOrNull(value: unknown, label: string): number | null {
+  const parsed = optionalNonNegativeNumber(value, label);
+  if (parsed === null) return null;
+  if (!Number.isInteger(parsed)) throw new Error(`${label} must be a whole number.`);
+  return parsed;
+}
+
+function vehicleId(value: unknown): string | null {
+  const cleaned = optionalText(value);
+  return cleaned && /^[0-9a-f-]{36}$/i.test(cleaned) ? cleaned : null;
+}
+
+function buildVehicleFormPayload(input: Record<string, unknown>, editing: boolean) {
+  void editing;
+  const type = optionalText(input.vehicle_type);
+  if (!isVehicleFormType(type)) throw new Error("Geçerli bir araç tipi seçin.");
+  const status = optionalText(input.status);
+  if (!isVehicleStatus(status)) throw new Error("Geçerli bir durum seçin.");
+
+  const plate = normalizeUpperText(input.plate);
+
+  return {
+    vehicle: {
+      vehicle_type: type,
+      assigned_driver_id: vehicleId(input.assigned_driver_id),
+      default_driver_pay_pct: optionalPercentFraction(input.default_driver_pay_pct),
+      vin: normalizeUpperText(input.vin),
+      year: intOrNull(input.year, "Yıl"),
+      make: optionalText(input.make),
+      model: optionalText(input.model),
+      plate,
+      truck_color: optionalText(input.truck_color),
+      status,
+      notes: optionalText(input.notes),
+    },
+    profile: {
+      engine_model: optionalText(input.engine_model),
+      engine_hours: optionalNonNegativeNumber(input.engine_hours, "Engine Hour"),
+    },
+  };
+}
+
+async function assertDriverInOrg(driverId: string | null, organizationId: string) {
+  if (!driverId) return;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("people")
+    .select("id")
+    .eq("id", driverId)
+    .eq("organization_id", organizationId)
+    .in("type", ["company_driver", "external_carrier_driver"])
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Seçilen şoför bu organizasyona ait değil.");
+}
+
+async function createVehicleWithGeneratedUnitNumber(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  organizationId: string,
+  vehicle: Record<string, unknown>,
+) {
+  let lastError = "";
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const unitNumber = generatedVehicleUnitNumber();
+    const { data, error } = await supabase
+      .from("vehicles")
+      .insert({
+        ...vehicle,
+        unit_number: unitNumber,
+        organization_id: organizationId,
+      })
+      .select("id, unit_number")
+      .single();
+    if (!error) return { data, error: null };
+    lastError = error.message;
+    if (!isGeneratedUnitNumberCollision(error)) return { data: null, error };
+  }
+  return {
+    data: null,
+    error: { message: `Unique unit number could not be generated after multiple attempts. Last error: ${lastError}` },
+  };
+}
+
+export async function saveVehicleFromForm(input: Record<string, unknown>) {
+  const profile = await requireWriteRole();
+  const id = vehicleId(input.id);
+  let payload: ReturnType<typeof buildVehicleFormPayload>;
+  try {
+    payload = buildVehicleFormPayload(input, Boolean(id));
+    await assertDriverInOrg(payload.vehicle.assigned_driver_id, profile.organization_id);
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const supabase = await createClient();
+  let vehicleRecordId = id;
+  let existingProfile = false;
+
+  if (vehicleRecordId) {
+    const existing = await supabase
+      .from("vehicles")
+      .select("id")
+      .eq("id", vehicleRecordId)
+      .eq("organization_id", profile.organization_id)
+      .maybeSingle();
+    if (existing.error) return { ok: false as const, error: existing.error.message };
+    if (!existing.data) return { ok: false as const, error: "Unit bulunamadı." };
+
+    const { error } = await supabase
+      .from("vehicles")
+      .update(payload.vehicle)
+      .eq("id", vehicleRecordId)
+      .eq("organization_id", profile.organization_id);
+    if (error) return { ok: false as const, error: error.message };
+
+    const profileRes = await supabase
+      .from("vehicle_maintenance_profiles")
+      .select("id")
+      .eq("organization_id", profile.organization_id)
+      .eq("vehicle_id", vehicleRecordId)
+      .maybeSingle();
+    if (profileRes.error) return { ok: false as const, error: profileRes.error.message };
+    existingProfile = Boolean(profileRes.data);
+  } else {
+    const { data, error } = await createVehicleWithGeneratedUnitNumber(
+      supabase,
+      profile.organization_id,
+      payload.vehicle,
+    );
+    if (error) return { ok: false as const, error: error.message };
+    vehicleRecordId = data.id as string;
+  }
+
+  const hasEngineInput = payload.profile.engine_model !== null || payload.profile.engine_hours !== null;
+  if (vehicleRecordId && (existingProfile || hasEngineInput)) {
+    const { error } = await supabase
+      .from("vehicle_maintenance_profiles")
+      .upsert(
+        {
+          organization_id: profile.organization_id,
+          vehicle_id: vehicleRecordId,
+          engine_model: payload.profile.engine_model,
+          engine_hours: payload.profile.engine_hours,
+          updated_by: profile.id,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "organization_id,vehicle_id" },
+      );
+    if (error) return { ok: false as const, error: error.message };
+  }
+
+  revalidateVehicleMaintenance();
+  return { ok: true as const };
 }
 
 const VEHICLE_RELATION_CHECKS = [

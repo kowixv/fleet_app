@@ -10,11 +10,12 @@ describe("vehicles page template cleanup", () => {
     expect(page).not.toContain("VehicleMileageManager");
   });
 
-  it("does not fetch template, profile or active maintenance rule data for /vehicles", () => {
+  it("does not fetch template or active maintenance rule data for /vehicles", () => {
     expect(page).not.toContain("maintenance_templates");
     expect(page).not.toContain("maintenance_template_items");
     expect(page).not.toContain("maintenance_rules");
-    expect(page).not.toContain("vehicle_maintenance_profiles");
+    expect(page).toContain("vehicle_maintenance_profiles");
+    expect(page).toContain('select("vehicle_id, engine_model, engine_hours")');
   });
 });
 
@@ -32,7 +33,6 @@ describe("vehicle safe removal workflow", () => {
     expect(page).not.toContain("renderActions=");
     expect(page).not.toContain("paginationHref=");
     expect(vehicleManager).toContain('"use client"');
-    expect(vehicleManager).toContain("renderActions");
     expect(vehicleManager).toContain("paginationHref");
     expect(vehicleManager).toContain("VehicleRemovalActions");
   });

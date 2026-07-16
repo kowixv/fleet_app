@@ -20,7 +20,7 @@ export const ALLOWED: Record<string, string[]> = {
     "default_driver_pay_pct", "company_fee_pct", "company_fee_is_our_revenue",
     "external_carrier_fee_pct", "management_commission_type",
     "management_commission_amount", "vin", "year", "make", "model", "plate",
-    "status", "notes",
+    "truck_color", "status", "notes",
   ],
   loads: [
     "load_number", "load_source", "company_id", "external_carrier_id",
