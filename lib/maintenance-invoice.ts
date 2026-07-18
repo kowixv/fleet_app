@@ -330,7 +330,7 @@ async function renderPdfForOcr(
   for (let page = 1; page <= maxPages; page++) {
     const image = await renderPageAsImage(pdf, page, {
       scale: 1.5,
-      canvas: async () => (await import(canvasPackageName)) as never,
+      canvasImport: async () => (await import(canvasPackageName)) as never,
     });
     urls.push(`data:image/png;base64,${Buffer.from(image).toString("base64")}`);
   }

@@ -25,6 +25,7 @@ const statement = readFileSync("lib/pdf/statement.tsx", "utf8");
 const botExecutor = readFileSync("lib/bot-executor.ts", "utf8");
 const supabaseServer = readFileSync("lib/supabase/server.ts", "utf8");
 const revisionSource = readFileSync("lib/settlement/revision.ts", "utf8");
+const sharedSettlementCreator = readFileSync("lib/settlement/create-from-selection.ts", "utf8");
 
 describe("settlement workflow business rules", () => {
   it("maps settlement types to accounting usage lanes", () => {
@@ -258,7 +259,8 @@ describe("settlement implementation contracts", () => {
     expect(migration).toContain("return create_settlement_with_links_atomic");
     expect(actions).not.toContain('supabase.rpc("create_settlement_atomic"');
     expect(botExecutor).not.toContain('rpc("create_settlement_atomic"');
-    expect(actions).toContain('service.rpc("create_settlement_with_links_atomic"');
+    expect(actions).toContain("createSettlementWithLinksAtomic");
+    expect(sharedSettlementCreator).toContain('service.rpc("create_settlement_with_links_atomic"');
     expect(botExecutor).toContain('rpc("create_settlement_with_links_atomic"');
     expect(actions).toContain("buildSettlementPreview(input, profile.organization_id)");
   });

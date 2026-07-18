@@ -16,7 +16,8 @@ import {
 } from "@/lib/settlement/workflow";
 import { resolveConfig } from "@/lib/settlement/resolve";
 import { STALE_SETTLEMENT_PREVIEW_MESSAGE, stableSettlementRevision } from "@/lib/settlement/revision";
-import { createClient, createServiceClient } from "@/lib/supabase/server";
+import { createSettlementWithLinksAtomic } from "@/lib/settlement/create-from-selection";
+import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
@@ -380,31 +381,30 @@ export async function createSettlementFromSelection(input: SettlementInputPayloa
       return { ok: false, error: STALE_SETTLEMENT_PREVIEW_MESSAGE };
     }
 
-    const service = createServiceClient();
-    const { data, error } = await service.rpc("create_settlement_with_links_atomic", {
-      p_organization_id: profile.organization_id,
-      p_created_by: profile.id,
-      p_settlement_type: preview.input.type,
-      p_usage_group: preview.input.usageGroup,
-      p_company_id: preview.input.companyId,
-      p_external_carrier_id: preview.input.externalCarrierId,
-      p_vehicle_id: preview.input.vehicleId,
-      p_driver_id: preview.input.driverId,
-      p_owner_id: preview.input.ownerId,
-      p_week_start: preview.input.weekStart,
-      p_week_end: preview.input.weekEnd,
-      p_config: preview.configSnapshot as any,
-      p_gross_revenue: preview.result.grossRevenue,
-      p_total_deductions: preview.result.totalDeductions,
-      p_our_commission_earned: preview.result.ourCommissionEarned,
-      p_net_pay: preview.result.netPay,
-      p_external_net_pay: preview.input.externalNetPay,
-      p_line_items: preview.lineItems as any,
-      p_load_ids: preview.selectedLoadIds,
-      p_expense_ids: preview.selectedExpenseIds,
+    const created = await createSettlementWithLinksAtomic({
+      organizationId: profile.organization_id,
+      createdBy: profile.id,
+      settlementType: preview.input.type,
+      usageGroup: preview.input.usageGroup,
+      companyId: preview.input.companyId,
+      externalCarrierId: preview.input.externalCarrierId,
+      vehicleId: preview.input.vehicleId,
+      driverId: preview.input.driverId,
+      ownerId: preview.input.ownerId,
+      weekStart: preview.input.weekStart,
+      weekEnd: preview.input.weekEnd,
+      config: preview.configSnapshot,
+      grossRevenue: preview.result.grossRevenue,
+      totalDeductions: preview.result.totalDeductions,
+      ourCommissionEarned: preview.result.ourCommissionEarned,
+      netPay: preview.result.netPay,
+      externalNetPay: preview.input.externalNetPay,
+      lineItems: preview.lineItems,
+      selectedLoadIds: preview.selectedLoadIds,
+      selectedExpenseIds: preview.selectedExpenseIds,
     });
-    if (error) return { ok: false, error: error.message };
-    settlementId = data as string;
+    if (!created.ok) return { ok: false, error: created.error };
+    settlementId = created.settlementId;
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
