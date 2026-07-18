@@ -1,5 +1,5 @@
 -- ============================================================================
--- Fleet Settlement App — schema, RLS, and signup provisioning
+-- Fleet Settlement App ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â schema, RLS, and signup provisioning
 -- Run this in the Supabase SQL editor (one shot). Safe to re-run.
 -- ============================================================================
 
@@ -348,6 +348,383 @@ begin
     'imported_loads','maintenance_rules','maintenance_records','vehicle_mileage_logs','settings'
   ] loop
     execute format('alter table %I enable row level security;', t);
+  end loop;
+end $$;
+-- Amazon payment/trip normalization layer.
+-- This migration adds normalized source tables only. It does not create loads, expenses,
+-- settlement candidates, settlements, fuel tables, or PDF artifacts.
+
+create table if not exists public.amazon_payment_invoices (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid not null,
+  invoice_number text not null,
+  invoice_date date,
+  period_start date,
+  period_end date,
+  payment_date date,
+  payment_status text,
+  carrier_identifier text,
+  summary_total numeric,
+  currency text not null default 'USD' check (currency ~ '^[A-Z]{3}$'),
+  parser_version text not null,
+  schema_signature text not null,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_payment_invoices_org_id_id_key unique (organization_id, id),
+  constraint amazon_payment_invoices_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_payment_invoices_file_invoice_key unique (organization_id, file_id, invoice_number),
+  constraint amazon_payment_invoices_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_payment_invoices_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_payment_invoices_period_check
+    check (period_start is null or period_end is null or period_end >= period_start)
+);
+
+create table if not exists public.amazon_payment_rows (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid not null,
+  raw_row_id uuid,
+  invoice_id uuid not null,
+  source_row_number int,
+  source_fingerprint text not null,
+  row_classification text not null
+    check (row_classification in ('trip_parent','load_child','standalone_load','non_financial','invalid')),
+  trip_id text,
+  load_id text,
+  start_date date,
+  end_date date,
+  route_raw text,
+  facility_sequence jsonb not null default '[]'::jsonb,
+  distance numeric,
+  base_amount numeric,
+  fuel_surcharge_amount numeric,
+  toll_amount numeric,
+  detention_amount numeric,
+  tonu_amount numeric,
+  other_amount numeric,
+  gross_amount numeric,
+  item_type text,
+  status text,
+  parse_status text not null default 'parsed'
+    check (parse_status in ('pending','parsed','warning','failed','skipped')),
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint amazon_payment_rows_org_id_id_key unique (organization_id, id),
+  constraint amazon_payment_rows_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_payment_rows_source_fingerprint_key unique (organization_id, file_id, source_fingerprint),
+  constraint amazon_payment_rows_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_payment_rows_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_payment_rows_raw_row_same_batch_fk
+    foreign key (organization_id, batch_id, raw_row_id)
+    references public.amazon_import_raw_rows (organization_id, batch_id, id) on delete set null (raw_row_id),
+  constraint amazon_payment_rows_invoice_same_batch_fk
+    foreign key (organization_id, batch_id, invoice_id)
+    references public.amazon_payment_invoices (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_payment_rows_date_check
+    check (start_date is null or end_date is null or end_date >= start_date)
+);
+
+create table if not exists public.amazon_trip_rows (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid not null,
+  raw_row_id uuid,
+  source_row_number int,
+  source_fingerprint text not null,
+  trip_id text,
+  load_id text,
+  raw_driver_text text,
+  tractor_external_id text,
+  operator_type text,
+  equipment_type text,
+  trip_status text,
+  load_status text,
+  estimated_distance numeric,
+  facility_sequence jsonb not null default '[]'::jsonb,
+  stops jsonb not null default '[]'::jsonb,
+  planned_first_arrival timestamptz,
+  planned_final_departure timestamptz,
+  actual_first_arrival timestamptz,
+  actual_final_departure timestamptz,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint amazon_trip_rows_org_id_id_key unique (organization_id, id),
+  constraint amazon_trip_rows_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_trip_rows_source_fingerprint_key unique (organization_id, file_id, source_fingerprint),
+  constraint amazon_trip_rows_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_trip_rows_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_trip_rows_raw_row_same_batch_fk
+    foreign key (organization_id, batch_id, raw_row_id)
+    references public.amazon_import_raw_rows (organization_id, batch_id, id) on delete set null (raw_row_id)
+);
+
+create table if not exists public.amazon_trip_driver_tokens (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  trip_row_id uuid not null,
+  token_order int not null check (token_order > 0),
+  raw_name text not null,
+  normalized_name text not null,
+  is_team_assignment boolean not null default false,
+  requires_split_rule boolean not null default false,
+  created_at timestamptz not null default now(),
+  constraint amazon_trip_driver_tokens_trip_row_order_key unique (organization_id, trip_row_id, token_order),
+  constraint amazon_trip_driver_tokens_trip_row_same_org_fk
+    foreign key (organization_id, trip_row_id)
+    references public.amazon_trip_rows (organization_id, id) on delete cascade
+);
+
+create table if not exists public.amazon_import_matches (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  payment_row_id uuid not null,
+  trip_row_id uuid,
+  match_type text not null,
+  match_method text not null
+    check (match_method in ('exact_load_id','exact_trip_id','vehicle_period_facility','manual')),
+  confidence_score numeric not null check (confidence_score >= 0 and confidence_score <= 1),
+  status text not null
+    check (status in ('exact','inferred','ambiguous','unmatched','manually_approved','rejected')),
+  reasons jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_import_matches_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_matches_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_import_matches_payment_same_batch_fk
+    foreign key (organization_id, batch_id, payment_row_id)
+    references public.amazon_payment_rows (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_import_matches_trip_same_batch_fk
+    foreign key (organization_id, batch_id, trip_row_id)
+    references public.amazon_trip_rows (organization_id, batch_id, id) on delete set null (trip_row_id)
+);
+
+create unique index if not exists amazon_import_matches_one_active_approved_key
+  on public.amazon_import_matches (organization_id, payment_row_id)
+  where status in ('exact','inferred','manually_approved');
+
+create table if not exists public.amazon_revenue_items (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  invoice_id uuid not null,
+  grouping_type text not null check (grouping_type in ('trip','load')),
+  grouping_key text not null,
+  trip_id text,
+  primary_load_id text,
+  start_date date,
+  end_date date,
+  origin_facility_code text,
+  destination_facility_code text,
+  route_resolution_status text not null default 'unresolved'
+    check (route_resolution_status in ('resolved','unresolved','not_applicable')),
+  distance numeric,
+  base_amount numeric not null default 0,
+  fuel_surcharge_amount numeric not null default 0,
+  toll_amount numeric not null default 0,
+  detention_amount numeric not null default 0,
+  tonu_amount numeric not null default 0,
+  other_amount numeric not null default 0,
+  gross_amount numeric not null default 0,
+  match_status text not null,
+  driver_assignment_status text not null,
+  vehicle_assignment_status text not null,
+  reconciliation_status text not null
+    check (reconciliation_status in ('pending','passed','warning','failed')),
+  source_revision text not null,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_revenue_items_org_id_id_key unique (organization_id, id),
+  constraint amazon_revenue_items_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_revenue_items_grouping_key unique (organization_id, invoice_id, grouping_key),
+  constraint amazon_revenue_items_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_revenue_items_invoice_same_batch_fk
+    foreign key (organization_id, batch_id, invoice_id)
+    references public.amazon_payment_invoices (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_revenue_items_date_check
+    check (start_date is null or end_date is null or end_date >= start_date)
+);
+
+create table if not exists public.amazon_revenue_item_sources (
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  revenue_item_id uuid not null,
+  payment_row_id uuid not null,
+  contribution_type text not null
+    check (contribution_type in ('parent_base','child_accessorial','standalone','other')),
+  created_at timestamptz not null default now(),
+  primary key (organization_id, revenue_item_id, payment_row_id),
+  constraint amazon_revenue_item_sources_revenue_item_same_org_fk
+    foreign key (organization_id, revenue_item_id)
+    references public.amazon_revenue_items (organization_id, id) on delete cascade,
+  constraint amazon_revenue_item_sources_payment_row_same_batch_fk
+    foreign key (organization_id, payment_row_id)
+    references public.amazon_payment_rows (organization_id, id) on delete cascade
+);
+
+create unique index if not exists amazon_revenue_item_sources_one_active_contribution_key
+  on public.amazon_revenue_item_sources (organization_id, payment_row_id);
+
+create or replace function public.guard_amazon_payment_invoice_source()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.amazon_revenue_items ri
+    where ri.organization_id = old.organization_id
+      and ri.invoice_id = old.id
+  ) and (
+    new.batch_id is distinct from old.batch_id
+    or new.file_id is distinct from old.file_id
+    or new.invoice_number is distinct from old.invoice_number
+    or new.summary_total is distinct from old.summary_total
+    or new.parser_version is distinct from old.parser_version
+    or new.schema_signature is distinct from old.schema_signature
+    or new.source_snapshot is distinct from old.source_snapshot
+  ) then
+    raise exception 'Amazon payment invoice source facts cannot be changed after revenue items depend on them.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_payment_row_source()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.amazon_revenue_item_sources ris
+    where ris.organization_id = old.organization_id
+      and ris.payment_row_id = old.id
+  ) and (
+    new.batch_id is distinct from old.batch_id
+    or new.file_id is distinct from old.file_id
+    or new.raw_row_id is distinct from old.raw_row_id
+    or new.invoice_id is distinct from old.invoice_id
+    or new.source_row_number is distinct from old.source_row_number
+    or new.source_fingerprint is distinct from old.source_fingerprint
+    or new.row_classification is distinct from old.row_classification
+    or new.trip_id is distinct from old.trip_id
+    or new.load_id is distinct from old.load_id
+    or new.base_amount is distinct from old.base_amount
+    or new.fuel_surcharge_amount is distinct from old.fuel_surcharge_amount
+    or new.toll_amount is distinct from old.toll_amount
+    or new.detention_amount is distinct from old.detention_amount
+    or new.tonu_amount is distinct from old.tonu_amount
+    or new.other_amount is distinct from old.other_amount
+    or new.gross_amount is distinct from old.gross_amount
+    or new.source_snapshot is distinct from old.source_snapshot
+  ) then
+    raise exception 'Amazon payment row source facts cannot be changed after revenue items depend on them.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists amazon_payment_invoices_updated_at on public.amazon_payment_invoices;
+create trigger amazon_payment_invoices_updated_at
+  before update on public.amazon_payment_invoices
+  for each row execute function public.touch_amazon_import_updated_at();
+
+drop trigger if exists amazon_import_matches_updated_at on public.amazon_import_matches;
+create trigger amazon_import_matches_updated_at
+  before update on public.amazon_import_matches
+  for each row execute function public.touch_amazon_import_updated_at();
+
+drop trigger if exists amazon_revenue_items_updated_at on public.amazon_revenue_items;
+create trigger amazon_revenue_items_updated_at
+  before update on public.amazon_revenue_items
+  for each row execute function public.touch_amazon_import_updated_at();
+
+drop trigger if exists amazon_payment_invoices_source_guard on public.amazon_payment_invoices;
+create trigger amazon_payment_invoices_source_guard
+  before update on public.amazon_payment_invoices
+  for each row execute function public.guard_amazon_payment_invoice_source();
+
+drop trigger if exists amazon_payment_rows_source_guard on public.amazon_payment_rows;
+create trigger amazon_payment_rows_source_guard
+  before update on public.amazon_payment_rows
+  for each row execute function public.guard_amazon_payment_row_source();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_payment_invoices',
+    'amazon_payment_rows',
+    'amazon_trip_rows',
+    'amazon_trip_driver_tokens',
+    'amazon_import_matches',
+    'amazon_revenue_items',
+    'amazon_revenue_item_sources'
+  ] loop
+    execute format('drop trigger if exists %I_org_guard on public.%I;', t, t);
+    execute format(
+      'create trigger %I_org_guard before update on public.%I for each row execute function public.guard_amazon_import_organization_id();',
+      t, t
+    );
+  end loop;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_payment_invoices',
+    'amazon_payment_rows',
+    'amazon_trip_rows',
+    'amazon_trip_driver_tokens',
+    'amazon_import_matches',
+    'amazon_revenue_items',
+    'amazon_revenue_item_sources'
+  ] loop
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer())) with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
   end loop;
 end $$;
 
@@ -1232,7 +1609,7 @@ alter table loads
   add column if not exists delivery_lng double precision,
   add column if not exists geocoded_at timestamptz;
 
--- ---------- unit_locations — one row per unit (latest position only) ----------
+-- ---------- unit_locations ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â one row per unit (latest position only) ----------
 create table if not exists unit_locations (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations (id) on delete cascade,
@@ -1253,7 +1630,7 @@ create index if not exists unit_locations_org_idx on unit_locations (organizatio
 create index if not exists unit_locations_unit_idx on unit_locations (unit_id);
 create index if not exists unit_locations_update_idx on unit_locations (last_update_at);
 
--- ---------- load_tracking — per-load tracking state ----------
+-- ---------- load_tracking ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â per-load tracking state ----------
 create table if not exists load_tracking (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations (id) on delete cascade,
@@ -1288,7 +1665,7 @@ create trigger load_tracking_updated_at
   before update on load_tracking
   for each row execute function update_load_tracking_timestamp();
 
--- ---------- tracking_events — alerts and geofence events ----------
+-- ---------- tracking_events ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â alerts and geofence events ----------
 create table if not exists tracking_events (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations (id) on delete cascade,
@@ -1314,7 +1691,7 @@ create unique index if not exists tracking_events_once_per_load
   on tracking_events (load_id, event_type)
   where event_type in ('ARRIVED_PICKUP','DEPARTED_PICKUP','ARRIVED_DELIVERY','DEPARTED_DELIVERY');
 
--- ---------- tablet_tokens — tablet device authentication ----------
+-- ---------- tablet_tokens ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â tablet device authentication ----------
 create table if not exists tablet_tokens (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations (id) on delete cascade,
@@ -1372,7 +1749,7 @@ alter table tablet_tokens add constraint tablet_tokens_org_id_id_key unique (org
 
 
 -- =============================================================================
--- 2026-07-03 — Role-aware RLS, hashed tablet tokens, integrity indexes
+-- 2026-07-03 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Role-aware RLS, hashed tablet tokens, integrity indexes
 -- Mirrors: 20260703100000_rls_roles.sql, 20260703100001_tablet_token_hash.sql,
 --          20260703100002_constraints_indexes.sql
 -- Appended last on purpose: it drops and replaces the permissive %_rw policies
@@ -1500,7 +1877,7 @@ create index if not exists tracking_events_org_created_idx
   on tracking_events (organization_id, created_at desc);
 
 -- =============================================================================
--- 2026-07-12 — Maintenance invoice parsing, atomic writes, history and alerts
+-- 2026-07-12 ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â Maintenance invoice parsing, atomic writes, history and alerts
 -- Mirrors: 20260712000000_maintenance_invoice_upgrade.sql
 -- =============================================================================
 -- Maintenance invoice import, atomic mileage/service writes, configurable alerts.
@@ -2513,3 +2890,2944 @@ end;
 $$;
 revoke execute on function delete_draft_settlement(uuid) from public, anon;
 grant execute on function delete_draft_settlement(uuid) to authenticated;
+
+
+-- ============================================================================
+-- Amazon import core foundation only.
+-- Parser-specific payment/trip/fuel tables come later; this section must not
+-- create settlements, project loads/expenses, or weaken settlement protections.
+-- ============================================================================
+
+set search_path = public, extensions;
+
+create extension if not exists "btree_gist" with schema extensions;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'profiles_org_id_id_key') then
+    alter table public.profiles
+      add constraint profiles_org_id_id_key unique (organization_id, id);
+  end if;
+end $$;
+
+create table if not exists public.amazon_import_batches (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  period_start date,
+  period_end date,
+  status text not null default 'uploaded'
+    check (status in ('uploaded','parsing','parsed','needs_review','reconciled','ready','failed','archived')),
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  parser_bundle_version text,
+  notes text,
+  constraint amazon_import_batches_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_batches_period_check
+    check (period_start is null or period_end is null or period_end >= period_start),
+  constraint amazon_import_batches_created_by_same_org_fk
+    foreign key (organization_id, created_by)
+    references public.profiles (organization_id, id) on delete set null (created_by)
+);
+
+create table if not exists public.amazon_import_files (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  source_type text not null
+    check (source_type in ('amazon_payment','amazon_trips','fuel_card','statement_reference')),
+  original_filename text not null,
+  storage_path text not null,
+  mime_type text,
+  size_bytes bigint not null check (size_bytes >= 0),
+  sha256_hash text not null check (sha256_hash ~ '^[a-f0-9]{64}$'),
+  parser_name text,
+  parser_version text,
+  schema_signature text,
+  status text not null default 'uploaded'
+    check (status in ('uploaded','parsing','parsed','failed','archived')),
+  created_at timestamptz not null default now(),
+  constraint amazon_import_files_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_files_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_import_files_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade
+);
+
+create unique index if not exists amazon_import_files_active_hash_key
+  on public.amazon_import_files (organization_id, source_type, sha256_hash)
+  where status in ('uploaded','parsing','parsed');
+
+create index if not exists amazon_import_files_batch_idx
+  on public.amazon_import_files (organization_id, batch_id, created_at);
+
+create table if not exists public.amazon_import_raw_rows (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid not null,
+  source_sheet text,
+  source_page int,
+  source_group text,
+  source_row_number int,
+  raw_data jsonb not null default '{}'::jsonb,
+  normalized_data jsonb not null default '{}'::jsonb,
+  parse_status text not null default 'pending'
+    check (parse_status in ('pending','parsed','warning','failed','skipped')),
+  parse_warning text,
+  created_at timestamptz not null default now(),
+  constraint amazon_import_raw_rows_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_raw_rows_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_import_raw_rows_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_import_raw_rows_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_import_raw_rows_source_sheet_sentinel_check
+    check (source_sheet is null or source_sheet <> '__NULL_SOURCE_SHEET__'),
+  constraint amazon_import_raw_rows_source_group_sentinel_check
+    check (source_group is null or source_group <> '__NULL_SOURCE_GROUP__'),
+  constraint amazon_import_raw_rows_source_page_check
+    check (source_page is null or source_page >= 0),
+  constraint amazon_import_raw_rows_source_row_number_check
+    check (source_row_number is null or source_row_number > 0)
+);
+
+create unique index if not exists amazon_import_raw_rows_source_lineage_key
+  on public.amazon_import_raw_rows (
+    organization_id,
+    batch_id,
+    file_id,
+    coalesce(source_sheet, '__NULL_SOURCE_SHEET__'),
+    coalesce(source_page, -2147483648),
+    coalesce(source_group, '__NULL_SOURCE_GROUP__'),
+    coalesce(source_row_number, -2147483648)
+  );
+
+create index if not exists amazon_import_raw_rows_batch_idx
+  on public.amazon_import_raw_rows (organization_id, batch_id, created_at);
+
+create table if not exists public.amazon_import_issues (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid,
+  raw_row_id uuid,
+  issue_code text not null,
+  severity text not null check (severity in ('info','warning','blocking')),
+  message text not null,
+  details jsonb not null default '{}'::jsonb,
+  status text not null default 'open' check (status in ('open','resolved','dismissed')),
+  created_at timestamptz not null default now(),
+  resolved_at timestamptz,
+  resolved_by uuid,
+  constraint amazon_import_issues_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_issues_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_import_issues_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_import_issues_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete set null (file_id),
+  constraint amazon_import_issues_raw_row_same_org_fk
+    foreign key (organization_id, batch_id, raw_row_id)
+    references public.amazon_import_raw_rows (organization_id, batch_id, id) on delete set null (raw_row_id),
+  constraint amazon_import_issues_resolved_by_same_org_fk
+    foreign key (organization_id, resolved_by)
+    references public.profiles (organization_id, id) on delete set null (resolved_by),
+  constraint amazon_import_issues_resolution_check
+    check ((status = 'resolved') = (resolved_at is not null))
+);
+
+create index if not exists amazon_import_issues_open_idx
+  on public.amazon_import_issues (organization_id, batch_id, severity, created_at)
+  where status = 'open';
+
+create table if not exists public.amazon_import_reconciliations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  reconciliation_type text not null,
+  expected_amount numeric,
+  actual_amount numeric,
+  difference_amount numeric,
+  expected_count int,
+  actual_count int,
+  status text not null default 'pending'
+    check (status in ('pending','passed','warning','failed')),
+  details jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint amazon_import_reconciliations_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_reconciliations_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_import_reconciliations_counts_check
+    check (
+      (expected_count is null or expected_count >= 0)
+      and (actual_count is null or actual_count >= 0)
+    )
+);
+
+create index if not exists amazon_import_reconciliations_batch_idx
+  on public.amazon_import_reconciliations (organization_id, batch_id, reconciliation_type, created_at);
+
+create table if not exists public.amazon_import_review_decisions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  issue_id uuid,
+  decision_type text not null,
+  previous_value jsonb,
+  selected_value jsonb,
+  reason text,
+  decided_by uuid,
+  decided_at timestamptz not null default now(),
+  constraint amazon_import_review_decisions_org_id_id_key unique (organization_id, id),
+  constraint amazon_import_review_decisions_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_import_review_decisions_issue_same_org_fk
+    foreign key (organization_id, batch_id, issue_id)
+    references public.amazon_import_issues (organization_id, batch_id, id) on delete set null (issue_id),
+  constraint amazon_import_review_decisions_decided_by_same_org_fk
+    foreign key (organization_id, decided_by)
+    references public.profiles (organization_id, id) on delete set null (decided_by)
+);
+
+create index if not exists amazon_import_review_decisions_batch_idx
+  on public.amazon_import_review_decisions (organization_id, batch_id, decided_at);
+
+create table if not exists public.amazon_external_vehicle_identifiers (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  vehicle_id uuid not null,
+  provider text not null check (provider in ('amazon','octane','manual')),
+  identifier_type text not null check (identifier_type in ('tractor_vehicle_id','amazon_unit','fuel_unit','fuel_card')),
+  external_value text not null,
+  normalized_value text not null,
+  effective_from date not null default current_date,
+  effective_to date,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_external_vehicle_identifiers_org_id_id_key unique (organization_id, id),
+  constraint amazon_external_vehicle_identifiers_vehicle_same_org_fk
+    foreign key (organization_id, vehicle_id)
+    references public.vehicles (organization_id, id) on delete cascade,
+  constraint amazon_external_vehicle_identifiers_effective_range_check
+    check (effective_to is null or effective_to > effective_from),
+  constraint amazon_external_vehicle_identifiers_normalized_not_blank
+    check (length(btrim(normalized_value)) > 0)
+);
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'amazon_external_vehicle_identifiers_no_overlap'
+      and conrelid = 'public.amazon_external_vehicle_identifiers'::regclass
+  ) then
+    alter table public.amazon_external_vehicle_identifiers
+      add constraint amazon_external_vehicle_identifiers_no_overlap
+      exclude using gist (
+        organization_id with =,
+        provider with =,
+        identifier_type with =,
+        normalized_value with =,
+        daterange(effective_from, coalesce(effective_to, 'infinity'::date), '[)') with &&
+      );
+  end if;
+end $$;
+
+create index if not exists amazon_external_vehicle_identifiers_vehicle_idx
+  on public.amazon_external_vehicle_identifiers (organization_id, vehicle_id, provider, identifier_type);
+
+create or replace function public.touch_amazon_import_updated_at()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.updated_at := now();
+  return new;
+end;
+$$;
+
+create or replace function public.normalize_amazon_external_vehicle_identifier()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  new.normalized_value := upper(regexp_replace(btrim(coalesce(new.external_value, '')), '\s+', ' ', 'g'));
+  if new.normalized_value = '' then
+    raise exception 'External vehicle identifier cannot be blank.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_import_organization_id()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id then
+    raise exception 'Amazon import organization_id cannot be changed.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_import_file_lineage()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.amazon_import_raw_rows r
+    where r.organization_id = old.organization_id
+      and r.file_id = old.id
+  ) and (
+    new.batch_id is distinct from old.batch_id
+    or new.source_type is distinct from old.source_type
+    or new.original_filename is distinct from old.original_filename
+    or new.storage_path is distinct from old.storage_path
+    or new.mime_type is distinct from old.mime_type
+    or new.size_bytes is distinct from old.size_bytes
+    or new.sha256_hash is distinct from old.sha256_hash
+  ) then
+    raise exception 'Amazon import file source lineage cannot be changed after raw rows exist.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_import_raw_row_lineage()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if old.normalized_data <> '{}'::jsonb and (
+    new.batch_id is distinct from old.batch_id
+    or new.file_id is distinct from old.file_id
+    or new.source_sheet is distinct from old.source_sheet
+    or new.source_page is distinct from old.source_page
+    or new.source_group is distinct from old.source_group
+    or new.source_row_number is distinct from old.source_row_number
+    or new.raw_data is distinct from old.raw_data
+  ) then
+    raise exception 'Amazon import raw source lineage cannot be changed after normalized data exists.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_import_review_decision_immutable()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  raise exception 'Amazon import review decisions are append-only.';
+end;
+$$;
+
+drop trigger if exists amazon_import_batches_updated_at on public.amazon_import_batches;
+create trigger amazon_import_batches_updated_at
+  before update on public.amazon_import_batches
+  for each row execute function public.touch_amazon_import_updated_at();
+
+drop trigger if exists amazon_external_vehicle_identifiers_updated_at on public.amazon_external_vehicle_identifiers;
+create trigger amazon_external_vehicle_identifiers_updated_at
+  before update on public.amazon_external_vehicle_identifiers
+  for each row execute function public.touch_amazon_import_updated_at();
+
+drop trigger if exists amazon_external_vehicle_identifiers_normalize on public.amazon_external_vehicle_identifiers;
+create trigger amazon_external_vehicle_identifiers_normalize
+  before insert or update on public.amazon_external_vehicle_identifiers
+  for each row execute function public.normalize_amazon_external_vehicle_identifier();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_import_batches',
+    'amazon_import_files',
+    'amazon_import_raw_rows',
+    'amazon_import_issues',
+    'amazon_import_reconciliations',
+    'amazon_import_review_decisions',
+    'amazon_external_vehicle_identifiers'
+  ] loop
+    execute format('drop trigger if exists %I_org_guard on public.%I;', t, t);
+    execute format(
+      'create trigger %I_org_guard before update on public.%I for each row execute function public.guard_amazon_import_organization_id();',
+      t, t
+    );
+  end loop;
+end $$;
+
+drop trigger if exists amazon_import_files_lineage_guard on public.amazon_import_files;
+create trigger amazon_import_files_lineage_guard
+  before update on public.amazon_import_files
+  for each row execute function public.guard_amazon_import_file_lineage();
+
+drop trigger if exists amazon_import_raw_rows_lineage_guard on public.amazon_import_raw_rows;
+create trigger amazon_import_raw_rows_lineage_guard
+  before update on public.amazon_import_raw_rows
+  for each row execute function public.guard_amazon_import_raw_row_lineage();
+
+drop trigger if exists amazon_import_review_decisions_update_guard on public.amazon_import_review_decisions;
+create trigger amazon_import_review_decisions_update_guard
+  before update on public.amazon_import_review_decisions
+  for each row execute function public.guard_amazon_import_review_decision_immutable();
+
+drop trigger if exists amazon_import_review_decisions_delete_guard on public.amazon_import_review_decisions;
+create trigger amazon_import_review_decisions_delete_guard
+  before delete on public.amazon_import_review_decisions
+  for each row execute function public.guard_amazon_import_review_decision_immutable();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_import_batches',
+    'amazon_import_files',
+    'amazon_import_raw_rows',
+    'amazon_import_issues',
+    'amazon_import_reconciliations',
+    'amazon_import_review_decisions',
+    'amazon_external_vehicle_identifiers'
+  ] loop
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    if t <> 'amazon_import_review_decisions' then
+      execute format(
+        'create policy %I_update on public.%I for update to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer())) with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+        t, t
+      );
+      execute format(
+        'create policy %I_delete on public.%I for delete to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+        t, t
+      );
+    end if;
+  end loop;
+end $$;
+
+-- Amazon fuel normalization layer.
+-- This migration stores fuel source facts and matching decisions only. It does
+-- not project deductions into expenses, create statement candidates, or create settlements.
+
+set search_path = public, extensions;
+
+create table if not exists public.fuel_import_reports (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  file_id uuid not null,
+  provider text not null check (provider in ('octane')),
+  carrier_identifier text,
+  period_start date,
+  period_end date,
+  generated_at timestamptz,
+  reported_transaction_count int check (reported_transaction_count is null or reported_transaction_count >= 0),
+  reported_total_amount numeric,
+  reported_total_quantity numeric,
+  reported_discount_amount numeric,
+  parser_name text not null,
+  parser_version text not null,
+  schema_signature text not null,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fuel_import_reports_org_id_id_key unique (organization_id, id),
+  constraint fuel_import_reports_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint fuel_import_reports_file_key unique (organization_id, file_id),
+  constraint fuel_import_reports_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint fuel_import_reports_file_same_batch_fk
+    foreign key (organization_id, batch_id, file_id)
+    references public.amazon_import_files (organization_id, batch_id, id) on delete cascade,
+  constraint fuel_import_reports_period_check
+    check (period_start is null or period_end is null or period_end >= period_start),
+  constraint fuel_import_reports_source_type_check
+    check (provider = 'octane')
+);
+
+create table if not exists public.fuel_import_card_groups (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  report_id uuid not null,
+  source_group_number int not null check (source_group_number > 0),
+  card_external_id text,
+  card_last_four text,
+  driver_label_raw text,
+  driver_label_normalized text,
+  unit_label_raw text,
+  unit_label_normalized text,
+  reported_transaction_count int check (reported_transaction_count is null or reported_transaction_count >= 0),
+  reported_total_amount numeric,
+  reported_total_quantity numeric,
+  reported_discount_amount numeric,
+  is_placeholder_group boolean not null default false,
+  source_page_start int check (source_page_start is null or source_page_start > 0),
+  source_page_end int check (source_page_end is null or source_page_end > 0),
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint fuel_import_card_groups_org_id_id_key unique (organization_id, id),
+  constraint fuel_import_card_groups_report_group_key unique (organization_id, report_id, source_group_number),
+  constraint fuel_import_card_groups_report_same_org_fk
+    foreign key (organization_id, report_id)
+    references public.fuel_import_reports (organization_id, id) on delete cascade,
+  constraint fuel_import_card_groups_page_check
+    check (source_page_start is null or source_page_end is null or source_page_end >= source_page_start)
+);
+
+create table if not exists public.fuel_import_transactions (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  report_id uuid not null,
+  card_group_id uuid not null,
+  source_transaction_fingerprint text not null check (source_transaction_fingerprint ~ '^[a-f0-9]{64}$'),
+  transaction_at timestamptz,
+  invoice_number text,
+  merchant_raw text,
+  city_raw text,
+  state_raw text,
+  odometer_raw text,
+  fees_amount numeric,
+  source_page int check (source_page is null or source_page > 0),
+  source_row_number int check (source_row_number is null or source_row_number > 0),
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint fuel_import_transactions_org_id_id_key unique (organization_id, id),
+  constraint fuel_import_transactions_org_report_id_id_key unique (organization_id, report_id, id),
+  constraint fuel_import_transactions_fingerprint_key unique (organization_id, report_id, source_transaction_fingerprint),
+  constraint fuel_import_transactions_report_same_org_fk
+    foreign key (organization_id, report_id)
+    references public.fuel_import_reports (organization_id, id) on delete cascade,
+  constraint fuel_import_transactions_group_same_report_fk
+    foreign key (organization_id, card_group_id)
+    references public.fuel_import_card_groups (organization_id, id) on delete cascade
+);
+
+create table if not exists public.fuel_import_transaction_lines (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  transaction_id uuid not null,
+  source_line_order int not null check (source_line_order > 0),
+  product_type_raw text,
+  product_type_normalized text not null check (product_type_normalized in ('ULSD','DEF','FUEL','FEE','OTHER')),
+  quantity numeric,
+  retail_unit_price numeric,
+  charged_unit_price numeric,
+  discount_per_unit numeric,
+  discount_amount numeric,
+  deal_type text,
+  charged_amount numeric,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint fuel_import_transaction_lines_org_id_id_key unique (organization_id, id),
+  constraint fuel_import_transaction_lines_transaction_order_key unique (organization_id, transaction_id, source_line_order),
+  constraint fuel_import_transaction_lines_transaction_same_org_fk
+    foreign key (organization_id, transaction_id)
+    references public.fuel_import_transactions (organization_id, id) on delete cascade,
+  constraint fuel_import_transaction_lines_finite_numeric_check
+    check (
+      (quantity is null or quantity = quantity)
+      and (retail_unit_price is null or retail_unit_price = retail_unit_price)
+      and (charged_unit_price is null or charged_unit_price = charged_unit_price)
+      and (discount_per_unit is null or discount_per_unit = discount_per_unit)
+      and (discount_amount is null or discount_amount = discount_amount)
+      and (charged_amount is null or charged_amount = charged_amount)
+    )
+);
+
+create table if not exists public.fuel_cards (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  provider text not null check (provider in ('octane','manual')),
+  external_card_id text not null,
+  card_last_four text,
+  status text not null default 'active' check (status in ('active','inactive','archived')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fuel_cards_org_id_id_key unique (organization_id, id),
+  constraint fuel_cards_provider_external_key unique (organization_id, provider, external_card_id)
+);
+
+create table if not exists public.fuel_card_assignments (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  fuel_card_id uuid not null,
+  vehicle_id uuid,
+  driver_id uuid,
+  effective_from date not null,
+  effective_to date,
+  assignment_source text not null check (assignment_source in ('imported_unresolved','manual','effective_card_assignment')),
+  status text not null default 'draft' check (status in ('draft','approved','archived')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fuel_card_assignments_org_id_id_key unique (organization_id, id),
+  constraint fuel_card_assignments_card_same_org_fk
+    foreign key (organization_id, fuel_card_id)
+    references public.fuel_cards (organization_id, id) on delete cascade,
+  constraint fuel_card_assignments_vehicle_same_org_fk
+    foreign key (organization_id, vehicle_id)
+    references public.vehicles (organization_id, id) on delete set null (vehicle_id),
+  constraint fuel_card_assignments_driver_same_org_fk
+    foreign key (organization_id, driver_id)
+    references public.people (organization_id, id) on delete set null (driver_id),
+  constraint fuel_card_assignments_effective_range_check
+    check (effective_to is null or effective_to > effective_from),
+  constraint fuel_card_assignments_approved_target_check
+    check (status <> 'approved' or vehicle_id is not null or driver_id is not null)
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'fuel_card_assignments_no_approved_overlap'
+      and conrelid = 'public.fuel_card_assignments'::regclass
+  ) then
+    alter table public.fuel_card_assignments
+      add constraint fuel_card_assignments_no_approved_overlap
+      exclude using gist (
+        organization_id with =,
+        fuel_card_id with =,
+        daterange(effective_from, coalesce(effective_to, 'infinity'::date), '[)') with &&
+      )
+      where (status = 'approved');
+  end if;
+end $$;
+
+create table if not exists public.fuel_import_matches (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  card_group_id uuid not null,
+  transaction_id uuid,
+  fuel_card_id uuid,
+  vehicle_id uuid,
+  driver_id uuid,
+  match_method text not null
+    check (match_method in ('effective_card_assignment','exact_card_id','exact_unit_alias','exact_driver_label','manual')),
+  confidence_score numeric not null check (confidence_score >= 0 and confidence_score <= 1),
+  status text not null
+    check (status in ('exact','inferred','ambiguous','unmatched','manually_approved','rejected')),
+  reasons jsonb not null default '[]'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint fuel_import_matches_org_id_id_key unique (organization_id, id),
+  constraint fuel_import_matches_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint fuel_import_matches_group_same_org_fk
+    foreign key (organization_id, card_group_id)
+    references public.fuel_import_card_groups (organization_id, id) on delete cascade,
+  constraint fuel_import_matches_transaction_same_org_fk
+    foreign key (organization_id, transaction_id)
+    references public.fuel_import_transactions (organization_id, id) on delete set null (transaction_id),
+  constraint fuel_import_matches_card_same_org_fk
+    foreign key (organization_id, fuel_card_id)
+    references public.fuel_cards (organization_id, id) on delete set null (fuel_card_id),
+  constraint fuel_import_matches_vehicle_same_org_fk
+    foreign key (organization_id, vehicle_id)
+    references public.vehicles (organization_id, id) on delete set null (vehicle_id),
+  constraint fuel_import_matches_driver_same_org_fk
+    foreign key (organization_id, driver_id)
+    references public.people (organization_id, id) on delete set null (driver_id)
+);
+
+create unique index if not exists fuel_import_matches_one_active_group_key
+  on public.fuel_import_matches (organization_id, card_group_id)
+  where transaction_id is null and status in ('exact','inferred','manually_approved');
+
+create unique index if not exists fuel_import_matches_one_active_transaction_key
+  on public.fuel_import_matches (organization_id, card_group_id, transaction_id)
+  where transaction_id is not null and status in ('exact','inferred','manually_approved');
+
+create or replace function public.guard_fuel_import_report_source()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.fuel_import_transactions t
+    where t.organization_id = old.organization_id
+      and t.report_id = old.id
+  ) and (
+    new.batch_id is distinct from old.batch_id
+    or new.file_id is distinct from old.file_id
+    or new.provider is distinct from old.provider
+    or new.carrier_identifier is distinct from old.carrier_identifier
+    or new.period_start is distinct from old.period_start
+    or new.period_end is distinct from old.period_end
+    or new.reported_transaction_count is distinct from old.reported_transaction_count
+    or new.reported_total_amount is distinct from old.reported_total_amount
+    or new.reported_total_quantity is distinct from old.reported_total_quantity
+    or new.reported_discount_amount is distinct from old.reported_discount_amount
+    or new.parser_name is distinct from old.parser_name
+    or new.parser_version is distinct from old.parser_version
+    or new.schema_signature is distinct from old.schema_signature
+    or new.source_snapshot is distinct from old.source_snapshot
+  ) then
+    raise exception 'Fuel import report source facts cannot be changed after transactions exist.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_fuel_import_transaction_source()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if exists (
+    select 1
+    from public.fuel_import_transaction_lines l
+    where l.organization_id = old.organization_id
+      and l.transaction_id = old.id
+  ) or exists (
+    select 1
+    from public.fuel_import_matches m
+    where m.organization_id = old.organization_id
+      and m.transaction_id = old.id
+  ) then
+    if new.report_id is distinct from old.report_id
+      or new.card_group_id is distinct from old.card_group_id
+      or new.source_transaction_fingerprint is distinct from old.source_transaction_fingerprint
+      or new.transaction_at is distinct from old.transaction_at
+      or new.invoice_number is distinct from old.invoice_number
+      or new.fees_amount is distinct from old.fees_amount
+      or new.source_page is distinct from old.source_page
+      or new.source_row_number is distinct from old.source_row_number
+      or new.source_snapshot is distinct from old.source_snapshot then
+      raise exception 'Fuel import transaction source facts cannot be changed after lines or matches exist.';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'fuel_import_reports',
+    'fuel_cards',
+    'fuel_card_assignments',
+    'fuel_import_matches'
+  ] loop
+    execute format('drop trigger if exists %I_updated_at on public.%I;', t, t);
+    execute format(
+      'create trigger %I_updated_at before update on public.%I for each row execute function public.touch_amazon_import_updated_at();',
+      t, t
+    );
+  end loop;
+end $$;
+
+drop trigger if exists fuel_import_reports_source_guard on public.fuel_import_reports;
+create trigger fuel_import_reports_source_guard
+  before update on public.fuel_import_reports
+  for each row execute function public.guard_fuel_import_report_source();
+
+drop trigger if exists fuel_import_transactions_source_guard on public.fuel_import_transactions;
+create trigger fuel_import_transactions_source_guard
+  before update on public.fuel_import_transactions
+  for each row execute function public.guard_fuel_import_transaction_source();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'fuel_import_reports',
+    'fuel_import_card_groups',
+    'fuel_import_transactions',
+    'fuel_import_transaction_lines',
+    'fuel_cards',
+    'fuel_card_assignments',
+    'fuel_import_matches'
+  ] loop
+    execute format('drop trigger if exists %I_org_guard on public.%I;', t, t);
+    execute format(
+      'create trigger %I_org_guard before update on public.%I for each row execute function public.guard_amazon_import_organization_id();',
+      t, t
+    );
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer())) with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+  end loop;
+end $$;
+
+-- Amazon reference resolution foundation.
+-- This migration stores approved internal mappings needed before projection. It
+-- does not create loads, expenses, statement candidates, settlements, or PDFs.
+
+set search_path = public, extensions;
+
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'people_org_id_id_key') then
+    alter table public.people
+      add constraint people_org_id_id_key unique (organization_id, id);
+  end if;
+
+  if not exists (select 1 from pg_constraint where conname = 'vehicles_org_id_id_key') then
+    alter table public.vehicles
+      add constraint vehicles_org_id_id_key unique (organization_id, id);
+  end if;
+end $$;
+
+create table if not exists public.amazon_facility_locations (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  provider text not null check (provider in ('amazon','octane','manual')),
+  facility_code text not null,
+  normalized_facility_code text not null,
+  city text not null,
+  state text not null,
+  postal_code text,
+  country_code text not null default 'US',
+  timezone text,
+  effective_from date not null,
+  effective_to date,
+  verification_status text not null default 'unverified'
+    check (verification_status in ('unverified','manually_verified','imported_verified','rejected')),
+  source text not null check (source in ('manual','amazon','octane','imported','review_decision')),
+  verified_by uuid,
+  verified_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_facility_locations_org_id_id_key unique (organization_id, id),
+  constraint amazon_facility_locations_verified_by_same_org_fk
+    foreign key (organization_id, verified_by)
+    references public.profiles (organization_id, id) on delete set null (verified_by),
+  constraint amazon_facility_locations_code_check
+    check (btrim(facility_code) <> '' and btrim(normalized_facility_code) <> ''),
+  constraint amazon_facility_locations_city_state_check
+    check (btrim(city) <> '' and btrim(state) <> ''),
+  constraint amazon_facility_locations_effective_range_check
+    check (effective_to is null or effective_to > effective_from),
+  constraint amazon_facility_locations_verified_metadata_check
+    check (
+      verification_status not in ('manually_verified','imported_verified')
+      or verified_at is not null
+    )
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'amazon_facility_locations_no_verified_overlap'
+      and conrelid = 'public.amazon_facility_locations'::regclass
+  ) then
+    alter table public.amazon_facility_locations
+      add constraint amazon_facility_locations_no_verified_overlap
+      exclude using gist (
+        organization_id with =,
+        provider with =,
+        normalized_facility_code with =,
+        daterange(effective_from, coalesce(effective_to, 'infinity'::date), '[)') with &&
+      )
+      where (verification_status in ('manually_verified','imported_verified'));
+  end if;
+end $$;
+
+create table if not exists public.amazon_external_driver_identifiers (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  provider text not null check (provider in ('amazon','octane','manual')),
+  identifier_type text not null check (identifier_type in ('driver_display_name','driver_external_id','fuel_driver_label')),
+  external_value text not null,
+  normalized_value text not null,
+  person_id uuid not null,
+  effective_from date not null,
+  effective_to date,
+  status text not null default 'proposed' check (status in ('proposed','approved','rejected','archived')),
+  confidence_score numeric check (confidence_score is null or (confidence_score >= 0 and confidence_score <= 1)),
+  assignment_source text not null check (assignment_source in ('imported','manual','review_decision')),
+  approved_by uuid,
+  approved_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_external_driver_identifiers_org_id_id_key unique (organization_id, id),
+  constraint amazon_external_driver_identifiers_person_same_org_fk
+    foreign key (organization_id, person_id)
+    references public.people (organization_id, id) on delete cascade,
+  constraint amazon_external_driver_identifiers_approved_by_same_org_fk
+    foreign key (organization_id, approved_by)
+    references public.profiles (organization_id, id) on delete set null (approved_by),
+  constraint amazon_external_driver_identifiers_value_check
+    check (btrim(external_value) <> '' and btrim(normalized_value) <> ''),
+  constraint amazon_external_driver_identifiers_effective_range_check
+    check (effective_to is null or effective_to > effective_from),
+  constraint amazon_external_driver_identifiers_approval_metadata_check
+    check (status <> 'approved' or approved_at is not null)
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'amazon_external_driver_identifiers_no_approved_overlap'
+      and conrelid = 'public.amazon_external_driver_identifiers'::regclass
+  ) then
+    alter table public.amazon_external_driver_identifiers
+      add constraint amazon_external_driver_identifiers_no_approved_overlap
+      exclude using gist (
+        organization_id with =,
+        provider with =,
+        identifier_type with =,
+        normalized_value with =,
+        daterange(effective_from, coalesce(effective_to, 'infinity'::date), '[)') with &&
+      )
+      where (status = 'approved');
+  end if;
+end $$;
+
+create table if not exists public.amazon_team_split_rules (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  provider text not null check (provider in ('amazon','manual')),
+  team_key text not null,
+  effective_from date not null,
+  effective_to date,
+  status text not null default 'proposed' check (status in ('proposed','approved','rejected','archived')),
+  assignment_source text not null check (assignment_source in ('imported','manual','review_decision')),
+  approved_by uuid,
+  approved_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint amazon_team_split_rules_org_id_id_key unique (organization_id, id),
+  constraint amazon_team_split_rules_approved_by_same_org_fk
+    foreign key (organization_id, approved_by)
+    references public.profiles (organization_id, id) on delete set null (approved_by),
+  constraint amazon_team_split_rules_team_key_check
+    check (team_key ~ '^team_[a-f0-9]{24}$'),
+  constraint amazon_team_split_rules_effective_range_check
+    check (effective_to is null or effective_to > effective_from),
+  constraint amazon_team_split_rules_approval_metadata_check
+    check (status <> 'approved' or approved_at is not null)
+);
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'amazon_team_split_rules_no_approved_overlap'
+      and conrelid = 'public.amazon_team_split_rules'::regclass
+  ) then
+    alter table public.amazon_team_split_rules
+      add constraint amazon_team_split_rules_no_approved_overlap
+      exclude using gist (
+        organization_id with =,
+        provider with =,
+        team_key with =,
+        daterange(effective_from, coalesce(effective_to, 'infinity'::date), '[)') with &&
+      )
+      where (status = 'approved');
+  end if;
+end $$;
+
+create table if not exists public.amazon_team_split_rule_members (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  team_split_rule_id uuid not null,
+  person_id uuid not null,
+  member_order int not null check (member_order > 0),
+  split_basis_points int not null check (split_basis_points > 0 and split_basis_points <= 10000),
+  created_at timestamptz not null default now(),
+  constraint amazon_team_split_rule_members_org_id_id_key unique (organization_id, id),
+  constraint amazon_team_split_rule_members_rule_same_org_fk
+    foreign key (organization_id, team_split_rule_id)
+    references public.amazon_team_split_rules (organization_id, id) on delete cascade,
+  constraint amazon_team_split_rule_members_person_same_org_fk
+    foreign key (organization_id, person_id)
+    references public.people (organization_id, id) on delete cascade,
+  constraint amazon_team_split_rule_members_person_key unique (organization_id, team_split_rule_id, person_id),
+  constraint amazon_team_split_rule_members_order_key unique (organization_id, team_split_rule_id, member_order)
+);
+
+create or replace function public.guard_amazon_team_split_rule_members_total()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_org uuid;
+  v_rule uuid;
+  v_status text;
+  v_total int;
+begin
+  v_org := coalesce(new.organization_id, old.organization_id);
+  v_rule := coalesce(new.team_split_rule_id, old.team_split_rule_id);
+
+  select status into v_status
+  from public.amazon_team_split_rules
+  where organization_id = v_org
+    and id = v_rule;
+
+  if v_status = 'approved' then
+    select coalesce(sum(split_basis_points), 0)::int into v_total
+    from public.amazon_team_split_rule_members
+    where organization_id = v_org
+      and team_split_rule_id = v_rule;
+
+    if v_total <> 10000 then
+      raise exception 'Approved Amazon team split members must sum to 10000 basis points.';
+    end if;
+  end if;
+
+  return coalesce(new, old);
+end;
+$$;
+
+create or replace function public.guard_amazon_team_split_rule_approval_total()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+declare
+  v_total int;
+begin
+  if new.status = 'approved' then
+    select coalesce(sum(split_basis_points), 0)::int into v_total
+    from public.amazon_team_split_rule_members
+    where organization_id = new.organization_id
+      and team_split_rule_id = new.id;
+
+    if v_total <> 10000 then
+      raise exception 'Approved Amazon team split rules require members totaling 10000 basis points.';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists amazon_team_split_rule_members_total_guard on public.amazon_team_split_rule_members;
+create constraint trigger amazon_team_split_rule_members_total_guard
+  after insert or update or delete on public.amazon_team_split_rule_members
+  deferrable initially deferred
+  for each row execute function public.guard_amazon_team_split_rule_members_total();
+
+drop trigger if exists amazon_team_split_rules_total_guard on public.amazon_team_split_rules;
+create constraint trigger amazon_team_split_rules_total_guard
+  after insert or update of status on public.amazon_team_split_rules
+  deferrable initially deferred
+  for each row execute function public.guard_amazon_team_split_rule_approval_total();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_facility_locations',
+    'amazon_external_driver_identifiers',
+    'amazon_team_split_rules'
+  ] loop
+    execute format('drop trigger if exists %I_updated_at on public.%I;', t, t);
+    execute format(
+      'create trigger %I_updated_at before update on public.%I for each row execute function public.touch_amazon_import_updated_at();',
+      t, t
+    );
+  end loop;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_facility_locations',
+    'amazon_external_driver_identifiers',
+    'amazon_team_split_rules',
+    'amazon_team_split_rule_members'
+  ] loop
+    execute format('drop trigger if exists %I_org_guard on public.%I;', t, t);
+    execute format(
+      'create trigger %I_org_guard before update on public.%I for each row execute function public.guard_amazon_import_organization_id();',
+      t, t
+    );
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_insert on public.%I for insert to authenticated with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_update on public.%I for update to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer())) with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+    execute format(
+      'create policy %I_delete on public.%I for delete to authenticated using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));',
+      t, t
+    );
+  end loop;
+end $$;
+
+grant select, insert, update, delete on table
+  public.amazon_facility_locations,
+  public.amazon_external_driver_identifiers,
+  public.amazon_team_split_rules,
+  public.amazon_team_split_rule_members
+to authenticated, service_role;
+
+-- Amazon controlled projection links.
+-- This migration adds authoritative lineage from canonical Amazon source records
+-- into the existing public.loads and public.expenses tables. It does not create
+-- settlement candidates, settlements, PDFs, or competing operational tables.
+
+set search_path = public, extensions;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'loads_org_id_id_key') then
+    alter table public.loads
+      add constraint loads_org_id_id_key unique (organization_id, id);
+  end if;
+
+  if not exists (select 1 from pg_constraint where conname = 'expenses_org_id_id_key') then
+    alter table public.expenses
+      add constraint expenses_org_id_id_key unique (organization_id, id);
+  end if;
+end $$;
+
+create table if not exists public.amazon_revenue_load_projections (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  revenue_item_id uuid not null,
+  load_id uuid not null,
+  source_revision text not null,
+  source_fingerprint text not null,
+  projection_status text not null
+    check (projection_status in ('projected','conflict','superseded','archived')),
+  projection_snapshot jsonb not null default '{}'::jsonb,
+  projected_by uuid,
+  projected_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_error jsonb,
+  constraint amazon_revenue_load_projections_org_id_id_key unique (organization_id, id),
+  constraint amazon_revenue_load_projections_revenue_item_same_org_fk
+    foreign key (organization_id, batch_id, revenue_item_id)
+    references public.amazon_revenue_items (organization_id, batch_id, id) on delete cascade,
+  constraint amazon_revenue_load_projections_load_same_org_fk
+    foreign key (organization_id, load_id)
+    references public.loads (organization_id, id) on delete restrict,
+  constraint amazon_revenue_load_projections_projected_by_same_org_fk
+    foreign key (organization_id, projected_by)
+    references public.profiles (organization_id, id) on delete set null (projected_by),
+  constraint amazon_revenue_load_projections_source_fingerprint_check
+    check (source_fingerprint ~ '^[a-f0-9]{64}$'),
+  constraint amazon_revenue_load_projections_source_revision_check
+    check (btrim(source_revision) <> '')
+);
+
+create unique index if not exists amazon_revenue_load_projections_active_revenue_item_key
+  on public.amazon_revenue_load_projections (organization_id, revenue_item_id)
+  where projection_status = 'projected';
+
+create unique index if not exists amazon_revenue_load_projections_active_load_key
+  on public.amazon_revenue_load_projections (organization_id, load_id)
+  where projection_status = 'projected';
+
+create unique index if not exists amazon_revenue_load_projections_active_fingerprint_key
+  on public.amazon_revenue_load_projections (organization_id, batch_id, source_fingerprint)
+  where projection_status = 'projected';
+
+create table if not exists public.amazon_fuel_expense_projections (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  transaction_line_id uuid not null,
+  expense_id uuid not null,
+  source_revision text not null,
+  source_fingerprint text not null,
+  projection_status text not null
+    check (projection_status in ('projected','conflict','superseded','archived')),
+  projection_snapshot jsonb not null default '{}'::jsonb,
+  projected_by uuid,
+  projected_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  last_error jsonb,
+  constraint amazon_fuel_expense_projections_org_id_id_key unique (organization_id, id),
+  constraint amazon_fuel_expense_projections_transaction_line_same_org_fk
+    foreign key (organization_id, transaction_line_id)
+    references public.fuel_import_transaction_lines (organization_id, id) on delete cascade,
+  constraint amazon_fuel_expense_projections_expense_same_org_fk
+    foreign key (organization_id, expense_id)
+    references public.expenses (organization_id, id) on delete restrict,
+  constraint amazon_fuel_expense_projections_projected_by_same_org_fk
+    foreign key (organization_id, projected_by)
+    references public.profiles (organization_id, id) on delete set null (projected_by),
+  constraint amazon_fuel_expense_projections_source_fingerprint_check
+    check (source_fingerprint ~ '^[a-f0-9]{64}$'),
+  constraint amazon_fuel_expense_projections_source_revision_check
+    check (btrim(source_revision) <> '')
+);
+
+create unique index if not exists amazon_fuel_expense_projections_active_line_key
+  on public.amazon_fuel_expense_projections (organization_id, transaction_line_id)
+  where projection_status = 'projected';
+
+create unique index if not exists amazon_fuel_expense_projections_active_expense_key
+  on public.amazon_fuel_expense_projections (organization_id, expense_id)
+  where projection_status = 'projected';
+
+create unique index if not exists amazon_fuel_expense_projections_active_fingerprint_key
+  on public.amazon_fuel_expense_projections (organization_id, batch_id, source_fingerprint)
+  where projection_status = 'projected';
+
+create or replace function public.guard_amazon_revenue_load_projection_identity()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id
+    or new.batch_id is distinct from old.batch_id
+    or new.revenue_item_id is distinct from old.revenue_item_id
+    or new.load_id is distinct from old.load_id
+    or new.source_fingerprint is distinct from old.source_fingerprint then
+    raise exception 'Amazon revenue load projection identity cannot be changed.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_fuel_expense_projection_identity()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id
+    or new.batch_id is distinct from old.batch_id
+    or new.transaction_line_id is distinct from old.transaction_line_id
+    or new.expense_id is distinct from old.expense_id
+    or new.source_fingerprint is distinct from old.source_fingerprint then
+    raise exception 'Amazon fuel expense projection identity cannot be changed.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists amazon_revenue_load_projections_identity_guard on public.amazon_revenue_load_projections;
+create trigger amazon_revenue_load_projections_identity_guard
+  before update on public.amazon_revenue_load_projections
+  for each row execute function public.guard_amazon_revenue_load_projection_identity();
+
+drop trigger if exists amazon_fuel_expense_projections_identity_guard on public.amazon_fuel_expense_projections;
+create trigger amazon_fuel_expense_projections_identity_guard
+  before update on public.amazon_fuel_expense_projections
+  for each row execute function public.guard_amazon_fuel_expense_projection_identity();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_revenue_load_projections',
+    'amazon_fuel_expense_projections'
+  ] loop
+    execute format('drop trigger if exists %I_updated_at on public.%I;', t, t);
+    execute format(
+      'create trigger %I_updated_at before update on public.%I for each row execute function public.touch_amazon_import_updated_at();',
+      t, t
+    );
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+  end loop;
+end $$;
+
+grant select on table
+  public.amazon_revenue_load_projections,
+  public.amazon_fuel_expense_projections
+to authenticated, service_role;
+
+grant insert, update, delete on table
+  public.amazon_revenue_load_projections,
+  public.amazon_fuel_expense_projections
+to service_role;
+
+create or replace function public.apply_amazon_revenue_load_projections(
+  p_organization_id uuid,
+  p_batch_id uuid,
+  p_preview_revision text,
+  p_items jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_org uuid := coalesce(p_organization_id, (select public.current_org_id()));
+  v_user uuid := auth.uid();
+  v_preview_revision text;
+  v_created int := 0;
+  v_unchanged int := 0;
+  v_conflicts int := 0;
+  v_item jsonb;
+  v_existing public.amazon_revenue_load_projections%rowtype;
+  v_revenue public.amazon_revenue_items%rowtype;
+  v_load_id uuid;
+begin
+  if v_org is null or not (select public.is_org_writer()) then
+    raise exception 'Writer role is required.';
+  end if;
+  if p_batch_id is null then raise exception 'Batch is required.'; end if;
+  if p_preview_revision is null or btrim(p_preview_revision) = '' then raise exception 'Preview revision is required.'; end if;
+
+  perform pg_advisory_xact_lock(hashtext(v_org::text || ':amazon-revenue-projection:' || p_batch_id::text));
+
+  select encode(digest(coalesce(p_items::text, '[]'), 'sha256'), 'hex') into v_preview_revision;
+  if v_preview_revision <> p_preview_revision then
+    raise exception 'projection_preview_stale';
+  end if;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) loop
+    select * into v_revenue
+    from public.amazon_revenue_items
+    where organization_id = v_org
+      and batch_id = p_batch_id
+      and id = (v_item->>'revenueItemId')::uuid
+    for update;
+    if not found then raise exception 'Revenue item not found.'; end if;
+    if v_revenue.source_revision <> v_item->>'sourceRevision' then
+      raise exception 'revenue_projection_revision_conflict';
+    end if;
+
+    select * into v_existing
+    from public.amazon_revenue_load_projections
+    where organization_id = v_org
+      and revenue_item_id = (v_item->>'revenueItemId')::uuid
+      and projection_status = 'projected'
+    for update;
+
+    if found then
+      if exists (
+        select 1
+        from public.settlement_load_links l
+        join public.settlements s on s.organization_id = l.organization_id and s.id = l.settlement_id
+        where l.organization_id = v_org
+          and l.load_id = v_existing.load_id
+          and l.released_at is null
+          and s.status in ('finalized','paid')
+      ) then
+        v_conflicts := v_conflicts + 1;
+        continue;
+      end if;
+      if v_existing.source_revision = v_item->>'sourceRevision'
+        and v_existing.source_fingerprint = v_item->>'sourceFingerprint' then
+        v_unchanged := v_unchanged + 1;
+      else
+        v_conflicts := v_conflicts + 1;
+      end if;
+    else
+      insert into public.loads (
+        organization_id, load_number, load_source, vehicle_id, driver_id,
+        pickup_date, delivery_date, pickup_location, delivery_location, route,
+        gross_amount, fuel_surcharge, total_miles, status, notes
+      ) values (
+        v_org,
+        nullif(v_item #>> '{load,load_number}', ''),
+        'amazon_relay',
+        nullif(v_item #>> '{load,vehicle_id}', '')::uuid,
+        nullif(v_item #>> '{load,driver_id}', '')::uuid,
+        v_revenue.start_date,
+        v_revenue.end_date,
+        null,
+        null,
+        null,
+        coalesce(v_revenue.gross_amount, 0),
+        coalesce(v_revenue.fuel_surcharge_amount, 0),
+        coalesce(v_revenue.distance, 0),
+        'pending',
+        nullif(v_item #>> '{load,notes}', '')
+      ) returning id into v_load_id;
+
+      insert into public.amazon_revenue_load_projections (
+        organization_id, batch_id, revenue_item_id, load_id, source_revision,
+        source_fingerprint, projection_status, projection_snapshot, projected_by
+      ) values (
+        v_org,
+        p_batch_id,
+        (v_item->>'revenueItemId')::uuid,
+        v_load_id,
+        v_item->>'sourceRevision',
+        v_item->>'sourceFingerprint',
+        'projected',
+        v_item,
+        v_user
+      );
+      v_created := v_created + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'created', v_created,
+    'unchanged', v_unchanged,
+    'skipped', 0,
+    'conflicts', v_conflicts
+  );
+end;
+$$;
+
+create or replace function public.apply_amazon_fuel_expense_projections(
+  p_organization_id uuid,
+  p_batch_id uuid,
+  p_preview_revision text,
+  p_items jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_org uuid := coalesce(p_organization_id, (select public.current_org_id()));
+  v_user uuid := auth.uid();
+  v_preview_revision text;
+  v_created int := 0;
+  v_unchanged int := 0;
+  v_conflicts int := 0;
+  v_item jsonb;
+  v_existing public.amazon_fuel_expense_projections%rowtype;
+  v_line public.fuel_import_transaction_lines%rowtype;
+  v_transaction public.fuel_import_transactions%rowtype;
+  v_expense_id uuid;
+begin
+  if v_org is null or not (select public.is_org_writer()) then
+    raise exception 'Writer role is required.';
+  end if;
+  if p_batch_id is null then raise exception 'Batch is required.'; end if;
+  if p_preview_revision is null or btrim(p_preview_revision) = '' then raise exception 'Preview revision is required.'; end if;
+
+  perform pg_advisory_xact_lock(hashtext(v_org::text || ':amazon-fuel-projection:' || p_batch_id::text));
+
+  select encode(digest(coalesce(p_items::text, '[]'), 'sha256'), 'hex') into v_preview_revision;
+  if v_preview_revision <> p_preview_revision then
+    raise exception 'projection_preview_stale';
+  end if;
+
+  for v_item in select * from jsonb_array_elements(coalesce(p_items, '[]'::jsonb)) loop
+    select * into v_line
+    from public.fuel_import_transaction_lines
+    where organization_id = v_org
+      and id = (v_item->>'transactionLineId')::uuid
+    for update;
+    if not found then raise exception 'Fuel transaction line not found.'; end if;
+
+    select * into v_transaction
+    from public.fuel_import_transactions
+    where organization_id = v_org
+      and id = v_line.transaction_id
+    for update;
+    if not found then raise exception 'Fuel transaction not found.'; end if;
+
+    select * into v_existing
+    from public.amazon_fuel_expense_projections
+    where organization_id = v_org
+      and transaction_line_id = (v_item->>'transactionLineId')::uuid
+      and projection_status = 'projected'
+    for update;
+
+    if found then
+      if exists (
+        select 1
+        from public.settlement_expense_links l
+        join public.settlements s on s.organization_id = l.organization_id and s.id = l.settlement_id
+        where l.organization_id = v_org
+          and l.expense_id = v_existing.expense_id
+          and l.released_at is null
+          and s.status in ('finalized','paid')
+      ) then
+        v_conflicts := v_conflicts + 1;
+        continue;
+      end if;
+      if v_existing.source_revision = v_item->>'sourceRevision'
+        and v_existing.source_fingerprint = v_item->>'sourceFingerprint' then
+        v_unchanged := v_unchanged + 1;
+      else
+        v_conflicts := v_conflicts + 1;
+      end if;
+    else
+      insert into public.expenses (
+        organization_id, date, vehicle_id, driver_id, owner_id, category, amount,
+        deduct_from_settlement, deduct_from_driver, deduct_from_owner, deduct_from_investor, notes
+      ) values (
+        v_org,
+        coalesce(v_transaction.transaction_at::date, current_date),
+        nullif(v_item #>> '{expense,vehicle_id}', '')::uuid,
+        nullif(v_item #>> '{expense,driver_id}', '')::uuid,
+        null,
+        case
+          when v_line.product_type_normalized = 'DEF' then 'def'
+          when v_line.product_type_normalized = 'FEE' then 'fees'
+          when v_line.product_type_normalized = 'OTHER' then 'other'
+          else 'fuel'
+        end,
+        coalesce(v_line.charged_amount, 0),
+        false,
+        false,
+        false,
+        false,
+        nullif(v_item #>> '{expense,notes}', '')
+      ) returning id into v_expense_id;
+
+      insert into public.amazon_fuel_expense_projections (
+        organization_id, batch_id, transaction_line_id, expense_id, source_revision,
+        source_fingerprint, projection_status, projection_snapshot, projected_by
+      ) values (
+        v_org,
+        p_batch_id,
+        (v_item->>'transactionLineId')::uuid,
+        v_expense_id,
+        v_item->>'sourceRevision',
+        v_item->>'sourceFingerprint',
+        'projected',
+        v_item,
+        v_user
+      );
+      v_created := v_created + 1;
+    end if;
+  end loop;
+
+  return jsonb_build_object(
+    'created', v_created,
+    'unchanged', v_unchanged,
+    'skipped', 0,
+    'conflicts', v_conflicts
+  );
+end;
+$$;
+
+revoke execute on function public.apply_amazon_revenue_load_projections(uuid, uuid, text, jsonb) from public, anon;
+grant execute on function public.apply_amazon_revenue_load_projections(uuid, uuid, text, jsonb) to authenticated, service_role;
+
+revoke execute on function public.apply_amazon_fuel_expense_projections(uuid, uuid, text, jsonb) from public, anon;
+grant execute on function public.apply_amazon_fuel_expense_projections(uuid, uuid, text, jsonb) to authenticated, service_role;
+
+-- Amazon statement candidates.
+-- Versioned, reviewable calculation packages that select canonical Amazon source
+-- records and projected loads/expenses without consuming settlement links.
+
+create table if not exists public.amazon_statement_candidates (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  batch_id uuid not null,
+  statement_type text not null
+    check (statement_type in ('company_driver','box_truck_driver','owner_operator','managed_investor')),
+  status text not null default 'draft'
+    check (status in ('draft','needs_review','ready','stale','converted','archived')),
+  period_start date not null,
+  period_end date not null,
+  payee_type text not null
+    check (payee_type in ('driver','owner','investor')),
+  payee_id uuid,
+  vehicle_id uuid,
+  team_split_rule_id uuid,
+  calculation_rule_version text not null,
+  template_version text not null,
+  source_revision text not null,
+  preview_revision text not null,
+  configuration_snapshot jsonb not null default '{}'::jsonb,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  calculation_snapshot jsonb not null default '{}'::jsonb,
+  gross_amount numeric not null default 0,
+  percentage_deductions_amount numeric not null default 0,
+  fixed_deductions_amount numeric not null default 0,
+  fuel_deductions_amount numeric not null default 0,
+  other_deductions_amount numeric not null default 0,
+  total_deductions_amount numeric not null default 0,
+  net_amount numeric not null default 0,
+  created_by uuid,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  approved_by uuid,
+  approved_at timestamptz,
+  converted_settlement_id uuid,
+  converted_at timestamptz,
+  last_error jsonb,
+  constraint amazon_statement_candidates_org_id_id_key unique (organization_id, id),
+  constraint amazon_statement_candidates_org_batch_id_id_key unique (organization_id, batch_id, id),
+  constraint amazon_statement_candidates_batch_same_org_fk
+    foreign key (organization_id, batch_id)
+    references public.amazon_import_batches (organization_id, id) on delete cascade,
+  constraint amazon_statement_candidates_payee_same_org_fk
+    foreign key (organization_id, payee_id)
+    references public.people (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidates_vehicle_same_org_fk
+    foreign key (organization_id, vehicle_id)
+    references public.vehicles (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidates_team_split_same_org_fk
+    foreign key (organization_id, team_split_rule_id)
+    references public.amazon_team_split_rules (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidates_created_by_same_org_fk
+    foreign key (organization_id, created_by)
+    references public.profiles (organization_id, id) on delete set null (created_by),
+  constraint amazon_statement_candidates_approved_by_same_org_fk
+    foreign key (organization_id, approved_by)
+    references public.profiles (organization_id, id) on delete set null (approved_by),
+  constraint amazon_statement_candidates_settlement_same_org_fk
+    foreign key (organization_id, converted_settlement_id)
+    references public.settlements (organization_id, id) on delete set null (converted_settlement_id),
+  constraint amazon_statement_candidates_period_check check (period_end >= period_start),
+  constraint amazon_statement_candidates_source_revision_check check (btrim(source_revision) <> ''),
+  constraint amazon_statement_candidates_preview_revision_check check (btrim(preview_revision) <> ''),
+  constraint amazon_statement_candidates_amounts_finite_check check (
+    gross_amount = gross_amount
+    and percentage_deductions_amount = percentage_deductions_amount
+    and fixed_deductions_amount = fixed_deductions_amount
+    and fuel_deductions_amount = fuel_deductions_amount
+    and other_deductions_amount = other_deductions_amount
+    and total_deductions_amount = total_deductions_amount
+    and net_amount = net_amount
+  )
+);
+
+create index if not exists amazon_statement_candidates_batch_status_idx
+  on public.amazon_statement_candidates (organization_id, batch_id, status, period_start);
+
+create unique index if not exists amazon_statement_candidates_converted_settlement_key
+  on public.amazon_statement_candidates (organization_id, converted_settlement_id)
+  where converted_settlement_id is not null;
+
+create table if not exists public.amazon_statement_candidate_revenue (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  candidate_id uuid not null,
+  revenue_item_id uuid not null,
+  load_id uuid not null,
+  allocated_gross_amount numeric not null,
+  allocation_basis_points integer,
+  source_revision text not null,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  display_order integer not null default 0,
+  period_override_approved boolean not null default false,
+  created_at timestamptz not null default now(),
+  constraint amazon_statement_candidate_revenue_org_id_id_key unique (organization_id, id),
+  constraint amazon_statement_candidate_revenue_candidate_same_org_fk
+    foreign key (organization_id, candidate_id)
+    references public.amazon_statement_candidates (organization_id, id) on delete cascade,
+  constraint amazon_statement_candidate_revenue_item_same_org_fk
+    foreign key (organization_id, revenue_item_id)
+    references public.amazon_revenue_items (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidate_revenue_load_same_org_fk
+    foreign key (organization_id, load_id)
+    references public.loads (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidate_revenue_basis_points_check
+    check (allocation_basis_points is null or allocation_basis_points between 0 and 10000),
+  constraint amazon_statement_candidate_revenue_source_revision_check check (btrim(source_revision) <> '')
+);
+
+create unique index if not exists amazon_statement_candidate_revenue_source_key
+  on public.amazon_statement_candidate_revenue (organization_id, candidate_id, revenue_item_id);
+
+create unique index if not exists amazon_statement_candidate_revenue_load_key
+  on public.amazon_statement_candidate_revenue (organization_id, candidate_id, load_id);
+
+create unique index if not exists amazon_statement_candidate_revenue_order_key
+  on public.amazon_statement_candidate_revenue (organization_id, candidate_id, display_order);
+
+create table if not exists public.amazon_statement_candidate_fuel_lines (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  candidate_id uuid not null,
+  transaction_line_id uuid not null,
+  expense_id uuid not null,
+  allocated_amount numeric not null,
+  allocation_basis_points integer,
+  source_revision text not null,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  display_order integer not null default 0,
+  period_override_approved boolean not null default false,
+  created_at timestamptz not null default now(),
+  constraint amazon_statement_candidate_fuel_lines_org_id_id_key unique (organization_id, id),
+  constraint amazon_statement_candidate_fuel_lines_candidate_same_org_fk
+    foreign key (organization_id, candidate_id)
+    references public.amazon_statement_candidates (organization_id, id) on delete cascade,
+  constraint amazon_statement_candidate_fuel_lines_line_same_org_fk
+    foreign key (organization_id, transaction_line_id)
+    references public.fuel_import_transaction_lines (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidate_fuel_lines_expense_same_org_fk
+    foreign key (organization_id, expense_id)
+    references public.expenses (organization_id, id) on delete restrict,
+  constraint amazon_statement_candidate_fuel_lines_basis_points_check
+    check (allocation_basis_points is null or allocation_basis_points between 0 and 10000),
+  constraint amazon_statement_candidate_fuel_lines_source_revision_check check (btrim(source_revision) <> '')
+);
+
+create unique index if not exists amazon_statement_candidate_fuel_lines_source_key
+  on public.amazon_statement_candidate_fuel_lines (organization_id, candidate_id, transaction_line_id);
+
+create unique index if not exists amazon_statement_candidate_fuel_lines_expense_key
+  on public.amazon_statement_candidate_fuel_lines (organization_id, candidate_id, expense_id);
+
+create unique index if not exists amazon_statement_candidate_fuel_lines_order_key
+  on public.amazon_statement_candidate_fuel_lines (organization_id, candidate_id, display_order);
+
+create table if not exists public.amazon_statement_candidate_adjustments (
+  id uuid primary key default gen_random_uuid(),
+  organization_id uuid not null references public.organizations (id) on delete cascade,
+  candidate_id uuid not null,
+  adjustment_type text not null
+    check (adjustment_type in ('driver_percentage','company_percentage','insurance','eld_safety','fuel','toll','parking','load_save','maintenance','miscellaneous','carryover')),
+  label text not null,
+  calculation_basis text not null
+    check (calculation_basis in ('gross_percentage','fixed_amount','selected_source_lines')),
+  rate_basis_points integer,
+  fixed_amount numeric,
+  calculated_amount numeric not null,
+  deduction_lane text not null
+    check (deduction_lane in ('driver','owner','investor','none')),
+  display_order integer not null default 0,
+  configuration_source text not null,
+  source_snapshot jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint amazon_statement_candidate_adjustments_org_id_id_key unique (organization_id, id),
+  constraint amazon_statement_candidate_adjustments_candidate_same_org_fk
+    foreign key (organization_id, candidate_id)
+    references public.amazon_statement_candidates (organization_id, id) on delete cascade,
+  constraint amazon_statement_candidate_adjustments_rate_check
+    check (rate_basis_points is null or rate_basis_points between 0 and 10000),
+  constraint amazon_statement_candidate_adjustments_basis_check check (
+    (calculation_basis = 'gross_percentage' and rate_basis_points is not null and fixed_amount is null)
+    or (calculation_basis = 'fixed_amount' and fixed_amount is not null and rate_basis_points is null)
+    or (calculation_basis = 'selected_source_lines' and rate_basis_points is null)
+  ),
+  constraint amazon_statement_candidate_adjustments_label_check check (btrim(label) <> ''),
+  constraint amazon_statement_candidate_adjustments_source_check check (btrim(configuration_source) <> '')
+);
+
+create unique index if not exists amazon_statement_candidate_adjustments_order_key
+  on public.amazon_statement_candidate_adjustments (organization_id, candidate_id, display_order);
+
+create or replace function public.guard_amazon_statement_candidate()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if tg_op = 'UPDATE' then
+    if old.status = 'converted' then
+      raise exception 'Converted Amazon statement candidates are immutable.';
+    end if;
+    if new.organization_id is distinct from old.organization_id then
+      raise exception 'Amazon statement candidate organization cannot be changed.';
+    end if;
+    if new.converted_settlement_id is not null and new.status <> 'converted' then
+      raise exception 'Converted settlement lineage requires converted status.';
+    end if;
+  end if;
+  if tg_op = 'DELETE' and old.status = 'converted' then
+    raise exception 'Converted Amazon statement candidates are immutable.';
+  end if;
+  return coalesce(new, old);
+end;
+$$;
+
+create or replace function public.guard_amazon_statement_candidate_revenue_identity()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id
+    or new.candidate_id is distinct from old.candidate_id
+    or new.revenue_item_id is distinct from old.revenue_item_id
+    or new.load_id is distinct from old.load_id then
+    raise exception 'Amazon statement candidate revenue identity cannot be changed.';
+  end if;
+  return new;
+end;
+$$;
+
+create or replace function public.guard_amazon_statement_candidate_fuel_identity()
+returns trigger
+language plpgsql
+set search_path = public
+as $$
+begin
+  if new.organization_id is distinct from old.organization_id
+    or new.candidate_id is distinct from old.candidate_id
+    or new.transaction_line_id is distinct from old.transaction_line_id
+    or new.expense_id is distinct from old.expense_id then
+    raise exception 'Amazon statement candidate fuel identity cannot be changed.';
+  end if;
+  return new;
+end;
+$$;
+
+drop trigger if exists amazon_statement_candidates_guard on public.amazon_statement_candidates;
+create trigger amazon_statement_candidates_guard
+  before update or delete on public.amazon_statement_candidates
+  for each row execute function public.guard_amazon_statement_candidate();
+
+drop trigger if exists amazon_statement_candidate_revenue_identity_guard on public.amazon_statement_candidate_revenue;
+create trigger amazon_statement_candidate_revenue_identity_guard
+  before update on public.amazon_statement_candidate_revenue
+  for each row execute function public.guard_amazon_statement_candidate_revenue_identity();
+
+drop trigger if exists amazon_statement_candidate_fuel_identity_guard on public.amazon_statement_candidate_fuel_lines;
+create trigger amazon_statement_candidate_fuel_identity_guard
+  before update on public.amazon_statement_candidate_fuel_lines
+  for each row execute function public.guard_amazon_statement_candidate_fuel_identity();
+
+drop trigger if exists amazon_statement_candidates_updated_at on public.amazon_statement_candidates;
+create trigger amazon_statement_candidates_updated_at
+  before update on public.amazon_statement_candidates
+  for each row execute function public.touch_amazon_import_updated_at();
+
+do $$
+declare t text;
+begin
+  foreach t in array array[
+    'amazon_statement_candidates',
+    'amazon_statement_candidate_revenue',
+    'amazon_statement_candidate_fuel_lines',
+    'amazon_statement_candidate_adjustments'
+  ] loop
+    execute format('alter table public.%I enable row level security;', t);
+    execute format('drop policy if exists %I_select on public.%I;', t, t);
+    execute format('drop policy if exists %I_insert on public.%I;', t, t);
+    execute format('drop policy if exists %I_update on public.%I;', t, t);
+    execute format('drop policy if exists %I_delete on public.%I;', t, t);
+    execute format(
+      'create policy %I_select on public.%I for select to authenticated using (organization_id = (select public.current_org_id()));',
+      t, t
+    );
+  end loop;
+end $$;
+
+create policy amazon_statement_candidates_insert on public.amazon_statement_candidates
+  for insert to authenticated
+  with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()));
+
+create policy amazon_statement_candidates_update on public.amazon_statement_candidates
+  for update to authenticated
+  using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()) and status <> 'converted')
+  with check (organization_id = (select public.current_org_id()) and (select public.is_org_writer()) and status <> 'converted');
+
+create policy amazon_statement_candidates_delete on public.amazon_statement_candidates
+  for delete to authenticated
+  using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()) and status <> 'converted');
+
+create policy amazon_statement_candidate_revenue_insert on public.amazon_statement_candidate_revenue
+  for insert to authenticated
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_revenue.organization_id
+        and c.id = amazon_statement_candidate_revenue.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_revenue_update on public.amazon_statement_candidate_revenue
+  for update to authenticated
+  using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()))
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_revenue.organization_id
+        and c.id = amazon_statement_candidate_revenue.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_revenue_delete on public.amazon_statement_candidate_revenue
+  for delete to authenticated
+  using (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_revenue.organization_id
+        and c.id = amazon_statement_candidate_revenue.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_fuel_lines_insert on public.amazon_statement_candidate_fuel_lines
+  for insert to authenticated
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_fuel_lines.organization_id
+        and c.id = amazon_statement_candidate_fuel_lines.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_fuel_lines_update on public.amazon_statement_candidate_fuel_lines
+  for update to authenticated
+  using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()))
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_fuel_lines.organization_id
+        and c.id = amazon_statement_candidate_fuel_lines.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_fuel_lines_delete on public.amazon_statement_candidate_fuel_lines
+  for delete to authenticated
+  using (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_fuel_lines.organization_id
+        and c.id = amazon_statement_candidate_fuel_lines.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_adjustments_insert on public.amazon_statement_candidate_adjustments
+  for insert to authenticated
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_adjustments.organization_id
+        and c.id = amazon_statement_candidate_adjustments.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_adjustments_update on public.amazon_statement_candidate_adjustments
+  for update to authenticated
+  using (organization_id = (select public.current_org_id()) and (select public.is_org_writer()))
+  with check (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_adjustments.organization_id
+        and c.id = amazon_statement_candidate_adjustments.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+create policy amazon_statement_candidate_adjustments_delete on public.amazon_statement_candidate_adjustments
+  for delete to authenticated
+  using (
+    organization_id = (select public.current_org_id())
+    and (select public.is_org_writer())
+    and exists (
+      select 1 from public.amazon_statement_candidates c
+      where c.organization_id = amazon_statement_candidate_adjustments.organization_id
+        and c.id = amazon_statement_candidate_adjustments.candidate_id
+        and c.status in ('draft','needs_review','ready','stale')
+    )
+  );
+
+grant select, insert, update, delete on table
+  public.amazon_statement_candidates,
+  public.amazon_statement_candidate_revenue,
+  public.amazon_statement_candidate_fuel_lines,
+  public.amazon_statement_candidate_adjustments
+to authenticated, service_role;
+
+revoke execute on function public.guard_amazon_statement_candidate() from public, anon;
+revoke execute on function public.guard_amazon_statement_candidate_revenue_identity() from public, anon;
+revoke execute on function public.guard_amazon_statement_candidate_fuel_identity() from public, anon;
+
+-- 20260716070000_amazon_server_workflow_hardening.sql
+
+-- Amazon server workflow hardening.
+-- Adds database-enforced concurrency boundaries for candidate conversion,
+-- per-file source persistence, and batch status transitions. This migration is
+-- intentionally additive and does not run migrations, create UI, or weaken the
+-- existing settlement workflow.
+
+set search_path = public, extensions;
+
+create unique index if not exists amazon_statement_candidates_one_conversion_key
+  on public.amazon_statement_candidates (organization_id, id, converted_settlement_id)
+  where converted_settlement_id is not null;
+
+alter table public.amazon_statement_candidates
+  add column if not exists conversion_idempotency_key text;
+
+create unique index if not exists amazon_statement_candidates_conversion_idempotency_key
+  on public.amazon_statement_candidates (organization_id, conversion_idempotency_key)
+  where conversion_idempotency_key is not null;
+
+create or replace function public.transition_amazon_import_batch_atomic(
+  p_batch_id uuid,
+  p_expected_status text,
+  p_next_status text,
+  p_operation text,
+  p_expected_updated_at timestamptz default null,
+  p_has_blocking_issues boolean default false,
+  p_financial_reconciled boolean default false
+)
+returns table (
+  id uuid,
+  organization_id uuid,
+  status text,
+  parser_bundle_version text,
+  period_start date,
+  period_end date,
+  updated_at timestamptz
+)
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_org uuid := (select public.current_org_id());
+  v_batch public.amazon_import_batches%rowtype;
+begin
+  if v_org is null or not (select public.is_org_writer()) then
+    raise exception 'Writer role is required.';
+  end if;
+
+  select *
+    into v_batch
+  from public.amazon_import_batches b
+  where b.organization_id = v_org
+    and b.id = p_batch_id
+  for update;
+
+  if not found then
+    raise exception 'Amazon import batch not found.';
+  end if;
+  if v_batch.status = 'archived' then
+    raise exception 'Archived Amazon import batches are immutable.';
+  end if;
+  if v_batch.status is distinct from p_expected_status then
+    raise exception 'Stale Amazon import batch status.';
+  end if;
+  if p_expected_updated_at is not null and v_batch.updated_at is distinct from p_expected_updated_at then
+    raise exception 'Stale Amazon import batch revision.';
+  end if;
+  if not (
+    (v_batch.status = 'uploaded' and p_next_status = 'parsing' and p_operation = 'parse_files')
+    or (v_batch.status = 'parsing' and p_next_status = 'parsed' and p_operation = 'persist_normalized_sources')
+    or (v_batch.status = 'parsed' and p_next_status = 'needs_review' and p_operation in ('resolve_references','persist_normalized_sources'))
+    or (v_batch.status = 'parsed' and p_next_status = 'reconciled' and p_operation = 'reconcile_payment')
+    or (v_batch.status = 'needs_review' and p_next_status = 'reconciled' and p_operation = 'resolve_references')
+    or (v_batch.status = 'reconciled' and p_next_status = 'ready' and p_operation = 'compile_candidates')
+    or (v_batch.status in ('uploaded','parsing') and p_next_status = 'failed' and p_operation = 'parse_files')
+    or (v_batch.status = 'parsed' and p_next_status = 'failed' and p_operation = 'persist_normalized_sources')
+    or (v_batch.status in ('needs_review','reconciled','ready') and p_next_status = 'archived' and p_operation = 'archive_batch')
+    or (v_batch.status = 'failed' and p_next_status = 'uploaded' and p_operation = 'retry_failed')
+  ) then
+    raise exception 'Invalid Amazon import batch transition.';
+  end if;
+  if p_next_status = 'ready' and (not p_financial_reconciled or p_has_blocking_issues) then
+    raise exception 'Amazon import batch is not ready.';
+  end if;
+
+  update public.amazon_import_batches b
+     set status = p_next_status,
+         updated_at = now()
+   where b.organization_id = v_org
+     and b.id = p_batch_id
+  returning b.* into v_batch;
+
+  return query
+    select v_batch.id,
+           v_batch.organization_id,
+           v_batch.status,
+           v_batch.parser_bundle_version,
+           v_batch.period_start,
+           v_batch.period_end,
+           v_batch.updated_at;
+end;
+$$;
+
+revoke execute on function public.transition_amazon_import_batch_atomic(uuid, text, text, text, timestamptz, boolean, boolean) from public, anon;
+grant execute on function public.transition_amazon_import_batch_atomic(uuid, text, text, text, timestamptz, boolean, boolean) to authenticated;
+
+create or replace function public.persist_amazon_source_atomic(
+  p_organization_id uuid,
+  p_batch_id uuid,
+  p_file_id uuid,
+  p_source_type text,
+  p_parser_name text,
+  p_parser_version text,
+  p_schema_signature text,
+  p_raw_rows jsonb,
+  p_issues jsonb,
+  p_reconciliations jsonb,
+  p_normalized jsonb
+)
+returns jsonb
+language plpgsql
+security invoker
+set search_path = public
+as $$
+declare
+  v_org uuid := (select public.current_org_id());
+  v_file public.amazon_import_files%rowtype;
+  v_invoice_id uuid;
+  v_report_id uuid;
+  v_raw_count int := coalesce(jsonb_array_length(coalesce(p_raw_rows, '[]'::jsonb)), 0);
+  v_issue_count int := coalesce(jsonb_array_length(coalesce(p_issues, '[]'::jsonb)), 0);
+  v_reconciliation_count int := coalesce(jsonb_array_length(coalesce(p_reconciliations, '[]'::jsonb)), 0);
+  v_record_count int := 0;
+begin
+  if v_org is null or not (select public.is_org_writer()) then
+    raise exception 'Writer role is required.';
+  end if;
+  if p_organization_id is distinct from v_org then
+    raise exception 'Wrong organization.';
+  end if;
+
+  select *
+    into v_file
+  from public.amazon_import_files f
+  where f.organization_id = p_organization_id
+    and f.batch_id = p_batch_id
+    and f.id = p_file_id
+  for update;
+
+  if not found then
+    raise exception 'Amazon import file not found.';
+  end if;
+  if v_file.source_type is distinct from p_source_type then
+    raise exception 'Amazon import file source type changed.';
+  end if;
+  if v_file.status = 'archived' then
+    raise exception 'Archived Amazon import files are immutable.';
+  end if;
+  if v_file.status = 'parsed'
+    and (
+      v_file.parser_version is distinct from p_parser_version
+      or v_file.schema_signature is distinct from p_schema_signature
+    ) then
+    raise exception 'Parser version or schema signature changed; create a controlled source revision.';
+  end if;
+
+  update public.amazon_import_files f
+     set status = 'parsing',
+         parser_name = p_parser_name,
+         parser_version = p_parser_version,
+         schema_signature = p_schema_signature
+   where f.organization_id = p_organization_id
+     and f.id = p_file_id;
+
+  insert into public.amazon_import_raw_rows (
+    organization_id, batch_id, file_id, source_sheet, source_page, source_group,
+    source_row_number, raw_data, normalized_data, parse_status, parse_warning
+  )
+  select p_organization_id,
+         p_batch_id,
+         p_file_id,
+         r.source_sheet,
+         r.source_page,
+         r.source_group,
+         r.source_row_number,
+         coalesce(r.raw_data, '{}'::jsonb),
+         coalesce(r.normalized_data, '{}'::jsonb),
+         coalesce(r.parse_status, 'parsed'),
+         r.parse_warning
+  from jsonb_to_recordset(coalesce(p_raw_rows, '[]'::jsonb)) as r(
+    source_sheet text,
+    source_page int,
+    source_group text,
+    source_row_number int,
+    raw_data jsonb,
+    normalized_data jsonb,
+    parse_status text,
+    parse_warning text
+  )
+  on conflict (
+    organization_id,
+    batch_id,
+    file_id,
+    (coalesce(source_sheet, '__NULL_SOURCE_SHEET__')),
+    (coalesce(source_page, -2147483648)),
+    (coalesce(source_group, '__NULL_SOURCE_GROUP__')),
+    (coalesce(source_row_number, -2147483648))
+  )
+  do update set
+    raw_data = excluded.raw_data,
+    normalized_data = excluded.normalized_data,
+    parse_status = excluded.parse_status,
+    parse_warning = excluded.parse_warning;
+
+  insert into public.amazon_import_issues (
+    organization_id, batch_id, file_id, raw_row_id, issue_code, severity, message, details, status
+  )
+  select p_organization_id,
+         p_batch_id,
+         p_file_id,
+         null,
+         i.issue_code,
+         i.severity,
+         i.message,
+         coalesce(i.details, '{}'::jsonb),
+         'open'
+  from jsonb_to_recordset(coalesce(p_issues, '[]'::jsonb)) as i(
+    issue_code text,
+    severity text,
+    message text,
+    details jsonb
+  )
+  where not exists (
+    select 1
+    from public.amazon_import_issues existing
+    where existing.organization_id = p_organization_id
+      and existing.batch_id = p_batch_id
+      and existing.file_id = p_file_id
+      and existing.status = 'open'
+      and existing.details->>'issueKey' = i.details->>'issueKey'
+  );
+
+  delete from public.amazon_import_reconciliations r
+  where r.organization_id = p_organization_id
+    and r.batch_id = p_batch_id
+    and r.details->>'fileId' = p_file_id::text;
+
+  insert into public.amazon_import_reconciliations (
+    organization_id, batch_id, reconciliation_type, expected_amount, actual_amount,
+    difference_amount, expected_count, actual_count, status, details
+  )
+  select p_organization_id,
+         p_batch_id,
+         r.reconciliation_type,
+         r.expected_amount,
+         r.actual_amount,
+         case
+           when r.expected_amount is null or r.actual_amount is null then null
+           else round(r.expected_amount - r.actual_amount, 2)
+         end,
+         r.expected_count,
+         r.actual_count,
+         coalesce(r.status, 'passed'),
+         coalesce(r.details, '{}'::jsonb) || jsonb_build_object('fileId', p_file_id::text)
+  from jsonb_to_recordset(coalesce(p_reconciliations, '[]'::jsonb)) as r(
+    reconciliation_type text,
+    expected_amount numeric,
+    actual_amount numeric,
+    expected_count int,
+    actual_count int,
+    status text,
+    details jsonb
+  );
+
+  if p_source_type = 'amazon_payment' then
+    insert into public.amazon_payment_invoices (
+      organization_id, batch_id, file_id, invoice_number, invoice_date, period_start,
+      period_end, payment_date, payment_status, carrier_identifier, summary_total,
+      parser_version, schema_signature, source_snapshot
+    )
+    values (
+      p_organization_id,
+      p_batch_id,
+      p_file_id,
+      p_normalized->'invoice'->>'invoice_number',
+      nullif(p_normalized->'invoice'->>'invoice_date', '')::date,
+      nullif(p_normalized->'invoice'->>'period_start', '')::date,
+      nullif(p_normalized->'invoice'->>'period_end', '')::date,
+      nullif(p_normalized->'invoice'->>'payment_date', '')::date,
+      p_normalized->'invoice'->>'payment_status',
+      p_normalized->'invoice'->>'carrier_identifier',
+      nullif(p_normalized->'invoice'->>'summary_total', '')::numeric,
+      p_parser_version,
+      p_schema_signature,
+      coalesce(p_normalized->'invoice'->'source_snapshot', '{}'::jsonb)
+    )
+    on conflict (organization_id, file_id, invoice_number)
+    do update set
+      invoice_date = excluded.invoice_date,
+      period_start = excluded.period_start,
+      period_end = excluded.period_end,
+      payment_date = excluded.payment_date,
+      payment_status = excluded.payment_status,
+      carrier_identifier = excluded.carrier_identifier,
+      summary_total = excluded.summary_total,
+      parser_version = excluded.parser_version,
+      schema_signature = excluded.schema_signature,
+      source_snapshot = excluded.source_snapshot
+    returning id into v_invoice_id;
+
+    insert into public.amazon_payment_rows (
+      organization_id, batch_id, file_id, raw_row_id, invoice_id, source_row_number,
+      source_fingerprint, row_classification, trip_id, load_id, start_date, end_date,
+      route_raw, distance, base_amount, fuel_surcharge_amount, toll_amount,
+      detention_amount, tonu_amount, other_amount, gross_amount, item_type, status,
+      parse_status, source_snapshot
+    )
+    select p_organization_id,
+           p_batch_id,
+           p_file_id,
+           (
+             select rr.id
+             from public.amazon_import_raw_rows rr
+             where rr.organization_id = p_organization_id
+               and rr.batch_id = p_batch_id
+               and rr.file_id = p_file_id
+               and coalesce(rr.source_sheet, '') = coalesce(r.source_sheet, '')
+               and coalesce(rr.source_page, -2147483648) = coalesce(r.source_page, -2147483648)
+               and coalesce(rr.source_group, '') = coalesce(r.source_group, '')
+               and coalesce(rr.source_row_number, -2147483648) = coalesce(r.source_row_number, -2147483648)
+             limit 1
+           ),
+           v_invoice_id,
+           r.source_row_number,
+           r.source_fingerprint,
+           r.row_classification,
+           r.trip_id,
+           r.load_id,
+           r.start_date,
+           r.end_date,
+           r.route_raw,
+           r.distance,
+           r.base_amount,
+           r.fuel_surcharge_amount,
+           r.toll_amount,
+           r.detention_amount,
+           r.tonu_amount,
+           r.other_amount,
+           r.gross_amount,
+           r.item_type,
+           r.status,
+           coalesce(r.parse_status, 'parsed'),
+           coalesce(r.source_snapshot, '{}'::jsonb)
+    from jsonb_to_recordset(coalesce(p_normalized->'payment_rows', '[]'::jsonb)) as r(
+      source_sheet text,
+      source_page int,
+      source_group text,
+      source_row_number int,
+      source_fingerprint text,
+      row_classification text,
+      trip_id text,
+      load_id text,
+      start_date date,
+      end_date date,
+      route_raw text,
+      distance numeric,
+      base_amount numeric,
+      fuel_surcharge_amount numeric,
+      toll_amount numeric,
+      detention_amount numeric,
+      tonu_amount numeric,
+      other_amount numeric,
+      gross_amount numeric,
+      item_type text,
+      status text,
+      parse_status text,
+      source_snapshot jsonb
+    )
+    on conflict (organization_id, file_id, source_fingerprint)
+    do update set
+      raw_row_id = excluded.raw_row_id,
+      invoice_id = excluded.invoice_id,
+      row_classification = excluded.row_classification,
+      trip_id = excluded.trip_id,
+      load_id = excluded.load_id,
+      start_date = excluded.start_date,
+      end_date = excluded.end_date,
+      route_raw = excluded.route_raw,
+      distance = excluded.distance,
+      base_amount = excluded.base_amount,
+      fuel_surcharge_amount = excluded.fuel_surcharge_amount,
+      toll_amount = excluded.toll_amount,
+      detention_amount = excluded.detention_amount,
+      tonu_amount = excluded.tonu_amount,
+      other_amount = excluded.other_amount,
+      gross_amount = excluded.gross_amount,
+      item_type = excluded.item_type,
+      status = excluded.status,
+      parse_status = excluded.parse_status,
+      source_snapshot = excluded.source_snapshot;
+
+    v_record_count := 1 + coalesce(jsonb_array_length(coalesce(p_normalized->'payment_rows', '[]'::jsonb)), 0);
+  elsif p_source_type = 'amazon_trips' then
+    insert into public.amazon_trip_rows (
+      organization_id, batch_id, file_id, raw_row_id, source_row_number, source_fingerprint,
+      trip_id, load_id, raw_driver_text, tractor_external_id, operator_type,
+      equipment_type, trip_status, load_status, estimated_distance, facility_sequence,
+      stops, source_snapshot
+    )
+    select p_organization_id,
+           p_batch_id,
+           p_file_id,
+           (
+             select rr.id
+             from public.amazon_import_raw_rows rr
+             where rr.organization_id = p_organization_id
+               and rr.batch_id = p_batch_id
+               and rr.file_id = p_file_id
+               and coalesce(rr.source_sheet, '') = coalesce(r.source_sheet, '')
+               and coalesce(rr.source_page, -2147483648) = coalesce(r.source_page, -2147483648)
+               and coalesce(rr.source_group, '') = coalesce(r.source_group, '')
+               and coalesce(rr.source_row_number, -2147483648) = coalesce(r.source_row_number, -2147483648)
+             limit 1
+           ),
+           r.source_row_number,
+           r.source_fingerprint,
+           r.trip_id,
+           r.load_id,
+           r.raw_driver_text,
+           r.tractor_external_id,
+           r.operator_type,
+           r.equipment_type,
+           r.trip_status,
+           r.load_status,
+           r.estimated_distance,
+           coalesce(r.facility_sequence, '[]'::jsonb),
+           coalesce(r.stops, '[]'::jsonb),
+           coalesce(r.source_snapshot, '{}'::jsonb)
+    from jsonb_to_recordset(coalesce(p_normalized->'trip_rows', '[]'::jsonb)) as r(
+      source_sheet text,
+      source_page int,
+      source_group text,
+      source_row_number int,
+      source_fingerprint text,
+      trip_id text,
+      load_id text,
+      raw_driver_text text,
+      tractor_external_id text,
+      operator_type text,
+      equipment_type text,
+      trip_status text,
+      load_status text,
+      estimated_distance numeric,
+      facility_sequence jsonb,
+      stops jsonb,
+      source_snapshot jsonb
+    )
+    on conflict (organization_id, file_id, source_fingerprint)
+    do update set
+      raw_row_id = excluded.raw_row_id,
+      source_row_number = excluded.source_row_number,
+      trip_id = excluded.trip_id,
+      load_id = excluded.load_id,
+      raw_driver_text = excluded.raw_driver_text,
+      tractor_external_id = excluded.tractor_external_id,
+      operator_type = excluded.operator_type,
+      equipment_type = excluded.equipment_type,
+      trip_status = excluded.trip_status,
+      load_status = excluded.load_status,
+      estimated_distance = excluded.estimated_distance,
+      facility_sequence = excluded.facility_sequence,
+      stops = excluded.stops,
+      source_snapshot = excluded.source_snapshot;
+
+    delete from public.amazon_trip_driver_tokens t
+    using public.amazon_trip_rows tr
+    where t.organization_id = p_organization_id
+      and tr.organization_id = t.organization_id
+      and tr.id = t.trip_row_id
+      and tr.file_id = p_file_id;
+
+    insert into public.amazon_trip_driver_tokens (
+      organization_id, trip_row_id, token_order, raw_name, normalized_name,
+      is_team_assignment, requires_split_rule
+    )
+    select p_organization_id,
+           tr.id,
+           d.token_order,
+           d.raw_name,
+           d.normalized_name,
+           coalesce(d.is_team_assignment, false),
+           coalesce(d.requires_split_rule, false)
+    from jsonb_to_recordset(coalesce(p_normalized->'driver_tokens', '[]'::jsonb)) as d(
+      source_fingerprint text,
+      token_order int,
+      raw_name text,
+      normalized_name text,
+      is_team_assignment boolean,
+      requires_split_rule boolean
+    )
+    join public.amazon_trip_rows tr
+      on tr.organization_id = p_organization_id
+     and tr.file_id = p_file_id
+     and tr.source_fingerprint = d.source_fingerprint;
+
+    v_record_count :=
+      coalesce(jsonb_array_length(coalesce(p_normalized->'trip_rows', '[]'::jsonb)), 0)
+      + coalesce(jsonb_array_length(coalesce(p_normalized->'driver_tokens', '[]'::jsonb)), 0);
+  elsif p_source_type = 'fuel_card' then
+    insert into public.fuel_import_reports (
+      organization_id, batch_id, file_id, provider, carrier_identifier, period_start,
+      period_end, generated_at, reported_transaction_count, reported_total_amount,
+      reported_total_quantity, reported_discount_amount, parser_name, parser_version,
+      schema_signature, source_snapshot
+    )
+    values (
+      p_organization_id,
+      p_batch_id,
+      p_file_id,
+      p_normalized->'report'->>'provider',
+      p_normalized->'report'->>'carrier_identifier',
+      nullif(p_normalized->'report'->>'period_start', '')::date,
+      nullif(p_normalized->'report'->>'period_end', '')::date,
+      nullif(p_normalized->'report'->>'generated_at', '')::timestamptz,
+      nullif(p_normalized->'report'->>'reported_transaction_count', '')::int,
+      nullif(p_normalized->'report'->>'reported_total_amount', '')::numeric,
+      nullif(p_normalized->'report'->>'reported_total_quantity', '')::numeric,
+      nullif(p_normalized->'report'->>'reported_discount_amount', '')::numeric,
+      p_parser_name,
+      p_parser_version,
+      p_schema_signature,
+      coalesce(p_normalized->'report'->'source_snapshot', '{}'::jsonb)
+    )
+    on conflict (organization_id, file_id)
+    do update set
+      carrier_identifier = excluded.carrier_identifier,
+      period_start = excluded.period_start,
+      period_end = excluded.period_end,
+      generated_at = excluded.generated_at,
+      reported_transaction_count = excluded.reported_transaction_count,
+      reported_total_amount = excluded.reported_total_amount,
+      reported_total_quantity = excluded.reported_total_quantity,
+      reported_discount_amount = excluded.reported_discount_amount,
+      parser_name = excluded.parser_name,
+      parser_version = excluded.parser_version,
+      schema_signature = excluded.schema_signature,
+      source_snapshot = excluded.source_snapshot
+    returning id into v_report_id;
+
+    insert into public.fuel_import_card_groups (
+      organization_id, report_id, source_group_number, card_external_id, card_last_four,
+      driver_label_raw, driver_label_normalized, unit_label_raw, unit_label_normalized,
+      reported_transaction_count, reported_total_amount, reported_total_quantity,
+      reported_discount_amount, is_placeholder_group, source_page_start, source_page_end,
+      source_snapshot
+    )
+    select p_organization_id,
+           v_report_id,
+           g.source_group_number,
+           g.card_external_id,
+           g.card_last_four,
+           g.driver_label_raw,
+           g.driver_label_normalized,
+           g.unit_label_raw,
+           g.unit_label_normalized,
+           g.reported_transaction_count,
+           g.reported_total_amount,
+           g.reported_total_quantity,
+           g.reported_discount_amount,
+           coalesce(g.is_placeholder_group, false),
+           g.source_page_start,
+           g.source_page_end,
+           coalesce(g.source_snapshot, '{}'::jsonb)
+    from jsonb_to_recordset(coalesce(p_normalized->'card_groups', '[]'::jsonb)) as g(
+      source_group_number int,
+      card_external_id text,
+      card_last_four text,
+      driver_label_raw text,
+      driver_label_normalized text,
+      unit_label_raw text,
+      unit_label_normalized text,
+      reported_transaction_count int,
+      reported_total_amount numeric,
+      reported_total_quantity numeric,
+      reported_discount_amount numeric,
+      is_placeholder_group boolean,
+      source_page_start int,
+      source_page_end int,
+      source_snapshot jsonb
+    )
+    on conflict (organization_id, report_id, source_group_number)
+    do update set
+      card_external_id = excluded.card_external_id,
+      card_last_four = excluded.card_last_four,
+      driver_label_raw = excluded.driver_label_raw,
+      driver_label_normalized = excluded.driver_label_normalized,
+      unit_label_raw = excluded.unit_label_raw,
+      unit_label_normalized = excluded.unit_label_normalized,
+      reported_transaction_count = excluded.reported_transaction_count,
+      reported_total_amount = excluded.reported_total_amount,
+      reported_total_quantity = excluded.reported_total_quantity,
+      reported_discount_amount = excluded.reported_discount_amount,
+      is_placeholder_group = excluded.is_placeholder_group,
+      source_page_start = excluded.source_page_start,
+      source_page_end = excluded.source_page_end,
+      source_snapshot = excluded.source_snapshot;
+
+    insert into public.fuel_import_transactions (
+      organization_id, report_id, card_group_id, source_transaction_fingerprint,
+      transaction_at, invoice_number, merchant_raw, city_raw, state_raw,
+      odometer_raw, fees_amount, source_page, source_row_number, source_snapshot
+    )
+    select p_organization_id,
+           v_report_id,
+           cg.id,
+           t.source_transaction_fingerprint,
+           t.transaction_at,
+           t.invoice_number,
+           t.merchant_raw,
+           t.city_raw,
+           t.state_raw,
+           t.odometer_raw,
+           t.fees_amount,
+           t.source_page,
+           t.source_row_number,
+           coalesce(t.source_snapshot, '{}'::jsonb)
+    from jsonb_to_recordset(coalesce(p_normalized->'transactions', '[]'::jsonb)) as t(
+      source_group_number int,
+      source_transaction_fingerprint text,
+      transaction_at timestamptz,
+      invoice_number text,
+      merchant_raw text,
+      city_raw text,
+      state_raw text,
+      odometer_raw text,
+      fees_amount numeric,
+      source_page int,
+      source_row_number int,
+      source_snapshot jsonb
+    )
+    join public.fuel_import_card_groups cg
+      on cg.organization_id = p_organization_id
+     and cg.report_id = v_report_id
+     and cg.source_group_number = t.source_group_number
+    on conflict (organization_id, report_id, source_transaction_fingerprint)
+    do update set
+      card_group_id = excluded.card_group_id,
+      transaction_at = excluded.transaction_at,
+      invoice_number = excluded.invoice_number,
+      merchant_raw = excluded.merchant_raw,
+      city_raw = excluded.city_raw,
+      state_raw = excluded.state_raw,
+      odometer_raw = excluded.odometer_raw,
+      fees_amount = excluded.fees_amount,
+      source_page = excluded.source_page,
+      source_row_number = excluded.source_row_number,
+      source_snapshot = excluded.source_snapshot;
+
+    insert into public.fuel_import_transaction_lines (
+      organization_id, transaction_id, source_line_order, product_type_raw,
+      product_type_normalized, quantity, retail_unit_price, charged_unit_price,
+      discount_per_unit, discount_amount, deal_type, charged_amount, source_snapshot
+    )
+    select p_organization_id,
+           tx.id,
+           l.source_line_order,
+           l.product_type_raw,
+           l.product_type_normalized,
+           l.quantity,
+           l.retail_unit_price,
+           l.charged_unit_price,
+           l.discount_per_unit,
+           l.discount_amount,
+           l.deal_type,
+           l.charged_amount,
+           coalesce(l.source_snapshot, '{}'::jsonb)
+    from jsonb_to_recordset(coalesce(p_normalized->'product_lines', '[]'::jsonb)) as l(
+      source_transaction_fingerprint text,
+      source_line_order int,
+      product_type_raw text,
+      product_type_normalized text,
+      quantity numeric,
+      retail_unit_price numeric,
+      charged_unit_price numeric,
+      discount_per_unit numeric,
+      discount_amount numeric,
+      deal_type text,
+      charged_amount numeric,
+      source_snapshot jsonb
+    )
+    join public.fuel_import_transactions tx
+      on tx.organization_id = p_organization_id
+     and tx.report_id = v_report_id
+     and tx.source_transaction_fingerprint = l.source_transaction_fingerprint
+    on conflict (organization_id, transaction_id, source_line_order)
+    do update set
+      product_type_raw = excluded.product_type_raw,
+      product_type_normalized = excluded.product_type_normalized,
+      quantity = excluded.quantity,
+      retail_unit_price = excluded.retail_unit_price,
+      charged_unit_price = excluded.charged_unit_price,
+      discount_per_unit = excluded.discount_per_unit,
+      discount_amount = excluded.discount_amount,
+      deal_type = excluded.deal_type,
+      charged_amount = excluded.charged_amount,
+      source_snapshot = excluded.source_snapshot;
+
+    v_record_count :=
+      1
+      + coalesce(jsonb_array_length(coalesce(p_normalized->'card_groups', '[]'::jsonb)), 0)
+      + coalesce(jsonb_array_length(coalesce(p_normalized->'transactions', '[]'::jsonb)), 0)
+      + coalesce(jsonb_array_length(coalesce(p_normalized->'product_lines', '[]'::jsonb)), 0);
+  elsif p_source_type = 'statement_reference' then
+    v_record_count := 0;
+  else
+    raise exception 'Unsupported Amazon source type.';
+  end if;
+
+  update public.amazon_import_files f
+     set status = 'parsed',
+         parser_name = p_parser_name,
+         parser_version = p_parser_version,
+         schema_signature = p_schema_signature
+   where f.organization_id = p_organization_id
+     and f.id = p_file_id;
+
+  return jsonb_build_object(
+    'normalizedKind', p_source_type,
+    'recordCount', v_record_count,
+    'rawRowCount', v_raw_count,
+    'issueCount', v_issue_count,
+    'reconciliationCount', v_reconciliation_count
+  );
+end;
+$$;
+
+revoke execute on function public.persist_amazon_source_atomic(uuid, uuid, uuid, text, text, text, text, jsonb, jsonb, jsonb, jsonb) from public, anon;
+grant execute on function public.persist_amazon_source_atomic(uuid, uuid, uuid, text, text, text, text, jsonb, jsonb, jsonb, jsonb) to authenticated;
+
+create or replace function public.convert_amazon_candidate_atomic(
+  p_candidate_id uuid,
+  p_expected_preview_revision text,
+  p_expected_source_revision text,
+  p_expected_configuration_revision text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_org uuid := (select public.current_org_id());
+  v_user uuid := auth.uid();
+  v_candidate public.amazon_statement_candidates%rowtype;
+  v_config_revision text;
+  v_line_items jsonb;
+  v_load_ids uuid[];
+  v_expense_ids uuid[];
+  v_settlement_id uuid;
+  v_driver_id uuid;
+  v_owner_id uuid;
+  v_usage_group text;
+  v_idempotency_key text;
+begin
+  if v_org is null or v_user is null or not (select public.is_org_writer()) then
+    raise exception 'Writer role is required.';
+  end if;
+
+  select *
+    into v_candidate
+  from public.amazon_statement_candidates c
+  where c.organization_id = v_org
+    and c.id = p_candidate_id
+  for update;
+
+  if not found then
+    raise exception 'Amazon statement candidate not found.';
+  end if;
+
+  if v_candidate.status = 'converted' then
+    if v_candidate.converted_settlement_id is null then
+      raise exception 'Converted candidate is missing settlement lineage.';
+    end if;
+    return jsonb_build_object(
+      'status', 'already_converted',
+      'settlementId', v_candidate.converted_settlement_id
+    );
+  end if;
+
+  if v_candidate.status <> 'ready' then
+    raise exception 'Amazon statement candidate is not ready.';
+  end if;
+  if v_candidate.preview_revision is distinct from p_expected_preview_revision then
+    raise exception 'Stale Amazon statement candidate preview revision.';
+  end if;
+  if v_candidate.source_revision is distinct from p_expected_source_revision then
+    raise exception 'Stale Amazon statement candidate source revision.';
+  end if;
+
+  v_config_revision := md5(v_candidate.configuration_snapshot::text);
+  if p_expected_configuration_revision is not null and v_config_revision is distinct from p_expected_configuration_revision then
+    raise exception 'Stale Amazon statement candidate configuration revision.';
+  end if;
+
+  v_usage_group := public.settlement_usage_group(v_candidate.statement_type);
+  if v_usage_group is null then
+    raise exception 'Unsupported Amazon statement candidate settlement type.';
+  end if;
+
+  select coalesce(array_agg(r.load_id order by r.display_order), '{}'::uuid[])
+    into v_load_ids
+  from public.amazon_statement_candidate_revenue r
+  where r.organization_id = v_org
+    and r.candidate_id = p_candidate_id;
+
+  select coalesce(array_agg(f.expense_id order by f.display_order), '{}'::uuid[])
+    into v_expense_ids
+  from public.amazon_statement_candidate_fuel_lines f
+  where f.organization_id = v_org
+    and f.candidate_id = p_candidate_id;
+
+  if coalesce(array_length(v_load_ids, 1), 0) = 0 then
+    raise exception 'Amazon statement candidate has no selected revenue loads.';
+  end if;
+
+  perform 1
+  from public.settlement_load_links l
+  where l.organization_id = v_org
+    and l.load_id = any(v_load_ids)
+    and l.released_at is null
+    and (
+      case when l.usage_group in ('owner','investor') then 'asset_owner' else l.usage_group end
+    ) = (
+      case when v_usage_group in ('owner','investor') then 'asset_owner' else v_usage_group end
+    )
+  for update;
+  if found then
+    raise exception 'One or more selected Amazon loads are already linked to a settlement lane.';
+  end if;
+
+  if coalesce(array_length(v_expense_ids, 1), 0) > 0 then
+    perform 1
+    from public.settlement_expense_links e
+    where e.organization_id = v_org
+      and e.expense_id = any(v_expense_ids)
+      and e.released_at is null
+      and (
+        case when e.usage_group in ('owner','investor') then 'asset_owner' else e.usage_group end
+      ) = (
+        case when v_usage_group in ('owner','investor') then 'asset_owner' else v_usage_group end
+      )
+    for update;
+    if found then
+      raise exception 'One or more selected Amazon expenses are already linked to a settlement lane.';
+    end if;
+  end if;
+
+  v_line_items := (
+    select coalesce(jsonb_agg(jsonb_build_object(
+      'key', li.value->>'key',
+      'label_en', coalesce(li.value->>'labelEn', li.value->>'label_en', li.value->>'key'),
+      'label_tr', coalesce(li.value->>'labelTr', li.value->>'label_tr', li.value->>'labelEn', li.value->>'key'),
+      'amount', coalesce(nullif(li.value->>'amount', '')::numeric, 0),
+      'is_our_revenue', coalesce((li.value->>'isOurRevenue')::boolean, (li.value->>'is_our_revenue')::boolean, false),
+      'sort_order', li.ordinality - 1
+    ) order by li.ordinality), '[]'::jsonb)
+    from jsonb_array_elements(coalesce(v_candidate.calculation_snapshot->'lineItems', '[]'::jsonb)) with ordinality li(value, ordinality)
+  );
+
+  v_driver_id := case when v_usage_group = 'driver' then v_candidate.payee_id else null end;
+  v_owner_id := case when v_usage_group in ('owner','investor') then v_candidate.payee_id else null end;
+  v_idempotency_key := 'amazon-candidate:' || p_candidate_id::text || ':' || p_expected_preview_revision;
+
+  v_settlement_id := public.create_settlement_with_links_atomic(
+    v_org,
+    v_user,
+    v_candidate.statement_type,
+    v_usage_group,
+    null,
+    null,
+    v_candidate.vehicle_id,
+    v_driver_id,
+    v_owner_id,
+    v_candidate.period_start,
+    v_candidate.period_end,
+    v_candidate.configuration_snapshot || jsonb_build_object(
+      'amazon_statement_candidate_id', v_candidate.id,
+      'amazon_statement_candidate_preview_revision', v_candidate.preview_revision,
+      'amazon_statement_candidate_source_revision', v_candidate.source_revision
+    ),
+    v_candidate.gross_amount,
+    v_candidate.total_deductions_amount,
+    0,
+    v_candidate.net_amount,
+    null,
+    v_line_items,
+    v_load_ids,
+    v_expense_ids
+  );
+
+  update public.amazon_statement_candidates c
+     set status = 'converted',
+         converted_settlement_id = v_settlement_id,
+         converted_at = now(),
+         conversion_idempotency_key = v_idempotency_key
+   where c.organization_id = v_org
+     and c.id = p_candidate_id
+     and c.status = 'ready'
+     and c.preview_revision = p_expected_preview_revision
+     and c.source_revision = p_expected_source_revision;
+
+  if not found then
+    raise exception 'Amazon statement candidate conversion state changed before completion.';
+  end if;
+
+  return jsonb_build_object(
+    'status', 'converted',
+    'settlementId', v_settlement_id,
+    'idempotencyKey', v_idempotency_key
+  );
+end;
+$$;
+
+revoke execute on function public.convert_amazon_candidate_atomic(uuid, text, text, text) from public, anon;
+grant execute on function public.convert_amazon_candidate_atomic(uuid, text, text, text) to authenticated;

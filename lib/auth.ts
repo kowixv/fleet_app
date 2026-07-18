@@ -1,4 +1,5 @@
 import { createClient } from "@/lib/supabase/server";
+import { isWriteRole } from "@/lib/auth-roles";
 import { redirect } from "next/navigation";
 
 export interface Profile {
@@ -8,9 +9,6 @@ export interface Profile {
   full_name: string | null;
   role: string;
 }
-
-/** Roles that are allowed to perform write (create/update/delete) operations. */
-const WRITE_ROLES = new Set(["owner", "admin", "manager"]);
 
 /** Get the current profile (org + role), or redirect to /login. */
 export async function requireProfile(): Promise<Profile> {
@@ -36,7 +34,7 @@ export async function requireProfile(): Promise<Profile> {
  */
 export async function requireWriteRole(): Promise<Profile> {
   const profile = await requireProfile();
-  if (!WRITE_ROLES.has(profile.role)) {
+  if (!isWriteRole(profile.role)) {
     throw new Error("Bu işlem için yetkiniz yok. (Sadece owner, admin veya manager yazabilir.)");
   }
   return profile;
