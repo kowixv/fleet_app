@@ -2,6 +2,8 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import { requireAmazonImportActor } from "./auth";
+import { throwAmazonUiReadError } from "./read-errors";
+import { safeProfileName } from "../ui-safe";
 import type { AmazonImportSourceType } from "../types";
 
 export type AmazonUiRole = "viewer" | "writer";
@@ -128,7 +130,7 @@ export async function listAmazonImportBatchesForUi(filters: {
   const supabase = await createClient();
   let query = supabase
     .from("amazon_import_batches")
-    .select("id, status, period_start, period_end, updated_at, created_at, created_by, profiles:created_by(full_name)")
+    .select("id, status, period_start, period_end, updated_at, created_at, created_by, creator:profiles!amazon_import_batches_created_by_same_org_fk(full_name)")
     .order("updated_at", { ascending: false })
     .limit(50);
   if (filters.status) query = query.eq("status", filters.status);
@@ -140,7 +142,7 @@ export async function listAmazonImportBatchesForUi(filters: {
     query = query.or(`period_start.eq.${filters.period},period_end.eq.${filters.period}`);
   }
   const { data: batches, error } = await query;
-  if (error) throw new Error(error.message);
+  if (error) throwAmazonUiReadError("list_amazon_import_batches", error);
   const ids = (batches ?? []).map((row) => String(row.id));
   const [files, issues, reconciliations, revenueItems, revenueProjections, fuelProjections, candidates] = await Promise.all([
     ids.length ? supabase.from("amazon_import_files").select("batch_id, source_type, status").in("batch_id", ids) : emptyResult(),
@@ -152,7 +154,7 @@ export async function listAmazonImportBatchesForUi(filters: {
     ids.length ? supabase.from("amazon_statement_candidates").select("batch_id, id").in("batch_id", ids) : emptyResult(),
   ]);
   for (const result of [files, issues, reconciliations, revenueItems, revenueProjections, fuelProjections, candidates]) {
-    if ("error" in result && result.error) throw new Error(result.error.message);
+    if ("error" in result && result.error) throwAmazonUiReadError("list_amazon_import_batch_rollups", result.error);
   }
   return {
     role: actor.access,
@@ -176,7 +178,7 @@ export async function listAmazonImportBatchesForUi(filters: {
         projectedFuelExpenseCount: rowsFor(fuelProjections, batchId).filter((row) => row.projection_status !== "archived").length,
         candidateCount: rowsFor(candidates, batchId).length,
         lastUpdated: batch.updated_at ?? batch.created_at ?? null,
-        creator: safeCreator(batch.profiles),
+        creator: safeProfileName(batch.creator),
       };
     }),
   };
@@ -190,7 +192,7 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     .select("id, status, period_start, period_end, notes")
     .eq("id", batchId)
     .maybeSingle();
-  if (error) throw new Error(error.message);
+  if (error) throwAmazonUiReadError("get_amazon_import_batch", error);
   if (!batch) return null;
   const [
     files,
@@ -216,17 +218,17 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     supabase.from("amazon_revenue_items").select("id, gross_amount").eq("batch_id", batchId),
     supabase.from("amazon_import_matches").select("status, match_method").eq("batch_id", batchId),
     supabase.from("fuel_import_reports").select("reported_transaction_count, reported_total_amount, reported_total_quantity, reported_discount_amount").eq("batch_id", batchId),
-    supabase.from("fuel_import_transactions").select("id, report_id, fuel_import_reports!inner(batch_id)").eq("fuel_import_reports.batch_id", batchId),
-    supabase.from("fuel_import_transaction_lines").select("charged_amount, quantity, discount_amount, fuel_import_transactions!inner(fuel_import_reports!inner(batch_id))").eq("fuel_import_transactions.fuel_import_reports.batch_id", batchId),
+    supabase.from("fuel_import_transactions").select("id, report_id, report:fuel_import_reports!fuel_import_transactions_report_same_org_fk!inner(batch_id)").eq("report.batch_id", batchId),
+    supabase.from("fuel_import_transaction_lines").select("charged_amount, quantity, discount_amount, transaction:fuel_import_transactions!fuel_import_transaction_lines_transaction_same_org_fk!inner(report:fuel_import_reports!fuel_import_transactions_report_same_org_fk!inner(batch_id))").eq("transaction.report.batch_id", batchId),
     supabase.from("amazon_revenue_load_projections").select("projection_status, projection_snapshot").eq("batch_id", batchId),
     supabase.from("amazon_fuel_expense_projections").select("projection_status, projection_snapshot").eq("batch_id", batchId),
     supabase.from("amazon_statement_candidates").select("id, statement_type, status, period_start, period_end, payee_id, people!amazon_statement_candidates_payee_same_org_fk(full_name), vehicle_id, vehicles!amazon_statement_candidates_vehicle_same_org_fk(unit_number), gross_amount, total_deductions_amount, fuel_deductions_amount, net_amount, template_version, calculation_rule_version, preview_revision, approved_at, updated_at, converted_settlement_id, last_error").eq("batch_id", batchId).order("updated_at", { ascending: false }),
     supabase.from("amazon_statement_candidate_revenue").select("candidate_id, allocated_gross_amount").eq("organization_id", actor.organizationId),
     supabase.from("amazon_statement_candidate_fuel_lines").select("candidate_id, allocated_amount").eq("organization_id", actor.organizationId),
-    supabase.from("amazon_import_review_decisions").select("decision_type, reason, decided_at, profiles:decided_by(full_name)").eq("batch_id", batchId).order("decided_at", { ascending: false }).limit(25),
+    supabase.from("amazon_import_review_decisions").select("decision_type, reason, decided_at, reviewer:profiles!amazon_import_review_decisions_decided_by_same_org_fk(full_name)").eq("batch_id", batchId).order("decided_at", { ascending: false }).limit(25),
   ]);
   for (const result of [files, issues, reconciliations, paymentRows, revenueItems, matches, fuelReports, fuelTransactions, fuelLines, revenueProjections, fuelProjections, candidates, candidateRevenue, candidateFuel, reviewDecisions]) {
-    if (result.error) throw new Error(result.error.message);
+    if (result.error) throwAmazonUiReadError("get_amazon_import_batch_detail", result.error);
   }
   const fileViews = (files.data ?? []).map((file) => fileView(file, issues.data ?? []));
   const issueViews = issueSummary(issues.data ?? []);
@@ -318,7 +320,7 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
       id: String(candidate.id),
       statementType: String(candidate.statement_type),
       period: formatPeriod(candidate.period_start, candidate.period_end),
-      payeeDisplay: safeCreator(candidate.people),
+      payeeDisplay: safeProfileName(candidate.people),
       unitDisplay: safeUnit(candidate.vehicles),
       selectedRevenueCount: rowsForCandidate(candidateRevenue.data ?? [], String(candidate.id)).length,
       gross: Number(candidate.gross_amount ?? 0),
@@ -345,7 +347,7 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
       })),
       ...(reviewDecisions.data ?? []).map((decision) => ({
         action: String(decision.decision_type ?? "review"),
-        actor: safeCreator(decision.profiles),
+        actor: safeProfileName(decision.reviewer),
         time: decision.decided_at ?? null,
         result: "recorded",
         reason: stringOrNull(decision.reason),
@@ -371,12 +373,6 @@ function rowsFor(result: { data?: Array<Record<string, unknown>> | null }, batch
 
 function rowsForCandidate(rows: Array<Record<string, unknown>>, candidateId: string) {
   return rows.filter((row) => String(row.candidate_id) === candidateId);
-}
-
-function safeCreator(value: unknown): string {
-  if (!value || typeof value !== "object") return "-";
-  const name = (value as { full_name?: unknown }).full_name;
-  return typeof name === "string" && name.trim() ? name : "-";
 }
 
 function safeUnit(value: unknown): string {

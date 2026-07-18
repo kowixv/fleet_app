@@ -1,6 +1,7 @@
 import "server-only";
 
 import { requireProfile, requireWriteRole } from "@/lib/auth";
+import { roleToWorkflowAccess } from "@/lib/auth-roles";
 import type { Profile } from "@/lib/auth";
 import type { AmazonWorkflowActor } from "./workflow-types";
 
@@ -15,7 +16,7 @@ function toActor(profile: Profile, access: AmazonWorkflowActor["access"]): Amazo
 
 export async function requireAmazonImportActor(options: { writer?: boolean } = {}): Promise<AmazonWorkflowActor> {
   const profile = options.writer ? await requireWriteRole() : await requireProfile();
-  return toActor(profile, options.writer ? "writer" : "viewer");
+  return toActor(profile, options.writer ? "writer" : roleToWorkflowAccess(profile.role));
 }
 
 export function assertSameOrganization(actor: AmazonWorkflowActor, organizationId: string, label = "Record"): void {

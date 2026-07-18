@@ -2,8 +2,10 @@ import "server-only";
 
 import { createClient } from "@/lib/supabase/server";
 import { normalizeReferenceValue } from "../resolution/resolution-types";
+import { safeProfileName } from "../ui-safe";
 import type { ReferenceReviewCategory } from "../reference-review-validation";
 import { requireAmazonImportActor } from "./auth";
+import { throwAmazonUiReadError } from "./read-errors";
 
 export type ReferenceReviewRole = "viewer" | "writer";
 export type ReferenceTaskSeverity = "warning" | "blocking" | "info";
@@ -114,7 +116,7 @@ export async function getAmazonReferenceReviewForUi(batchId: string): Promise<Am
     .select("id, status, period_start, period_end")
     .eq("id", batchId)
     .maybeSingle();
-  if (batchError) throw new Error(batchError.message);
+  if (batchError) throwAmazonUiReadError("get_amazon_reference_review_batch", batchError);
   if (!batch) return null;
 
   const [
@@ -128,12 +130,12 @@ export async function getAmazonReferenceReviewForUi(batchId: string): Promise<Am
     supabase.from("amazon_import_issues").select("id, issue_code, severity, message, details, status").eq("batch_id", batchId).eq("status", "open"),
     supabase.from("people").select("id, full_name, type, status").eq("status", "active").order("full_name"),
     supabase.from("vehicles").select("id, unit_number, vehicle_type, year, make, model, status").in("status", ["active", "in_repair"]).order("unit_number"),
-    supabase.from("amazon_import_review_decisions").select("id, decision_type, selected_value, reason, decided_at, profiles:decided_by(full_name)").eq("batch_id", batchId).order("decided_at", { ascending: false }).limit(100),
-    supabase.from("fuel_import_card_groups").select("id, source_group_number, card_external_id, card_last_four, driver_label_raw, unit_label_raw, reported_transaction_count, reported_total_amount, is_placeholder_group, fuel_import_reports!inner(batch_id)").eq("fuel_import_reports.batch_id", batchId),
+    supabase.from("amazon_import_review_decisions").select("id, decision_type, selected_value, reason, decided_at, reviewer:profiles!amazon_import_review_decisions_decided_by_same_org_fk(full_name)").eq("batch_id", batchId).order("decided_at", { ascending: false }).limit(100),
+    supabase.from("fuel_import_card_groups").select("id, source_group_number, card_external_id, card_last_four, driver_label_raw, unit_label_raw, reported_transaction_count, reported_total_amount, is_placeholder_group, report:fuel_import_reports!fuel_import_card_groups_report_same_org_fk!inner(batch_id)").eq("report.batch_id", batchId),
     supabase.from("amazon_import_reconciliations").select("reconciliation_type, status").eq("batch_id", batchId),
   ]);
   for (const result of [issues, people, vehicles, history, fuelGroups, fuelReconciliation]) {
-    if (result.error) throw new Error(result.error.message);
+    if (result.error) throwAmazonUiReadError("get_amazon_reference_review", result.error);
   }
   const issueRows = (issues.data ?? []) as IssueRow[];
   const grouped = groupRootIssues(issueRows);
@@ -266,8 +268,8 @@ async function fuelCardValueForGroup(batchId: string, sourceGroupNumber: number 
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("fuel_import_card_groups")
-    .select("card_external_id, source_group_number, fuel_import_reports!inner(batch_id)")
-    .eq("fuel_import_reports.batch_id", batchId)
+    .select("card_external_id, source_group_number, report:fuel_import_reports!fuel_import_card_groups_report_same_org_fk!inner(batch_id)")
+    .eq("report.batch_id", batchId)
     .eq("source_group_number", sourceGroupNumber)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -415,7 +417,7 @@ function historyItem(row: Record<string, unknown>): ReferenceReviewHistoryItem {
     category: historyCategory(decisionType),
     decisionType,
     status: historyStatus(decisionType),
-    reviewer: reviewer(row.profiles),
+    reviewer: reviewer(row.reviewer),
     decidedAt: typeof row.decided_at === "string" ? row.decided_at : null,
     effectiveFrom: typeof selected.effectiveFrom === "string" ? selected.effectiveFrom : null,
     effectiveTo: typeof selected.effectiveTo === "string" ? selected.effectiveTo : null,
@@ -499,8 +501,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function reviewer(value: unknown) {
-  if (!value || typeof value !== "object") return "-";
-  return safeText((value as { full_name?: unknown }).full_name, "-");
+  return safeProfileName(value);
 }
 
 function categoryRank(category: ReferenceReviewCategory) {
