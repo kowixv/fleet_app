@@ -14,6 +14,7 @@ export interface CandidateAutoSelectableSource extends CandidateAutoSelectionHin
 export interface CandidateAutoSelectionVehicle {
   id: string;
   ownerId: string | null;
+  assignedDriverId?: string | null;
 }
 
 export type CandidateStatementType = "company_driver" | "box_truck_driver" | "owner_operator" | "managed_investor";
@@ -30,6 +31,7 @@ export function autoSelectCandidateSources(args: {
   vehicleId: string | null;
   vehicles: CandidateAutoSelectionVehicle[];
   sources: CandidateAutoSelectableSource[];
+  allowAssignedDriverFallback?: boolean;
 }): CandidateAutoSelectionResult {
   const payeeId = args.payeeId.trim();
   const vehicleId = args.vehicleId?.trim() || null;
@@ -56,6 +58,12 @@ export function autoSelectCandidateSources(args: {
 
     const personMatch = source.suggestedPersonIds.includes(payeeId);
     const vehicleMatch = Boolean(vehicleId && source.suggestedVehicleIds.includes(vehicleId));
+    const sourceHasVehicleAttribution = source.suggestedVehicleIds.length > 0;
+    const assignedDriverMatch = Boolean(
+      args.allowAssignedDriverFallback
+      && selectedVehicle?.assignedDriverId
+      && source.suggestedPersonIds.includes(selectedVehicle.assignedDriverId),
+    );
     const payeeOwnsSelectedVehicle = Boolean(
       ownershipLane
       && selectedVehicle
@@ -64,12 +72,15 @@ export function autoSelectCandidateSources(args: {
 
     let compatible = false;
     if (ownershipLane) {
-      compatible = personMatch || (payeeOwnsSelectedVehicle && vehicleMatch);
+      compatible = personMatch || Boolean(
+        payeeOwnsSelectedVehicle
+        && (vehicleMatch || (!sourceHasVehicleAttribution && assignedDriverMatch)),
+      );
     } else {
       compatible = personMatch;
     }
 
-    if (compatible && vehicleId && source.suggestedVehicleIds.length > 0 && !vehicleMatch) {
+    if (compatible && vehicleId && sourceHasVehicleAttribution && !vehicleMatch) {
       compatible = false;
     }
 
