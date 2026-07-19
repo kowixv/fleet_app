@@ -1,10 +1,17 @@
-import type { FuelProjectionItem, RevenueProjectionItem } from "./projection-types";
+import type { FuelProjectionItem, ProjectionPreview, RevenueProjectionItem } from "./projection-types";
 
 export interface ProjectionRpcPayload {
   p_organization_id: string;
   p_batch_id: string;
   p_preview_revision: string;
   p_items: Array<Record<string, unknown>>;
+}
+
+export function projectionRpcItems<T extends { sourceFingerprint: string }>(
+  preview: Pick<ProjectionPreview<T>, "toCreate" | "unchanged">,
+): T[] {
+  return [...preview.toCreate, ...preview.unchanged]
+    .sort((a, b) => a.sourceFingerprint.localeCompare(b.sourceFingerprint));
 }
 
 export function revenueProjectionRpcPayload(args: {

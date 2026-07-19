@@ -8,6 +8,7 @@ import {
 } from "../projection/projection-preview";
 import {
   fuelProjectionRpcPayload,
+  projectionRpcItems,
   revenueProjectionRpcPayload,
 } from "../projection/projection-apply";
 import type { ExistingProjection, FuelProjectionItem, RevenueProjectionItem } from "../projection/projection-types";
@@ -52,13 +53,13 @@ export async function applyAmazonProjection(args: {
     organizationId: args.actor.organizationId,
     batchId: args.batchId,
     previewRevision: args.expectedRevenuePreviewRevision,
-    items: preview.revenue.toCreate,
+    items: projectionRpcItems(preview.revenue),
   });
   const fuelPayload = fuelProjectionRpcPayload({
     organizationId: args.actor.organizationId,
     batchId: args.batchId,
     previewRevision: args.expectedFuelPreviewRevision,
-    items: preview.fuel.toCreate,
+    items: projectionRpcItems(preview.fuel),
   });
   const [revenueApply, fuelApply] = await Promise.all([
     supabase.rpc("apply_amazon_revenue_load_projections", revenuePayload),
