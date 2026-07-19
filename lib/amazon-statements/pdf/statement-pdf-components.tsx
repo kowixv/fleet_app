@@ -1,4 +1,4 @@
-import { Text, View, StyleSheet } from "@react-pdf/renderer";
+import { StyleSheet, Text, View } from "@react-pdf/renderer";
 import React from "react";
 import { label, statementTitle, typeTerminology } from "./statement-labels";
 import { displayOrNA, formatDate, formatMoney, formatNumber, pdfSafeText } from "./statement-formatting";
@@ -134,13 +134,7 @@ export const styles = StyleSheet.create({
   section: { marginTop: 9 },
   sectionTitle: { fontFamily: "Helvetica-Bold", fontSize: 15, color: colors.navy, marginBottom: 3 },
   sectionIntro: { color: colors.muted, fontSize: 6.7, lineHeight: 1.18, marginBottom: 5 },
-  bandHeader: {
-    flexDirection: "row",
-    backgroundColor: colors.navy,
-    color: colors.white,
-    paddingVertical: 5,
-    paddingHorizontal: 5,
-  },
+  bandHeader: { flexDirection: "row", backgroundColor: colors.navy, paddingVertical: 5, paddingHorizontal: 5 },
   bandHeaderText: { color: colors.white, fontFamily: "Helvetica-Bold", fontSize: 6.5 },
   summaryRow: {
     flexDirection: "row",
@@ -233,7 +227,7 @@ export const styles = StyleSheet.create({
   footerRight: { width: "24%", textAlign: "right" },
 });
 
-function T({ children, style }: { children: string; style?: any }) {
+function T({ children = "", style }: { children?: string; style?: any }) {
   return <Text style={style}>{pdfSafeText(children)}</Text>;
 }
 
@@ -306,12 +300,7 @@ export function StatementHeader({ model }: { model: AmazonStatementViewModel }) 
 export function IdentityGrid({ model }: { model: AmazonStatementViewModel }) {
   return (
     <View style={styles.identityTable}>
-      <IdentityRow
-        leftLabel="Driver / Sofor"
-        leftValue={model.payee.name}
-        rightLabel="Role / Calisma Tipi"
-        rightValue={roleDisplay(model)}
-      />
+      <IdentityRow leftLabel="Driver / Sofor" leftValue={model.payee.name} rightLabel="Role / Calisma Tipi" rightValue={roleDisplay(model)} />
       <IdentityRow
         leftLabel="Statement Period / Donem"
         leftValue={`${formatDate(model.periodStart)} - ${formatDate(model.periodEnd)}`}
@@ -447,10 +436,7 @@ export function FuelTable({ model }: { model: AmazonStatementViewModel }) {
   const totals = fuelTotals(model);
   return (
     <View>
-      <SectionHeading
-        title="Expense Details / Masraf Detaylari"
-        intro={`${totals.transactionCount} fuel-card transaction(s) are shown. A receipt may contain separate DEF and ULSD product lines.`}
-      />
+      <SectionHeading title="Expense Details / Masraf Detaylari" intro={`${totals.transactionCount} fuel-card transaction(s) are shown. A receipt may contain separate DEF and ULSD product lines.`} />
       <View style={styles.table}>
         <View style={styles.tableHeader} fixed>
           <T style={[styles.th, { width: "13%" }]}>Date / Time</T>
@@ -480,10 +466,10 @@ export function FuelTable({ model }: { model: AmazonStatementViewModel }) {
           <T style={[styles.tdBold, { width: "13%" }]}>TOTAL</T>
           <T style={[styles.td, { width: "8%" }]}>{`${totals.transactionCount} txns`}</T>
           <T style={[styles.td, { width: "23%" }]}>Fuel and DEF detail total</T>
-          <T style={[styles.td, { width: "17%" }]}></T>
-          <T style={[styles.td, { width: "8%" }]}></T>
+          <T style={[styles.td, { width: "17%" }]} />
+          <T style={[styles.td, { width: "8%" }]} />
           <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatNumber(totals.quantity, 2)}</T>
-          <T style={[styles.td, { width: "8%" }]}></T>
+          <T style={[styles.td, { width: "8%" }]} />
           <T style={[styles.tdBold, styles.right, { width: "7%" }]}>{formatMoney(totals.discount)}</T>
           <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(totals.amount)}</T>
         </View>
@@ -510,10 +496,7 @@ export function DeductionSummary({ model }: { model: AmazonStatementViewModel })
   const rows = displayDeductionRows(model);
   return (
     <View>
-      <SectionHeading
-        title="Deductions / Kesintiler"
-        intro="Deductions are applied from the saved candidate calculation. Percentage fees are calculated from gross revenue."
-      />
+      <SectionHeading title="Deductions / Kesintiler" intro="Deductions are applied from the saved candidate calculation. Percentage fees are calculated from gross revenue." />
       <View style={styles.table}>
         <View style={styles.tableHeader}>
           <T style={[styles.th, styles.center, { width: "8%" }]}>Order</T>
@@ -530,7 +513,7 @@ export function DeductionSummary({ model }: { model: AmazonStatementViewModel })
           </View>
         ))}
         <View style={styles.tableTotalRow} wrap={false}>
-          <T style={[styles.td, { width: "8%" }]}></T>
+          <T style={[styles.td, { width: "8%" }]} />
           <T style={[styles.tdBold, { width: "77%" }]}>TOTAL DEDUCTIONS / TOPLAM KESINTI</T>
           <T style={[styles.tdBold, styles.right, styles.negative, { width: "15%" }]}>{formatMoney(-Math.abs(model.summary.totalDeductions))}</T>
         </View>
@@ -592,7 +575,7 @@ export function StatementNotes({ model }: { model: AmazonStatementViewModel }) {
     <View>
       <SectionHeading title="Statement Notes / Statement Notlari" />
       <View style={styles.notesBox}>
-        {notes.map((note, index) => <T key={index} style={styles.noteLine}>{`• ${note}`}</T>)}
+        {notes.map((note, index) => <T key={index} style={styles.noteLine}>{`- ${note}`}</T>)}
       </View>
     </View>
   );
@@ -608,7 +591,7 @@ export function SignaturePanels({ model }: { model: AmazonStatementViewModel }) 
         <T style={styles.signatureIntro}>{`This settlement statement is approved and authorized by ${model.company.name} when signed. / Bu odeme dokumu imzalandiginda ${model.company.name} tarafindan onaylanmis olur.`}</T>
         <SignatureField labelText="Authorized By / Yetkili" value={model.companySignature.printedName ?? model.company.name} />
         <SignatureField labelText="Title / Unvan" value={model.companySignature.title ?? "Authorized Representative"} />
-        <SignatureField labelText="Signature / Imza" value={signatureStatus(model.companySignature.signedStatus)} signature />
+        <SignatureField labelText="Signature / Imza" signature />
         <SignatureField labelText="Date / Tarih" value={formatDate(model.companySignature.approvalDate)} last />
       </View>
 
@@ -617,7 +600,7 @@ export function SignaturePanels({ model }: { model: AmazonStatementViewModel }) 
           <T style={styles.signaturePanelHeaderText}>OWNER OPERATOR APPROVAL / OWNER ONAYI</T>
         </View>
         <SignatureField labelText="Name / Isim" value={model.payeeSignature.printedName ?? model.payee.name} />
-        <SignatureField labelText="Signature / Imza" value={signatureStatus(model.payeeSignature.signedStatus)} signature />
+        <SignatureField labelText="Signature / Imza" signature />
         <SignatureField labelText="Date / Tarih" value={formatDate(model.payeeSignature.approvalDate)} last />
       </View>
     </View>
@@ -633,7 +616,7 @@ export function NotesAndSignatures({ model }: { model: AmazonStatementViewModel 
   );
 }
 
-function SignatureField({ labelText, value, signature, last }: { labelText: string; value: string; signature?: boolean; last?: boolean }) {
+function SignatureField({ labelText, value = "", signature, last }: { labelText: string; value?: string; signature?: boolean; last?: boolean }) {
   return (
     <View style={last ? styles.signatureFieldRowLast : styles.signatureFieldRow}>
       <T style={styles.signatureFieldLabel}>{labelText}</T>
@@ -663,15 +646,16 @@ interface DisplayDeductionRow {
 }
 
 function displayDeductionRows(model: AmazonStatementViewModel): DisplayDeductionRow[] {
-  const nonFuel = model.deductionLines.filter((line) => !isFuelDeduction(line));
-  const rows = nonFuel.map((line) => ({
-    key: line.id,
-    label: line.label,
-    amount: Math.abs(line.amount),
-    basis: deductionBasis(line, model),
-    calculationLabel: calculationLabel(line, model),
-    order: deductionOrder(line),
-  }));
+  const rows = model.deductionLines
+    .filter((line) => !isFuelDeduction(line))
+    .map((line) => ({
+      key: line.id,
+      label: line.label,
+      amount: Math.abs(line.amount),
+      basis: deductionBasis(line, model),
+      calculationLabel: calculationLabel(line, model),
+      order: deductionOrder(line),
+    }));
   if (Math.abs(model.summary.fuelDeductions) > 0.004) {
     rows.push({
       key: "fuel-and-def-total",
@@ -698,12 +682,13 @@ function deductionOrder(line: AmazonStatementDeductionLine): number {
 }
 
 function deductionBasis(line: AmazonStatementDeductionLine, model: AmazonStatementViewModel): string {
-  if (/company fee|percentage/i.test(`${line.type} ${line.label}`)) {
+  const value = `${line.type} ${line.label}`;
+  if (/company fee|percentage/i.test(value)) {
     const percentage = line.label.match(/(\d+(?:\.\d+)?)\s*%/)?.[1];
     return percentage ? `${percentage}% x ${formatMoney(model.summary.grossRevenue)}` : "Percentage of gross revenue";
   }
-  if (/insurance/i.test(`${line.type} ${line.label}`)) return "Fixed insurance deduction / Sabit sigorta kesintisi";
-  if (/eld|safety|ifta/i.test(`${line.type} ${line.label}`)) return "Fixed weekly deduction / Sabit haftalik kesinti";
+  if (/insurance/i.test(value)) return "Fixed insurance deduction / Sabit sigorta kesintisi";
+  if (/eld|safety|ifta/i.test(value)) return "Fixed weekly deduction / Sabit haftalik kesinti";
   return "Saved candidate calculation / Kayitli hesaplama";
 }
 
@@ -728,8 +713,7 @@ function fuelTotals(model: AmazonStatementViewModel) {
   let discount = 0;
   let amount = 0;
   for (const line of model.fuelLines) {
-    const key = [line.date ?? "", line.invoice ?? "", line.merchant ?? "", line.location ?? ""].join("|");
-    transactionKeys.add(key);
+    transactionKeys.add([line.date ?? "", line.invoice ?? "", line.merchant ?? "", line.location ?? ""].join("|"));
     quantity += Number(line.quantity ?? 0);
     discount += Number(line.discountAmount ?? 0);
     amount += Number(line.amount ?? 0);
@@ -748,10 +732,7 @@ function fuelProductGroups(model: AmazonStatementViewModel) {
     current.ppuWeighted += Number(line.chargedPpu ?? 0) * quantity;
     groups.set(product, current);
   }
-  return [...groups.values()].map((group) => ({
-    ...group,
-    averagePpu: group.quantity > 0 ? group.ppuWeighted / group.quantity : 0,
-  }));
+  return [...groups.values()].map((group) => ({ ...group, averagePpu: group.quantity > 0 ? group.ppuWeighted / group.quantity : 0 }));
 }
 
 function formatRevenueDate(line: AmazonStatementRevenueLine): string {
@@ -764,8 +745,7 @@ function formatRevenueDate(line: AmazonStatementRevenueLine): string {
 function shortDate(value: string | null | undefined): string {
   if (!value) return "N/A";
   if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
-    const date = value.slice(0, 10);
-    const [, month, day] = date.split("-");
+    const [, month, day] = value.slice(0, 10).split("-");
     return `${month}/${day}`;
   }
   return value;
@@ -796,8 +776,8 @@ function secondaryStatementTitle(model: AmazonStatementViewModel): string {
 }
 
 function fixedDeductionCardLabel(model: AmazonStatementViewModel): string {
-  const labels = model.deductionLines.filter((line) => !isFuelDeduction(line)).map((line) => `${line.type} ${line.label}`).join(" ");
-  return /insurance/i.test(labels) && /eld|safety|ifta/i.test(labels)
+  const values = model.deductionLines.filter((line) => !isFuelDeduction(line)).map((line) => `${line.type} ${line.label}`).join(" ");
+  return /insurance/i.test(values) && /eld|safety|ifta/i.test(values)
     ? "INSURANCE + ELD/SAFETY\nSIGORTA + ELD/GUVENLIK"
     : "FIXED DEDUCTIONS\nSABIT KESINTILER";
 }
@@ -812,12 +792,6 @@ function roleDisplay(model: AmazonStatementViewModel): string {
   if (model.statementType === "managed_investor") return "Owner / Investor";
   if (model.statementType === "box_truck_driver") return "Box Truck Driver";
   return "Company Driver";
-}
-
-function signatureStatus(status: AmazonStatementViewModel["companySignature"]["signedStatus"]): string {
-  if (status === "signed") return "Signed";
-  if (status === "not_required") return "Not required";
-  return "Pending signature";
 }
 
 function footerPageLabel(mode: AmazonStatementLanguageMode): string {
