@@ -22,6 +22,8 @@ const candidateEditPage = read("app/(app)/settlements/amazon-imports/[id]/candid
 const batchOperations = read("app/(app)/settlements/amazon-imports/components/batch-operations.tsx");
 const history = read("app/(app)/settlements/amazon-imports/components/history-timeline.tsx");
 const pdfRoute = read("app/api/settlements/amazon-imports/candidates/[candidateId]/statement/route.ts");
+const candidatePdfModelSource = read("lib/amazon-statements/pdf/candidate-pdf-model.ts");
+const pdfResponseSource = read("lib/amazon-statements/pdf/statement-pdf-response.ts");
 const finalWorkflowService = read("lib/amazon-statements/server/final-workflow-service.ts");
 const conversionService = read("lib/amazon-statements/server/conversion-service.ts");
 const candidateService = read("lib/amazon-statements/server/candidate-service.ts");
@@ -140,9 +142,9 @@ describe("amazon import UI slice", () => {
     expect(candidateEditor).toContain("Select statement type");
     expect(candidateEditor).toContain("selectedRevenueItemIds");
     expect(candidateEditor).toContain("selectedFuelLineIds");
-    expect(candidateEditor).toContain("Select all compatible");
+    expect(candidateEditor).toContain("Select all visible (manual)");
     expect(candidateEditor).toContain("no_fuel");
-    expect(candidateEditor).toContain("Review team rules");
+    expect(candidateEditor).toContain("Automatic source selection");
     expect(candidateEditor).toContain("previewAmazonCandidateAction");
     expect(candidateEditor).toContain("createAmazonCandidateAction");
     expect(finalWorkflowService).toContain("previewReviewedAmazonCandidate");
@@ -199,9 +201,9 @@ describe("amazon import UI slice", () => {
     expect(pdfRoute).toContain("requireAmazonImportActor");
     expect(pdfRoute).toContain("calculation_snapshot");
     expect(pdfRoute).toContain("configuration_snapshot");
-    expect(pdfRoute).toContain("languageMode");
+    expect(candidatePdfModelSource).toContain("languageMode");
     expect(pdfRoute).toContain("renderAmazonStatementPdf");
-    expect(pdfRoute).toContain("safeFilename");
+    expect(pdfResponseSource).toContain("safeFilename");
     expect(pdfRoute).not.toMatch(/parsePaymentXlsx|parseTripsCsv|storage_path|signedUrl|sha256_hash/);
   });
 

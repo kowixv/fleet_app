@@ -107,12 +107,20 @@ export function revenueReferenceReadiness(args: {
       addBlockedBy(blockedBy.settlement, issue.issueKey);
     }
   }
+  if (args.item.driverAssignmentStatus === "needs_team_split" && !args.teamSplitResolved) {
+    const issue = referenceIssue("missing_team_split", "blocking", "Revenue item requires an approved team split rule.");
+    blockingIssues.push(issue);
+    settlementBlocked = true;
+    addBlockedBy(blockedBy.settlement, issue.issueKey);
+  }
   const canonicalReady = args.financialStatus === "passed";
   return {
     facilityStatus: facilityResults.length === 0 ? "not_required" : facilityResults.every((result) => result.status === "resolved") ? "resolved" : "unmatched",
     driverStatus: args.driverResolved ? "resolved" : "unmatched",
     vehicleStatus: args.vehicleResolved ? "resolved" : "unmatched",
-    teamSplitStatus: "not_required",
+    teamSplitStatus: args.item.driverAssignmentStatus === "needs_team_split"
+      ? args.teamSplitResolved ? "resolved" : "unmatched"
+      : "not_required",
     canonicalReady,
     projectionReady: canonicalReady && !projectionBlocked,
     settlementReady: canonicalReady && !settlementBlocked,

@@ -48,6 +48,7 @@ export const VEHICLES_ORG_UNIT_NUMBER_CONSTRAINT = "vehicles_org_unit_number_key
 
 export const VEHICLE_FORM_FIELDS = [
   "vehicle_type",
+  "owner_id",
   "assigned_driver_id",
   "default_driver_pay_pct",
   "vin",
@@ -66,7 +67,6 @@ export const REMOVED_VEHICLE_FORM_FIELDS = [
   "ownership_type",
   "company_id",
   "external_carrier_id",
-  "owner_id",
   "company_fee_pct",
   "company_fee_is_our_revenue",
   "external_carrier_fee_pct",

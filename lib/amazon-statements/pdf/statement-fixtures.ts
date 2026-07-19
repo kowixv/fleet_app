@@ -37,12 +37,13 @@ export function amazonStatementFixtureNames(): AmazonStatementFixtureName[] {
 
 export function buildAmazonStatementFixture(name: AmazonStatementFixtureName): AmazonStatementViewModel {
   if (name === "owner_operator_reference") return ownerOperatorReference();
-  if (name === "company_driver") return baseStatement({ name, type: "company_driver", gross: 1000, deductions: [deduction("driver-insurance", "Insurance", 50, 1)], fuel: [] });
+  if (name === "company_driver") return baseStatement({ name, type: "company_driver", gross: 1000, calculationBaseAmount: 330, deductions: [deduction("driver-insurance", "Insurance", 50, 1)], fuel: [] });
   if (name === "box_truck_driver_special_deductions") {
     return baseStatement({
       name,
       type: "box_truck_driver",
       gross: 1800,
+      calculationBaseAmount: 594,
       deductions: [deduction("parking", "Parking", 80, 1), deduction("load-save", "Load Save", 45, 2)],
       fuel: [],
     });
@@ -73,6 +74,7 @@ export function buildAmazonStatementFixture(name: AmazonStatementFixtureName): A
       name,
       type: "company_driver",
       gross: 1000,
+      calculationBaseAmount: 330,
       deductions: [deduction("insurance", "Insurance", 100, 1)],
       fuel: [],
     });
@@ -107,11 +109,13 @@ function baseStatement(args: {
   name: string;
   type: AmazonStatementType;
   gross: number;
+  calculationBaseAmount?: number;
   deductions: AmazonStatementDeductionLine[];
   fuel: AmazonStatementFuelLine[];
 }): AmazonStatementViewModel {
   const deductions = round2(args.deductions.reduce((sum, line) => sum + line.amount, 0));
   const fuelTotal = round2(args.fuel.reduce((sum, line) => sum + line.amount, 0));
+  const calculationBaseAmount = round2(args.calculationBaseAmount ?? args.gross);
   return {
     candidateId: `candidate-${args.name}`,
     documentId: `AMZ-STMT-${args.name.toUpperCase().replace(/_/g, "-")}`,
@@ -129,12 +133,13 @@ function baseStatement(args: {
     invoiceMetadata: { invoiceNumber: "SYNTHETIC", invoiceDate: "2026-07-14", paymentDate: "2026-07-15", paymentStatus: "Paid" },
     summary: {
       grossRevenue: args.gross,
+      calculationBaseAmount,
       percentageDeductions: args.deductions.filter((line) => line.calculationBasis === "gross_percentage").reduce((sum, line) => sum + line.amount, 0),
       fixedDeductions: args.deductions.filter((line) => line.calculationBasis === "fixed_amount").reduce((sum, line) => sum + line.amount, 0),
       fuelDeductions: fuelTotal,
       otherDeductions: 0,
       totalDeductions: deductions,
-      netAmount: round2(args.gross - deductions),
+      netAmount: round2(calculationBaseAmount - deductions),
     },
     revenueLines: [revenueLine("revenue-1", args.gross, 1)],
     fuelLines: args.fuel,
@@ -161,6 +166,7 @@ function longMultiPageStatement(): AmazonStatementViewModel {
     revenueLines,
     summary: {
       grossRevenue: gross,
+      calculationBaseAmount: gross,
       percentageDeductions: 0,
       fixedDeductions: 100,
       fuelDeductions: fuelTotal,

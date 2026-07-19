@@ -18,6 +18,7 @@ export interface StatementSignature {
 
 export interface AmazonStatementSummaryTotals {
   grossRevenue: number;
+  calculationBaseAmount: number;
   percentageDeductions: number;
   fixedDeductions: number;
   fuelDeductions: number;

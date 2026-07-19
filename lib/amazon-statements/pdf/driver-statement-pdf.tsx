@@ -240,7 +240,7 @@ export function DriverStatementPdfDocument({ model }: { model: AmazonStatementVi
   const gross = finite(model.summary.grossRevenue);
   const deductions = Math.abs(finite(model.summary.totalDeductions));
   const net = finite(model.summary.netAmount);
-  const driverGrossPay = net + deductions;
+  const driverGrossPay = finite(model.summary.calculationBaseAmount);
   const rate = gross > 0 ? (driverGrossPay / gross) * 100 : 0;
 
   return (

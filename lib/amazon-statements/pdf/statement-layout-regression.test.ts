@@ -8,7 +8,7 @@ const route = readFileSync("app/api/settlements/amazon-imports/candidates/[candi
 describe("reference-style Amazon statement PDF", () => {
   it("uses a three-section document with repeated header and footer", () => {
     expect(renderer.match(/<Page size="LETTER"/g)).toHaveLength(3);
-    expect(renderer.match(/<StatementHeader model=\{model\}/g)).toHaveLength(3);
+    expect(renderer.match(/<RefinedStatementHeader model=\{model\}/g)).toHaveLength(3);
     expect(renderer.match(/<StatementFooter model=\{model\}/g)).toHaveLength(3);
   });
 

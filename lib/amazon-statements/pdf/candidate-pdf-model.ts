@@ -64,7 +64,15 @@ export function candidatePdfModel(
   const lineItems = Array.isArray(snapshot.lineItems) ? snapshot.lineItems as Array<Record<string, unknown>> : [];
   const status = String(row.status);
   const candidateStatus: AmazonStatementViewModel["candidateStatus"] =
-    status === "ready" ? "ready" : status === "converted" ? "converted" : "draft";
+    status === "ready" ? "ready"
+      : status === "converted" ? "converted"
+      : status === "needs_review" ? "needs_review"
+      : status === "void" ? "void"
+      : "draft";
+  const statementType = row.statement_type as AmazonStatementViewModel["statementType"];
+  const grossRevenue = moneyValue(row.gross_amount);
+  const totalDeductions = moneyValue(row.total_deductions_amount);
+  const netAmount = moneyValue(row.net_amount);
 
   const revenueLines = context.revenueLines === undefined
     ? fallbackRevenueLines(loads)
@@ -116,7 +124,7 @@ export function candidatePdfModel(
   return {
     candidateId: String(row.id),
     documentId: `amazon-statement-${String(row.id).slice(0, 8)}`,
-    statementType: row.statement_type as AmazonStatementViewModel["statementType"],
+    statementType,
     candidateStatus,
     settlementStatus: row.converted_settlement_id ? "finalized" : null,
     ruleVersion: String(row.calculation_rule_version ?? "amazon-candidate-rules-v1"),
@@ -129,13 +137,20 @@ export function candidatePdfModel(
     periodEnd: String(row.period_end),
     invoiceMetadata: context.invoiceMetadata ?? undefined,
     summary: {
-      grossRevenue: numberValue(row.gross_amount),
-      percentageDeductions: numberValue(row.percentage_deductions_amount),
-      fixedDeductions: numberValue(row.fixed_deductions_amount),
-      fuelDeductions: numberValue(row.fuel_deductions_amount),
-      otherDeductions: numberValue(row.other_deductions_amount),
-      totalDeductions: numberValue(row.total_deductions_amount),
-      netAmount: numberValue(row.net_amount),
+      grossRevenue,
+      calculationBaseAmount: resolveCalculationBaseAmount({
+        snapshot,
+        statementType,
+        grossRevenue,
+        totalDeductions,
+        netAmount,
+      }),
+      percentageDeductions: moneyValue(row.percentage_deductions_amount),
+      fixedDeductions: moneyValue(row.fixed_deductions_amount),
+      fuelDeductions: moneyValue(row.fuel_deductions_amount),
+      otherDeductions: moneyValue(row.other_deductions_amount),
+      totalDeductions,
+      netAmount,
     },
     revenueLines,
     fuelLines,
@@ -213,6 +228,66 @@ function fallbackFuelLines(expenses: Array<Record<string, unknown>>): AmazonStat
     }));
 }
 
+function resolveCalculationBaseAmount(args: {
+  snapshot: Record<string, unknown>;
+  statementType: AmazonStatementViewModel["statementType"];
+  grossRevenue: number;
+  totalDeductions: number;
+  netAmount: number;
+}): number {
+  const explicit = firstFiniteMoney(
+    args.snapshot.calculationBaseAmount,
+    args.snapshot.calculation_base_amount,
+    args.snapshot.payableAmount,
+    args.snapshot.payable_amount,
+  );
+  if (explicit !== null) return explicit;
+
+  const driverStatement = args.statementType === "company_driver" || args.statementType === "box_truck_driver";
+  if (driverStatement) {
+    const positiveDriverPay = findPositiveAmount(arrayOfObjects(args.snapshot.lineItems), (row) =>
+      String(row.key ?? "") === "driver_pay"
+    );
+    if (positiveDriverPay !== null) return positiveDriverPay;
+
+    const calculationRows = [
+      ...arrayOfObjects(args.snapshot.calculationRows),
+      ...arrayOfObjects(args.snapshot.calculation_rows),
+    ];
+    const baseDriverPay = findPositiveAmount(calculationRows, (row) =>
+      String(row.key ?? "") === "driver_pay" && String(row.role ?? "") === "base"
+    );
+    if (baseDriverPay !== null) return baseDriverPay;
+
+    return moneyValue(args.netAmount + args.totalDeductions);
+  }
+
+  return args.grossRevenue;
+}
+
+function arrayOfObjects(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item))
+    : [];
+}
+
+function findPositiveAmount(
+  rows: Array<Record<string, unknown>>,
+  predicate: (row: Record<string, unknown>) => boolean,
+): number | null {
+  const row = rows.find((candidate) => predicate(candidate) && moneyValue(candidate.amount) > 0);
+  return row ? moneyValue(row.amount) : null;
+}
+
+function firstFiniteMoney(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return roundMoney(parsed);
+  }
+  return null;
+}
+
 function safeObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -241,6 +316,14 @@ function safeString(value: unknown): string | null {
 function numberValue(value: unknown): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function moneyValue(value: unknown): number {
+  return roundMoney(numberValue(value));
+}
+
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function nullableNumber(value: unknown): number | null {
