@@ -169,7 +169,7 @@ export async function listAmazonImportBatchesForUi(filters: {
         period: formatPeriod(batch.period_start, batch.period_end),
         status: String(batch.status),
         sourceFileCompleteness: `${new Set(batchFiles.map((file) => file.source_type)).size}/4`,
-        paymentReconciliationStatus: latestStatus(batchReconciliations, "amazon_revenue"),
+        paymentReconciliationStatus: revenueDisplayStatus(batchReconciliations),
         fuelReconciliationStatus: latestStatus(batchReconciliations, "fuel_report"),
         blockingIssueCount: batchIssues.filter((issue) => issue.severity === "blocking").length,
         warningCount: batchIssues.filter((issue) => issue.severity === "warning").length,
@@ -198,6 +198,7 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     files,
     issues,
     reconciliations,
+    paymentInvoices,
     paymentRows,
     revenueItems,
     matches,
@@ -214,7 +215,8 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     supabase.from("amazon_import_files").select("id, source_type, original_filename, size_bytes, status, parser_name, parser_version, schema_signature, created_at").eq("batch_id", batchId).order("created_at"),
     supabase.from("amazon_import_issues").select("issue_code, severity, status, details").eq("batch_id", batchId).eq("status", "open"),
     supabase.from("amazon_import_reconciliations").select("reconciliation_type, expected_amount, actual_amount, expected_count, actual_count, status, details").eq("batch_id", batchId),
-    supabase.from("amazon_payment_rows").select("gross_amount").eq("batch_id", batchId).not("gross_amount", "is", null),
+    supabase.from("amazon_payment_invoices").select("summary_total").eq("batch_id", batchId),
+    supabase.from("amazon_payment_rows").select("row_classification, parse_status, gross_amount").eq("batch_id", batchId).not("gross_amount", "is", null),
     supabase.from("amazon_revenue_items").select("id, gross_amount").eq("batch_id", batchId),
     supabase.from("amazon_import_matches").select("status, match_method").eq("batch_id", batchId),
     supabase.from("fuel_import_reports").select("reported_transaction_count, reported_total_amount, reported_total_quantity, reported_discount_amount").eq("batch_id", batchId),
@@ -227,7 +229,7 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     supabase.from("amazon_statement_candidate_fuel_lines").select("candidate_id, allocated_amount").eq("organization_id", actor.organizationId),
     supabase.from("amazon_import_review_decisions").select("decision_type, reason, decided_at, reviewer:profiles!amazon_import_review_decisions_decided_by_same_org_fk(full_name)").eq("batch_id", batchId).order("decided_at", { ascending: false }).limit(25),
   ]);
-  for (const result of [files, issues, reconciliations, paymentRows, revenueItems, matches, fuelReports, fuelTransactions, fuelLines, revenueProjections, fuelProjections, candidates, candidateRevenue, candidateFuel, reviewDecisions]) {
+  for (const result of [files, issues, reconciliations, paymentInvoices, paymentRows, revenueItems, matches, fuelReports, fuelTransactions, fuelLines, revenueProjections, fuelProjections, candidates, candidateRevenue, candidateFuel, reviewDecisions]) {
     if (result.error) throwAmazonUiReadError("get_amazon_import_batch_detail", result.error);
   }
   const fileViews = (files.data ?? []).map((file) => fileView(file, issues.data ?? []));
@@ -237,7 +239,9 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
   const blockingIssues = (issues.data ?? []).filter((issue) => issue.severity === "blocking").length;
   const warnings = (issues.data ?? []).filter((issue) => issue.severity === "warning").length;
   const revenueRows = revenueItems.data ?? [];
-  const paymentTotal = (paymentRows.data ?? []).reduce((sum, row) => sum + Number(row.gross_amount ?? 0), 0);
+  const reconciliationRows = reconciliations.data ?? [];
+  const validFinancialPaymentTotal = authoritativeValidPaymentTotal(reconciliationRows, paymentRows.data ?? []);
+  const summaryInvoiceTotal = authoritativeSummaryInvoiceTotal(reconciliationRows, paymentInvoices.data ?? []);
   const canonicalTotal = revenueRows.reduce((sum, row) => sum + Number(row.gross_amount ?? 0), 0);
   const matchRows = matches.data ?? [];
   const fuelReport = (fuelReports.data ?? [])[0] ?? {};
@@ -258,6 +262,11 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
       parsedRequiredFiles,
       blockingIssues,
       warnings,
+      revenueReconciliationStatus: latestCurrentStatus(reconciliationRows, "amazon_revenue"),
+      paymentInvoiceStatus: latestCurrentStatus(reconciliationRows, "payment_invoice_total"),
+      matchCount: matchRows.length,
+      canonicalRevenueItemCount: revenueRows.length,
+      ambiguousOrUnmatchedMatches: matchRows.filter((row) => row.status === "ambiguous" || row.status === "unmatched").length,
       projectedRevenueCount: projectedRevenue.length,
       projectedFuelCount: projectedFuel.length,
       candidateCount: candidates.data?.length ?? 0,
@@ -267,11 +276,11 @@ export async function getAmazonImportBatchDetailForUi(batchId: string): Promise<
     canParse: actor.access === "writer" && batch.status !== "archived" && requiredFilesPresent && !parsedRequiredFiles,
     reconciliation: {
       revenue: {
-        summaryInvoiceTotal: reconciliationAmount(reconciliations.data ?? [], "amazon_revenue", "expected"),
-        validPaymentRowTotal: paymentTotal,
+        summaryInvoiceTotal,
+        validPaymentRowTotal: validFinancialPaymentTotal,
         canonicalRevenueTotal: canonicalTotal,
-        unassignedRevenue: Math.max(0, paymentTotal - canonicalTotal),
-        status: latestStatus(reconciliations.data ?? [], "amazon_revenue"),
+        unassignedRevenue: Math.max(0, round2(validFinancialPaymentTotal - canonicalTotal)),
+        status: revenueDisplayStatus(reconciliationRows),
         canonicalRevenueItemCount: revenueRows.length,
         exact: matchRows.filter((row) => row.status === "exact").length,
         inferred: matchRows.filter((row) => row.status === "inferred").length,
@@ -416,6 +425,17 @@ function latestStatus(rows: Array<Record<string, unknown>>, type: string) {
   return String(rows.find((row) => row.reconciliation_type === type)?.status ?? "not_started");
 }
 
+function latestCurrentStatus(rows: Array<Record<string, unknown>>, type: string) {
+  const typed = rows.filter((row) => row.reconciliation_type === type);
+  const current = typed.find((row) => (row.details as Record<string, unknown> | null)?.current === true);
+  return String((current ?? typed[0])?.status ?? "not_started");
+}
+
+function revenueDisplayStatus(rows: Array<Record<string, unknown>>) {
+  const revenueStatus = latestCurrentStatus(rows, "amazon_revenue");
+  return revenueStatus === "not_started" ? latestCurrentStatus(rows, "payment_invoice_total") : revenueStatus;
+}
+
 function reconciliationStatus(rows: Array<Record<string, unknown>>, type: string) {
   return String(rows.find((row) => row.reconciliation_type === type)?.status ?? "not_started");
 }
@@ -423,6 +443,34 @@ function reconciliationStatus(rows: Array<Record<string, unknown>>, type: string
 function reconciliationAmount(rows: Array<Record<string, unknown>>, type: string, side: "expected" | "actual") {
   const row = rows.find((item) => item.reconciliation_type === type);
   return Number(row?.[side === "expected" ? "expected_amount" : "actual_amount"] ?? 0);
+}
+
+function authoritativeSummaryInvoiceTotal(reconciliations: Array<Record<string, unknown>>, invoices: Array<Record<string, unknown>>) {
+  const paymentSummary = reconciliationAmountOrNull(reconciliations, "payment_invoice_total", "expected");
+  if (paymentSummary !== null) return paymentSummary;
+  const invoiceSummary = invoices.find((invoice) => invoice.summary_total !== null && invoice.summary_total !== undefined);
+  return Number(invoiceSummary?.summary_total ?? 0);
+}
+
+function authoritativeValidPaymentTotal(reconciliations: Array<Record<string, unknown>>, paymentRows: Array<Record<string, unknown>>) {
+  const paymentActual = reconciliationAmountOrNull(reconciliations, "payment_invoice_total", "actual");
+  if (paymentActual !== null) return paymentActual;
+  return round2(paymentRows.filter(isValidFinancialPaymentRow).reduce((sum, row) => sum + Number(row.gross_amount ?? 0), 0));
+}
+
+function reconciliationAmountOrNull(rows: Array<Record<string, unknown>>, type: string, side: "expected" | "actual") {
+  const row = rows.find((item) => item.reconciliation_type === type);
+  const value = row?.[side === "expected" ? "expected_amount" : "actual_amount"];
+  return value === null || value === undefined ? null : Number(value);
+}
+
+function isValidFinancialPaymentRow(row: Record<string, unknown>) {
+  return (row.row_classification === "trip_parent" || row.row_classification === "load_child" || row.row_classification === "standalone_load")
+    && (row.parse_status === "parsed" || row.parse_status === "warning");
+}
+
+function round2(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 function transactionCountStatus(rows: Array<Record<string, unknown>>) {
@@ -532,19 +580,31 @@ function workflowSteps(args: {
   parsedRequiredFiles: boolean;
   blockingIssues: number;
   warnings: number;
+  revenueReconciliationStatus: string;
+  paymentInvoiceStatus: string;
+  matchCount: number;
+  canonicalRevenueItemCount: number;
+  ambiguousOrUnmatchedMatches: number;
   projectedRevenueCount: number;
   projectedFuelCount: number;
   candidateCount: number;
 }): AmazonWorkflowStepView[] {
   const failed = args.status === "failed";
+  const financialReconciliationStarted = args.paymentInvoiceStatus !== "not_started" || args.revenueReconciliationStatus !== "not_started";
+  const financialReconciliationPassed = (args.paymentInvoiceStatus === "passed" || args.paymentInvoiceStatus === "warning") && args.revenueReconciliationStatus === "passed";
+  const matchingStarted = args.matchCount > 0 || args.canonicalRevenueItemCount > 0 || args.revenueReconciliationStatus !== "not_started";
+  const matchingNeedsReview = args.ambiguousOrUnmatchedMatches > 0 || args.revenueReconciliationStatus === "failed" || args.blockingIssues > 0;
+  const matchingCompleted = args.matchCount > 0 && args.canonicalRevenueItemCount > 0 && args.revenueReconciliationStatus === "passed";
+  const referencesReady = matchingCompleted && !matchingNeedsReview;
+  const projectionReady = referencesReady && args.projectedRevenueCount + args.projectedFuelCount > 0;
   return [
     { key: "files", label: "Files", state: args.filesPresent ? "completed" : failed ? "failed" : "in_progress", detail: args.filesPresent ? "Required source files are present." : "Upload required source files." },
     { key: "parsing", label: "Parsing", state: failed ? "failed" : args.parsedRequiredFiles ? "completed" : "not_started", detail: args.parsedRequiredFiles ? "Required files parsed." : "Parsing has not completed." },
-    { key: "reconciliation", label: "Reconciliation", state: args.blockingIssues > 0 ? "blocked" : args.warnings > 0 ? "needs_review" : args.parsedRequiredFiles ? "completed" : "not_started", detail: args.blockingIssues > 0 ? "Blocking issues need review." : args.warnings > 0 ? "Warnings are present." : "Financial checks are display-only." },
-    { key: "matching", label: "Matching", state: args.parsedRequiredFiles ? "completed" : "not_started", detail: "Payment and trip matching summary." },
-    { key: "references", label: "References", state: args.blockingIssues > 0 ? "blocked" : "not_started", detail: "Read-only reference readiness." },
-    { key: "projection", label: "Projection", state: args.projectedRevenueCount + args.projectedFuelCount > 0 ? "completed" : "not_started", detail: "Projection preview and writer apply controls." },
-    { key: "candidates", label: "Candidates", state: args.candidateCount > 0 ? "needs_review" : "not_started", detail: "Statement candidate creation, approval, and conversion." },
-    { key: "statements", label: "Statements", state: args.candidateCount > 0 ? "in_progress" : "not_started", detail: "Server-rendered statement preview/download." },
+    { key: "reconciliation", label: "Reconciliation", state: !financialReconciliationStarted ? "not_started" : financialReconciliationPassed ? "completed" : args.blockingIssues > 0 || args.revenueReconciliationStatus === "failed" ? "blocked" : "needs_review", detail: financialReconciliationPassed ? "Financial reconciliation passed." : financialReconciliationStarted ? "Financial reconciliation needs review." : "Run reconciliation after parsing." },
+    { key: "matching", label: "Matching", state: !matchingStarted ? "not_started" : matchingNeedsReview ? "needs_review" : matchingCompleted ? "completed" : "in_progress", detail: matchingCompleted ? "Payment and trip matches were persisted." : "Run matching/reconciliation to persist canonical revenue." },
+    { key: "references", label: "References", state: referencesReady ? "in_progress" : "blocked", detail: "Reference readiness depends on persisted canonical revenue." },
+    { key: "projection", label: "Projection", state: projectionReady ? "completed" : referencesReady ? "not_started" : "blocked", detail: "Projection requires passed revenue reconciliation and canonical revenue." },
+    { key: "candidates", label: "Candidates", state: args.candidateCount > 0 ? "needs_review" : projectionReady ? "not_started" : "blocked", detail: "Statement candidate creation, approval, and conversion." },
+    { key: "statements", label: "Statements", state: args.candidateCount > 0 ? "in_progress" : "blocked", detail: "Server-rendered statement preview/download." },
   ];
 }

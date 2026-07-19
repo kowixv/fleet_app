@@ -1,10 +1,14 @@
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { AmazonParsedSourceRow, AmazonPaymentDetailFields, AmazonTripsRowFields } from "../types";
 import { matchPaymentTrips } from "./payment-trip-matcher";
 import { buildAmazonRevenueItems } from "../revenue/revenue-builder";
 import { revenueGroupingKey } from "../revenue/grouping-key";
 import { reconcileAmazonRevenue } from "../revenue/revenue-reconciliation";
+import { parsePaymentXlsx } from "../parsers/payment-xlsx";
+import { parseTripsCsv } from "../parsers/trips-csv";
+import { sha256Hex } from "../parsers/normalization";
 import {
   collectParserBatchIssues,
   createRouteResolutionIssues,
@@ -14,7 +18,13 @@ import {
 import type { AmazonPaymentParseResult, AmazonTripsParseResult } from "../types";
 
 const migration = readFileSync("supabase/migrations/20260716020000_amazon_payment_trip_normalization.sql", "utf8");
+const reconciliationMigration = readFileSync("supabase/migrations/20260718010000_amazon_reconciliation_pipeline.sql", "utf8");
 const schema = readFileSync("supabase/schema.sql", "utf8");
+const matchingService = readFileSync("lib/amazon-statements/server/matching-service.ts", "utf8");
+const actions = readFileSync("app/(app)/settlements/amazon-imports/actions.ts", "utf8");
+const batchOperations = readFileSync("app/(app)/settlements/amazon-imports/components/batch-operations.tsx", "utf8");
+const uiReadService = readFileSync("lib/amazon-statements/server/ui-read-service.ts", "utf8");
+const finalWorkflowService = readFileSync("lib/amazon-statements/server/final-workflow-service.ts", "utf8");
 
 function payment(patch: Partial<AmazonPaymentDetailFields> & { fp?: string }): AmazonParsedSourceRow<AmazonPaymentDetailFields> {
   const values: AmazonPaymentDetailFields = {
@@ -283,6 +293,62 @@ describe("amazon canonical revenue grouping", () => {
     expect(reconciliation.issueCategoryCounts.routeResolutionWarnings).toBe(0);
     expect(reconciliation.canonicalRevenueTotal).toBe(25);
   });
+
+  it("reconciles the local Amazon private-sample aggregates without double-counting summary rows", async () => {
+    const root = process.cwd();
+    const paymentBytes = readFileSync(join(root, "fixtures", "amazon-statements", "sample-week", "PAYMENT.xlsx"));
+    const tripsBytes = readFileSync(join(root, "fixtures", "amazon-statements", "sample-week", "Trips.csv"));
+    const paymentParsed = await parsePaymentXlsx({
+      bytes: paymentBytes,
+      metadata: {
+        sourceType: "amazon_payment",
+        originalFilename: "PAYMENT.xlsx",
+        mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        sizeBytes: paymentBytes.byteLength,
+        sha256Hash: sha256Hex(paymentBytes),
+      },
+      parser: { name: "test", version: "0" },
+    });
+    const tripsParsed = await parseTripsCsv({
+      bytes: tripsBytes,
+      metadata: {
+        sourceType: "amazon_trips",
+        originalFilename: "Trips.csv",
+        mimeType: "text/csv",
+        sizeBytes: tripsBytes.byteLength,
+        sha256Hash: sha256Hex(tripsBytes),
+      },
+      parser: { name: "test", version: "0" },
+    });
+    const matching = matchPaymentTrips(paymentParsed.detailRows, tripsParsed.rows);
+    const revenue = buildAmazonRevenueItems({
+      invoiceId: paymentParsed.summary.invoiceNumber ? sha256Hex(paymentParsed.summary.invoiceNumber).slice(0, 16) : "sample-invoice",
+      paymentRows: paymentParsed.detailRows,
+      matches: matching.matches,
+    });
+    const reconciliation = reconcileAmazonRevenue({
+      summaryInvoiceTotal: paymentParsed.reconciliation.summaryInvoiceTotal,
+      validPaymentRowGrossTotal: paymentParsed.reconciliation.totalParsedGrossPay,
+      parentRowCount: paymentParsed.reconciliation.tripParentCount,
+      childRowCount: paymentParsed.reconciliation.loadChildCount,
+      standaloneRowCount: paymentParsed.reconciliation.standaloneLoadCount,
+      matching,
+      revenue,
+    });
+    expect(paymentParsed.detailRows).toHaveLength(39);
+    expect(paymentParsed.reconciliation.validFinancialRowCount).toBe(36);
+    expect(paymentParsed.reconciliation.summaryInvoiceTotal).toBe(30665.09);
+    expect(paymentParsed.reconciliation.totalParsedGrossPay).toBe(30665.09);
+    const nonFinancialRows = paymentParsed.detailRows.filter((row) => row.normalizedValues.rowClassification === "non_financial");
+    expect(nonFinancialRows.length).toBeGreaterThanOrEqual(1);
+    expect(nonFinancialRows.some((row) => row.normalizedValues.grossPay === 30665.09)).toBe(true);
+    expect(matching.counts.exactLoadMatches).toBe(29);
+    expect(matching.counts.exactTripMatches).toBe(7);
+    expect(revenue.items).toHaveLength(20);
+    expect(reconciliation.canonicalRevenueTotal).toBe(30665.09);
+    expect(reconciliation.unassignedRevenueTotal).toBe(0);
+    expect(new Set(revenue.items.flatMap((item) => item.sources.map((source) => source.paymentRow.sourceFingerprint))).size).toBe(36);
+  });
 });
 
 describe("amazon normalization SQL source contracts", () => {
@@ -327,5 +393,52 @@ describe("amazon normalization SQL source contracts", () => {
       expect(source).toContain("guard_amazon_payment_row_source");
       expect(source).not.toMatch(/create policy .* on public\.amazon_.* for all/i);
     }
+  });
+
+  it("defines the atomic payment reconciliation RPC with writer, org, locking, retry, and execute guards", () => {
+    expect(reconciliationMigration).toContain("create or replace function public.reconcile_amazon_payment_atomic");
+    expect(reconciliationMigration).toContain("v_org uuid := (select public.current_org_id())");
+    expect(reconciliationMigration).toContain("not (select public.is_org_writer())");
+    expect(reconciliationMigration).toContain("for update");
+    expect(reconciliationMigration).toContain("Archived Amazon import batches are immutable.");
+    expect(reconciliationMigration).toContain("amazon_import_matches_batch_payment_type_key");
+    expect(reconciliationMigration).toContain("on conflict (organization_id, batch_id, payment_row_id, match_type)");
+    expect(reconciliationMigration).toContain("on conflict on constraint amazon_revenue_items_grouping_key");
+    expect(reconciliationMigration).toContain("A financial payment row cannot contribute to canonical revenue more than once.");
+    expect(reconciliationMigration).toContain("details->>'lifecycleStage' = 'reconcile_payment'");
+    expect(reconciliationMigration).toContain("reconciliation_type = 'amazon_revenue'");
+    expect(reconciliationMigration).toContain("revoke execute on function public.reconcile_amazon_payment_atomic");
+    expect(reconciliationMigration).toContain("grant execute on function public.reconcile_amazon_payment_atomic");
+  });
+
+  it("runs reconciliation from persisted database rows and never browser monetary totals", () => {
+    expect(matchingService).toContain("loadPersistedPaymentTripRows");
+    expect(matchingService).toContain("source_fingerprint");
+    expect(matchingService).toContain("base_amount");
+    expect(matchingService).toContain("fuel_surcharge_amount");
+    expect(matchingService).toContain("amazon_trip_driver_tokens");
+    expect(matchingService).toContain("reconcile_amazon_payment_atomic");
+    expect(actions).toContain("reconcileAmazonImportBatchAction");
+    expect(actions).toContain("requireAmazonImportActor({ writer: true })");
+    expect(batchOperations).toContain("Run reconciliation / matching");
+    expect(batchOperations).not.toMatch(/grossAmount|validPaymentRowTotal|canonicalRevenueTotal|summaryInvoiceTotal/);
+  });
+
+  it("uses authoritative reconciliation types for UI totals and workflow evidence", () => {
+    expect(uiReadService).toContain("authoritativeSummaryInvoiceTotal");
+    expect(uiReadService).toContain("payment_invoice_total");
+    expect(uiReadService).toContain("isValidFinancialPaymentRow");
+    expect(uiReadService).toContain("row_classification === \"trip_parent\"");
+    expect(uiReadService).toContain("latestCurrentStatus(reconciliationRows, \"amazon_revenue\")");
+    expect(uiReadService).toContain("matchCount: matchRows.length");
+    expect(uiReadService).toContain("canonicalRevenueItemCount: revenueRows.length");
+    expect(uiReadService).toContain("!matchingStarted ? \"not_started\"");
+  });
+
+  it("blocks projection until canonical revenue and amazon_revenue reconciliation are real", () => {
+    expect(finalWorkflowService).toContain("missing_canonical_revenue");
+    expect(finalWorkflowService).toContain("amazon_revenue_reconciliation_not_passed");
+    expect(finalWorkflowService).toContain("blocking_matching_issues");
+    expect(finalWorkflowService).toContain(".eq(\"reconciliation_type\", \"amazon_revenue\")");
   });
 });

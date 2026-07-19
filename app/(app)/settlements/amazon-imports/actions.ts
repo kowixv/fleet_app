@@ -5,6 +5,7 @@ import { createAmazonImportBatch, transitionAmazonBatch } from "@/lib/amazon-sta
 import { parseAmazonSourceType } from "@/lib/amazon-statements/server/file-service";
 import { approveAmazonCandidate, archiveAmazonCandidate } from "@/lib/amazon-statements/server/candidate-service";
 import { convertSavedAmazonCandidate } from "@/lib/amazon-statements/server/conversion-service";
+import { reconcileAmazonPaymentTripBatch } from "@/lib/amazon-statements/server/matching-service";
 import {
   applyAmazonProjectionForBatch,
   previewReviewedAmazonCandidate,
@@ -154,6 +155,18 @@ export async function parseAmazonImportBatchAction(batchId: string) {
     return workflowOk(result);
   } catch (error) {
     return workflowFail(error, "parse_files");
+  }
+}
+
+export async function reconcileAmazonImportBatchAction(batchId: string) {
+  try {
+    const actor = await requireAmazonImportActor({ writer: true });
+    const result = await reconcileAmazonPaymentTripBatch({ actor, batchId });
+    revalidatePath(`/settlements/amazon-imports/${batchId}`);
+    revalidatePath("/settlements/amazon-imports");
+    return workflowOk(result);
+  } catch (error) {
+    return workflowFail(error, "reconcile_payment");
   }
 }
 

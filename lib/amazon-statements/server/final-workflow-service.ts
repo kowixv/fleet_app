@@ -317,7 +317,30 @@ async function buildProjectionInputForBatch(args: {
   existingFuel: ExistingProjection[];
 }> {
   const supabase = await createClient();
-  const [revenueRows, fuelLineRows, existingRevenueRows, existingFuelRows] = await Promise.all([
+  const [batch, revenueReconciliation, matchingIssues, revenueRows, fuelLineRows, existingRevenueRows, existingFuelRows] = await Promise.all([
+    supabase
+      .from("amazon_import_batches")
+      .select("id, status")
+      .eq("organization_id", args.actor.organizationId)
+      .eq("id", args.batchId)
+      .single(),
+    supabase
+      .from("amazon_import_reconciliations")
+      .select("status")
+      .eq("organization_id", args.actor.organizationId)
+      .eq("batch_id", args.batchId)
+      .eq("reconciliation_type", "amazon_revenue")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("amazon_import_issues")
+      .select("id")
+      .eq("organization_id", args.actor.organizationId)
+      .eq("batch_id", args.batchId)
+      .eq("status", "open")
+      .eq("severity", "blocking")
+      .in("issue_code", ["ambiguous_load_match", "unmatched_payment_row", "source_row_missing_from_revenue", "duplicate_revenue_contribution", "financial_reconciliation_failed", "missing_invoice", "missing_required_source_rows"]),
     supabase
       .from("amazon_revenue_items")
       .select("id, batch_id, grouping_type, grouping_key, trip_id, primary_load_id, start_date, end_date, route_resolution_status, distance, base_amount, fuel_surcharge_amount, toll_amount, detention_amount, tonu_amount, other_amount, gross_amount, match_status, driver_assignment_status, vehicle_assignment_status, reconciliation_status, source_revision")
@@ -341,9 +364,29 @@ async function buildProjectionInputForBatch(args: {
       .eq("batch_id", args.batchId)
       .neq("projection_status", "archived"),
   ]);
-  for (const result of [revenueRows, fuelLineRows, existingRevenueRows, existingFuelRows]) {
+  for (const result of [batch, revenueReconciliation, matchingIssues, revenueRows, fuelLineRows, existingRevenueRows, existingFuelRows]) {
     if (result.error) throw new Error(result.error.message);
   }
+  assertWorkflow(Boolean(batch.data), {
+    code: "batch_not_found",
+    message: "Amazon import batch is not available.",
+    stage: "apply_projection",
+  });
+  assertWorkflow(revenueRows.data !== null && revenueRows.data.length > 0, {
+    code: "missing_canonical_revenue",
+    message: "Run payment/trip reconciliation before applying projection.",
+    stage: "apply_projection",
+  });
+  assertWorkflow(revenueReconciliation.data?.status === "passed", {
+    code: "amazon_revenue_reconciliation_not_passed",
+    message: "Amazon revenue reconciliation must pass before applying projection.",
+    stage: "apply_projection",
+  });
+  assertWorkflow((matchingIssues.data ?? []).length === 0, {
+    code: "blocking_matching_issues",
+    message: "Resolve blocking matching issues before applying projection.",
+    stage: "apply_projection",
+  });
   return {
     revenueItems: (revenueRows.data ?? []).map((row) => revenueProjectionFromRow(row as Record<string, unknown>, args.batchId)),
     fuelItems: (fuelLineRows.data ?? []).map((row) => fuelProjectionFromRow(row as Record<string, unknown>, args.batchId)),

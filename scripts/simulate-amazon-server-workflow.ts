@@ -1,4 +1,6 @@
 import { matchPaymentTrips, type PaymentSourceRow, type TripSourceRow } from "../lib/amazon-statements/matching/payment-trip-matcher";
+import { buildAmazonRevenueItems } from "../lib/amazon-statements/revenue/revenue-builder";
+import { reconcileAmazonRevenue } from "../lib/amazon-statements/revenue/revenue-reconciliation";
 import { previewFuelExpenseProjections, previewRevenueLoadProjections } from "../lib/amazon-statements/projection/projection-preview";
 import { compileAmazonStatementCandidate } from "../lib/amazon-statements/candidates/candidate-compiler";
 import { prepareSettlementConversionPayload } from "../lib/amazon-statements/candidates/candidate-to-settlement";
@@ -265,6 +267,20 @@ const fuelProjection: FuelProjectionItem = {
 };
 
 const matching = matchPaymentTrips([paymentRow()], [tripRow()]);
+const canonicalRevenue = buildAmazonRevenueItems({
+  invoiceId: "invoice-synthetic",
+  paymentRows: [paymentRow()],
+  matches: matching.matches,
+});
+const revenueReconciliation = reconcileAmazonRevenue({
+  summaryInvoiceTotal: 1000,
+  validPaymentRowGrossTotal: 1000,
+  parentRowCount: 0,
+  childRowCount: 0,
+  standaloneRowCount: 1,
+  matching,
+  revenue: canonicalRevenue,
+});
 const projection = {
   revenue: previewRevenueLoadProjections({ items: [revenueProjection] }),
   fuel: previewFuelExpenseProjections({ items: [fuelProjection] }),
@@ -305,6 +321,13 @@ console.log(JSON.stringify({
     "pdf_view_model",
   ],
   matching: matching.counts,
+  reconciliation: {
+    canonicalRevenueItems: canonicalRevenue.items.length,
+    canonicalRevenueTotal: revenueReconciliation.canonicalRevenueTotal,
+    validPaymentRowGrossTotal: revenueReconciliation.validPaymentRowGrossTotal,
+    unassignedRevenueTotal: revenueReconciliation.unassignedRevenueTotal,
+    finalStatus: revenueReconciliation.finalStatus,
+  },
   projection: {
     revenueToCreate: projection.revenue.toCreate.length,
     fuelToCreate: projection.fuel.toCreate.length,
