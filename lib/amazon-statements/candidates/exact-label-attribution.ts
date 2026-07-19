@@ -30,12 +30,16 @@ export function exactLabelTargetIds(
 ): string[] {
   const normalizedLabel = compactExactLabel(label);
   if (!normalizedLabel) return [];
-  return [...new Set(
+
+  const exactIds = [...new Set(
     targets
       .filter((target) => compactExactLabel(target.label) === normalizedLabel)
       .map((target) => target.id)
       .filter(Boolean),
   )];
+  if (exactIds.length > 0) return exactIds;
+
+  return initialSurnameTargetIds(label, targets);
 }
 
 export function initialSurnameTargetIds(
