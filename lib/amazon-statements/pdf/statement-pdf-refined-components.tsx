@@ -2,18 +2,20 @@ import { StyleSheet, Text, View } from "@react-pdf/renderer";
 import React from "react";
 import { typeTerminology } from "./statement-labels";
 import { displayOrNA, formatDate, formatMoney, formatNumber, pdfSafeText } from "./statement-formatting";
-import { styles } from "./statement-pdf-components";
 import {
-  deductionDisplayOrder,
+  CalculationSummary,
+  DeductionSummary,
+  RevenueTable,
+  styles,
+} from "./statement-pdf-components";
+import {
   fuelTransactionKey,
   groupFuelLinesForDisplay,
   normalizeDeductionLabel,
   percentageCardLabels,
 } from "./statement-pdf-refinement-helpers";
 import type {
-  AmazonStatementDeductionLine,
   AmazonStatementFuelLine,
-  AmazonStatementRevenueLine,
   AmazonStatementViewModel,
 } from "./statement-view-model";
 
@@ -25,10 +27,9 @@ const colors = {
   paleBlue2: "#f3f8fb",
   paleGreen: "#e9f6ec",
   white: "#ffffff",
-  danger: "#a83b2f",
-  green: "#137a55",
   ink: "#273444",
   muted: "#667085",
+  green: "#137a55",
 };
 
 const refinedStyles = StyleSheet.create({
@@ -90,7 +91,7 @@ const refinedStyles = StyleSheet.create({
   summaryLabelEn: { textAlign: "center", color: colors.blueText, fontSize: 6.25, lineHeight: 1.05 },
   summaryLabelTr: { marginTop: 2, textAlign: "center", color: colors.blueText, fontSize: 5.7, lineHeight: 1.05 },
   summaryValue: { marginTop: 4, textAlign: "center", fontFamily: "Helvetica-Bold", fontSize: 13.1 },
-  compactSection: { marginTop: 7 },
+  section: { marginTop: 7 },
   sectionTitle: { fontFamily: "Helvetica-Bold", fontSize: 14, color: colors.navy, marginBottom: 3 },
   sectionIntro: { color: colors.muted, fontSize: 6.5, lineHeight: 1.15, marginBottom: 4 },
   transactionStart: { borderTopWidth: 1, borderTopColor: colors.navy },
@@ -119,7 +120,7 @@ function T({ children = "", style }: { children?: string; style?: any }) {
 
 function SectionHeading({ title, intro }: { title: string; intro?: string }) {
   return (
-    <View style={refinedStyles.compactSection}>
+    <View style={refinedStyles.section}>
       <T style={refinedStyles.sectionTitle}>{title}</T>
       {intro ? <T style={refinedStyles.sectionIntro}>{intro}</T> : null}
     </View>
@@ -188,16 +189,16 @@ export function RefinedSummaryCards({ model }: { model: AmazonStatementViewModel
   const percentageLabels = percentageCardLabels(model.statementType);
   return (
     <View style={styles.cards} wrap={false}>
-      <RefinedSummaryCard style={styles.grossCard} labelEn={terms.gross.toUpperCase()} labelTr="TOPLAM BRUT GELIR" value={formatMoney(model.summary.grossRevenue)} />
-      <RefinedSummaryCard style={styles.fixedCard} labelEn="INSURANCE + ELD" labelTr="SIGORTA + ELD" value={formatMoney(-Math.abs(model.summary.fixedDeductions))} negative />
-      <RefinedSummaryCard style={styles.percentageCard} labelEn={percentageLabels.en} labelTr={percentageLabels.tr} value={formatMoney(-Math.abs(model.summary.percentageDeductions))} negative />
-      <RefinedSummaryCard style={styles.fuelCard} labelEn="FUEL / DEF" labelTr="YAKIT / DEF" value={formatMoney(-Math.abs(model.summary.fuelDeductions))} negative />
-      <RefinedSummaryCard style={styles.netCard} labelEn={terms.net.toUpperCase()} labelTr="ODENECEK NET" value={formatMoney(model.summary.netAmount)} negative={model.summary.netAmount < 0} positive={model.summary.netAmount >= 0} />
+      <SummaryCard style={styles.grossCard} labelEn={terms.gross.toUpperCase()} labelTr="TOPLAM BRUT GELIR" value={formatMoney(model.summary.grossRevenue)} />
+      <SummaryCard style={styles.fixedCard} labelEn="INSURANCE + ELD" labelTr="SIGORTA + ELD" value={formatMoney(-Math.abs(model.summary.fixedDeductions))} negative />
+      <SummaryCard style={styles.percentageCard} labelEn={percentageLabels.en} labelTr={percentageLabels.tr} value={formatMoney(-Math.abs(model.summary.percentageDeductions))} negative />
+      <SummaryCard style={styles.fuelCard} labelEn="FUEL / DEF" labelTr="YAKIT / DEF" value={formatMoney(-Math.abs(model.summary.fuelDeductions))} negative />
+      <SummaryCard style={styles.netCard} labelEn={terms.net.toUpperCase()} labelTr="ODENECEK NET" value={formatMoney(model.summary.netAmount)} negative={model.summary.netAmount < 0} positive={model.summary.netAmount >= 0} />
     </View>
   );
 }
 
-function RefinedSummaryCard({
+function SummaryCard({
   style,
   labelEn,
   labelTr,
@@ -229,83 +230,26 @@ function RefinedSummaryCard({
 }
 
 export function RefinedCalculationSummary({ model }: { model: AmazonStatementViewModel }) {
-  const rows = displayDeductionRows(model);
-  return (
-    <View style={styles.section} wrap={false}>
-      <View style={styles.bandHeader}>
-        <T style={[styles.bandHeaderText, { width: "78%" }]}>Calculation / Hesaplama</T>
-        <T style={[styles.bandHeaderText, styles.right, { width: "22%" }]}>Amount / Tutar</T>
-      </View>
-      <View style={styles.summaryRow}>
-        <T style={styles.summaryLabel}>{`Amazon Relay gross assigned to ${model.payee.name}`}</T>
-        <T style={styles.summaryAmount}>{formatMoney(model.summary.grossRevenue)}</T>
-      </View>
-      {rows.map((row) => (
-        <View key={row.key} style={styles.summaryRow}>
-          <T style={styles.summaryLabel}>{row.calculationLabel}</T>
-          <T style={[styles.summaryAmount, styles.negative]}>{formatMoney(-Math.abs(row.amount))}</T>
-        </View>
-      ))}
-      <View style={styles.netSummaryRow}>
-        <T style={styles.netSummaryLabel}>Net settlement payable / Odenecek net tutar</T>
-        <T style={model.summary.netAmount < 0 ? [styles.netSummaryAmount, styles.negative] : styles.netSummaryAmount}>{formatMoney(model.summary.netAmount)}</T>
-      </View>
-    </View>
-  );
+  return <CalculationSummary model={displayModel(model)} />;
+}
+
+export function RefinedDeductionSummary({ model }: { model: AmazonStatementViewModel }) {
+  return <DeductionSummary model={displayModel(model)} />;
 }
 
 export function RefinedRevenueTable({ model }: { model: AmazonStatementViewModel }) {
-  if (model.revenueLines.length === 0) return null;
-  const totals = revenueTotals(model.revenueLines);
-  return (
-    <View>
-      <SectionHeading
-        title="Revenue Details / Gelir Detaylari"
-        intro="Same Trip ID rows are merged into one statement line. Routes show city/state when available; otherwise the original Amazon station codes are shown."
-      />
-      <View style={styles.table}>
-        <View style={styles.tableHeader} fixed>
-          <T style={[styles.th, { width: "9%" }]}>Date</T>
-          <T style={[styles.th, { width: "13%" }]}>Trip / Load ID</T>
-          <T style={[styles.th, { width: "23%" }]}>Route</T>
-          <T style={[styles.th, styles.center, { width: "10%" }]}>Status</T>
-          <T style={[styles.th, styles.right, { width: "7%" }]}>Miles</T>
-          <T style={[styles.th, styles.center, { width: "7%" }]}>Weight</T>
-          <T style={[styles.th, styles.right, { width: "8%" }]}>Base</T>
-          <T style={[styles.th, styles.right, { width: "8%" }]}>Fuel SC</T>
-          <T style={[styles.th, styles.right, { width: "7%" }]}>Tolls</T>
-          <T style={[styles.th, styles.right, { width: "8%" }]}>Gross</T>
-        </View>
-        {model.revenueLines.map((line, index) => (
-          <View key={line.id} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow} wrap={false}>
-            <T style={[styles.td, { width: "9%" }]}>{formatRevenueDate(line)}</T>
-            <T style={[styles.td, { width: "13%" }]}>{displayOrNA(line.tripId ?? line.loadId)}</T>
-            <T style={[styles.td, { width: "23%" }]}>{displayOrNA(line.routeDisplay)}</T>
-            <T style={[styles.td, styles.center, { width: "10%" }]}>{line.status ?? "Completed"}</T>
-            <T style={[styles.td, styles.right, { width: "7%" }]}>{formatNumber(line.distance, 2)}</T>
-            <T style={[styles.td, styles.center, { width: "7%" }]}>{line.weight == null ? "N/A" : String(line.weight)}</T>
-            <T style={[styles.td, styles.right, { width: "8%" }]}>{formatMoney(line.baseAmount ?? 0)}</T>
-            <T style={[styles.td, styles.right, { width: "8%" }]}>{formatMoney(line.fuelSurchargeAmount ?? 0)}</T>
-            <T style={[styles.td, styles.right, { width: "7%" }]}>{formatMoney(line.tollAmount ?? 0)}</T>
-            <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(line.grossAmount)}</T>
-          </View>
-        ))}
-        <View style={styles.tableTotalRow} wrap={false}>
-          <T style={[styles.tdBold, { width: "9%" }]}>TOTAL</T>
-          <T style={[styles.td, { width: "13%" }]}>{`${model.revenueLines.length} loads`}</T>
-          <T style={[styles.td, { width: "23%" }]}>Selected revenue total</T>
-          <T style={[styles.td, styles.center, { width: "10%" }]}>Completed</T>
-          <T style={[styles.tdBold, styles.right, { width: "7%" }]}>{formatNumber(totals.distance, 2)}</T>
-          <T style={[styles.td, styles.center, { width: "7%" }]}>N/A</T>
-          <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(totals.base)}</T>
-          <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(totals.fuel)}</T>
-          <T style={[styles.tdBold, styles.right, { width: "7%" }]}>{formatMoney(totals.tolls)}</T>
-          <T style={[styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(totals.gross)}</T>
-        </View>
-      </View>
-      <T style={styles.sectionIntro}>Weight is shown as N/A when Amazon does not provide source weight data. Amazon-paid tolls remain included in gross revenue.</T>
-    </View>
-  );
+  return <RevenueTable model={model} />;
+}
+
+function displayModel(model: AmazonStatementViewModel): AmazonStatementViewModel {
+  if (model.statementType !== "managed_investor") return model;
+  return {
+    ...model,
+    deductionLines: model.deductionLines.map((line) => ({
+      ...line,
+      label: normalizeDeductionLabel(line, model.statementType),
+    })),
+  };
 }
 
 export function RefinedFuelTable({ model }: { model: AmazonStatementViewModel }) {
@@ -316,7 +260,7 @@ export function RefinedFuelTable({ model }: { model: AmazonStatementViewModel })
     <View>
       <SectionHeading
         title="Fuel / DEF Details / Yakit Detaylari"
-        intro={`${totals.transactionCount} fuel-card transaction(s), grouped by receipt. Each product line repeats its receipt details so no blank transaction cells remain.`}
+        intro={`${totals.transactionCount} fuel-card transaction(s), grouped by receipt. Receipt details repeat on each product line so the table has no blank transaction cells.`}
       />
       <View style={styles.table}>
         <View style={styles.tableHeader} fixed>
@@ -331,8 +275,13 @@ export function RefinedFuelTable({ model }: { model: AmazonStatementViewModel })
           <T style={[styles.th, styles.right, { width: "9%" }]}>Amount</T>
         </View>
         {displayLines.map(({ line, transactionIndex, firstInTransaction }) => {
-          const baseStyle = transactionIndex % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow;
-          const rowStyle = firstInTransaction ? [baseStyle, refinedStyles.transactionStart] : baseStyle;
+          const rowStyle = transactionIndex % 2
+            ? firstInTransaction
+              ? [styles.tableRow, styles.tableRowAlt, refinedStyles.transactionStart]
+              : [styles.tableRow, styles.tableRowAlt]
+            : firstInTransaction
+              ? [styles.tableRow, refinedStyles.transactionStart]
+              : styles.tableRow;
           return (
             <View key={line.id} style={rowStyle} wrap={false}>
               <T style={[styles.td, { width: "14%" }]}>{formatDateTime(line.date)}</T>
@@ -359,15 +308,15 @@ export function RefinedFuelTable({ model }: { model: AmazonStatementViewModel })
           <T style={[styles.tdBold, styles.right, { width: "9%" }]}>{formatMoney(totals.amount)}</T>
         </View>
       </View>
-      <RefinedFuelSummary model={model} />
+      <FuelSummaryCards model={model} />
     </View>
   );
 }
 
-function RefinedFuelSummary({ model }: { model: AmazonStatementViewModel }) {
+function FuelSummaryCards({ model }: { model: AmazonStatementViewModel }) {
   const groups = fuelProductGroups(model.fuelLines);
   const totals = fuelTotals(model.fuelLines);
-  const cellWidth = `${100 / (groups.length + 1)}%`;
+  const cellWidth = groups.length <= 1 ? "50%" : groups.length === 2 ? "33.333%" : "25%";
   return (
     <View style={refinedStyles.fuelSummaryGrid} wrap={false}>
       {groups.map((group) => (
@@ -381,36 +330,6 @@ function RefinedFuelSummary({ model }: { model: AmazonStatementViewModel }) {
         <T style={refinedStyles.fuelSummaryTitle}>TOTAL FUEL / DEF</T>
         <T style={refinedStyles.fuelSummaryAmount}>{formatMoney(totals.amount)}</T>
         <T style={refinedStyles.fuelSummaryDetail}>{`${formatNumber(totals.quantity, 2)} gal | Discount ${formatMoney(totals.discount)}`}</T>
-      </View>
-    </View>
-  );
-}
-
-export function RefinedDeductionSummary({ model }: { model: AmazonStatementViewModel }) {
-  const rows = displayDeductionRows(model);
-  return (
-    <View>
-      <SectionHeading title="Deductions / Kesintiler" intro="Deductions use the saved candidate calculation. Percentage fees are based on gross revenue." />
-      <View style={styles.table}>
-        <View style={styles.tableHeader}>
-          <T style={[styles.th, styles.center, { width: "8%" }]}>Order</T>
-          <T style={[styles.th, { width: "34%" }]}>Deduction Item / Kesinti Kalemi</T>
-          <T style={[styles.th, { width: "43%" }]}>Calculation / Hesap</T>
-          <T style={[styles.th, styles.right, { width: "15%" }]}>Amount / Tutar</T>
-        </View>
-        {rows.map((row, index) => (
-          <View key={row.key} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow} wrap={false}>
-            <T style={[styles.td, styles.center, { width: "8%" }]}>{String(index + 1)}</T>
-            <T style={[styles.td, { width: "34%" }]}>{row.label}</T>
-            <T style={[styles.td, { width: "43%" }]}>{row.basis}</T>
-            <T style={[styles.tdBold, styles.right, styles.negative, { width: "15%" }]}>{formatMoney(-Math.abs(row.amount))}</T>
-          </View>
-        ))}
-        <View style={styles.tableTotalRow} wrap={false}>
-          <T style={[styles.td, { width: "8%" }]} />
-          <T style={[styles.tdBold, { width: "77%" }]}>TOTAL DEDUCTIONS / TOPLAM KESINTI</T>
-          <T style={[styles.tdBold, styles.right, styles.negative, { width: "15%" }]}>{formatMoney(-Math.abs(model.summary.totalDeductions))}</T>
-        </View>
       </View>
     </View>
   );
@@ -462,78 +381,6 @@ function SignatureField({ labelText, value = "", signature, last }: { labelText:
   );
 }
 
-interface DisplayDeductionRow {
-  key: string;
-  label: string;
-  amount: number;
-  basis: string;
-  calculationLabel: string;
-  order: number;
-}
-
-function displayDeductionRows(model: AmazonStatementViewModel): DisplayDeductionRow[] {
-  const rows = model.deductionLines
-    .filter((line) => !isFuelDeduction(line))
-    .map((line) => {
-      const labelText = normalizeDeductionLabel(line, model.statementType);
-      return {
-        key: line.id,
-        label: labelText,
-        amount: Math.abs(line.amount),
-        basis: deductionBasis(line, model),
-        calculationLabel: calculationLabel(line, labelText, model),
-        order: deductionDisplayOrder(line),
-      };
-    });
-
-  if (Math.abs(model.summary.fuelDeductions) > 0.004) {
-    rows.push({
-      key: "fuel-and-def-total",
-      label: "Fuel + DEF / Yakit + DEF",
-      amount: Math.abs(model.summary.fuelDeductions),
-      basis: "Selected fuel-card product-line total / Secili yakit karti satirlari",
-      calculationLabel: "Fuel and DEF card deduction / Yakit ve DEF karti kesintisi",
-      order: 40,
-    });
-  }
-
-  return rows.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key));
-}
-
-function isFuelDeduction(line: AmazonStatementDeductionLine): boolean {
-  return /fuel|def/i.test(`${line.type} ${line.label}`);
-}
-
-function deductionBasis(line: AmazonStatementDeductionLine, model: AmazonStatementViewModel): string {
-  const value = `${line.type} ${line.label}`;
-  const percentage = line.label.match(/(\d+(?:\.\d+)?)\s*%/)?.[1];
-  if (/company fee|external carrier fee|percentage/i.test(value)) {
-    return percentage ? `${percentage}% x ${formatMoney(model.summary.grossRevenue)}` : "Percentage of gross revenue";
-  }
-  if (/driver pay|driver percentage/i.test(value)) {
-    return percentage ? `${percentage}% x ${formatMoney(model.summary.grossRevenue)}` : "Driver percentage of gross revenue";
-  }
-  if (/insurance/i.test(value)) return "Fixed insurance deduction / Sabit sigorta kesintisi";
-  if (/eld|safety|ifta/i.test(value)) return "Fixed weekly deduction / Sabit haftalik kesinti";
-  return "Saved candidate calculation / Kayitli hesaplama";
-}
-
-function calculationLabel(line: AmazonStatementDeductionLine, labelText: string, model: AmazonStatementViewModel): string {
-  const value = `${line.type} ${line.label}`;
-  if (/company fee|external carrier fee|percentage/i.test(value)) return `${labelText}: ${deductionBasis(line, model)}`;
-  return labelText;
-}
-
-function revenueTotals(lines: AmazonStatementRevenueLine[]) {
-  return lines.reduce((total, line) => ({
-    distance: total.distance + Number(line.distance ?? 0),
-    base: total.base + Number(line.baseAmount ?? 0),
-    fuel: total.fuel + Number(line.fuelSurchargeAmount ?? 0),
-    tolls: total.tolls + Number(line.tollAmount ?? 0),
-    gross: total.gross + Number(line.grossAmount ?? 0),
-  }), { distance: 0, base: 0, fuel: 0, tolls: 0, gross: 0 });
-}
-
 function fuelTotals(lines: AmazonStatementFuelLine[]) {
   const transactionKeys = new Set<string>();
   let quantity = 0;
@@ -562,22 +409,6 @@ function fuelProductGroups(lines: AmazonStatementFuelLine[]) {
   return [...groups.values()]
     .map((group) => ({ ...group, averagePpu: group.quantity > 0 ? group.ppuWeighted / group.quantity : 0 }))
     .sort((a, b) => a.product.localeCompare(b.product));
-}
-
-function formatRevenueDate(line: AmazonStatementRevenueLine): string {
-  const start = line.startDate ?? line.date ?? null;
-  const end = line.endDate ?? line.date ?? null;
-  if (start && end && start !== end) return `${shortDate(start)} - ${shortDate(end)}`;
-  return shortDate(end ?? start);
-}
-
-function shortDate(value: string | null | undefined): string {
-  if (!value) return "N/A";
-  if (/^\d{4}-\d{2}-\d{2}/.test(value)) {
-    const [, month, day] = value.slice(0, 10).split("-");
-    return `${month}/${day}`;
-  }
-  return value;
 }
 
 function formatDateTime(value: string | null | undefined): string {
