@@ -48,7 +48,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
       .single(),
     supabase
       .from("vehicles")
-      .select("id, owner_id")
+      .select("id, owner_id, assigned_driver_id")
       .eq("organization_id", actor.organizationId),
     supabase
       .from("amazon_revenue_load_projections")
@@ -80,6 +80,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
   const vehicles = (vehiclesResult.data ?? []).map((vehicle) => ({
     id: String(vehicle.id),
     ownerId: stringOrNull(vehicle.owner_id),
+    assignedDriverId: stringOrNull(vehicle.assigned_driver_id),
   }));
   if (requestedVehicleId && !vehicles.some((vehicle) => vehicle.id === requestedVehicleId)) {
     return NextResponse.json({ error: "Selected unit is not available." }, { status: 400 });
@@ -120,7 +121,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
     ? vehicles.map((vehicle) => vehicle.id === vehicleId ? { ...vehicle, ownerId: payeeId } : vehicle)
     : vehicles;
   const common = { statementType, payeeId, vehicleId, vehicles: selectionVehicles };
-  const revenueSelection = autoSelectCandidateSources({ ...common, sources: revenueSources });
+  const revenueSelection = autoSelectCandidateSources({
+    ...common,
+    sources: revenueSources,
+    allowAssignedDriverFallback: true,
+  });
   const fuelSelection = autoSelectCandidateSources({ ...common, sources: fuelSources });
 
   return NextResponse.json({
