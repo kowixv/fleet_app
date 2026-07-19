@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactExactLabel, exactLabelTargetIds } from "./exact-label-attribution";
+import { compactExactLabel, exactLabelTargetIds, splitExactSourceLabels } from "./exact-label-attribution";
 
 describe("exact source-label attribution", () => {
   it("matches punctuation and spacing variants without fuzzy matching", () => {
@@ -29,5 +29,11 @@ describe("exact source-label attribution", () => {
     expect(exactLabelTargetIds("CELEBI", [
       { id: "person-1", label: "M. CELEBI" },
     ])).toEqual([]);
+  });
+
+  it("uses raw trip driver text when normalized token rows are absent", () => {
+    expect(splitExactSourceLabels("M.CELEBI")).toEqual(["M.CELEBI"]);
+    expect(splitExactSourceLabels("M.CELEBI / C.MANESS")).toEqual(["M.CELEBI", "C.MANESS"]);
+    expect(splitExactSourceLabels("M.CELEBI & C.MANESS")).toEqual(["M.CELEBI", "C.MANESS"]);
   });
 });
