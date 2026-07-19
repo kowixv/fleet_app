@@ -5,6 +5,7 @@ import {
   autoSelectCandidateSources,
   uniqueOwnedVehicleId,
   type CandidateAutoSelectableSource,
+  type CandidateAutoSelectionHint,
   type CandidateStatementType,
 } from "@/lib/amazon-statements/candidates/candidate-auto-selection";
 import { loadCandidateAutoSelectionHints } from "@/lib/amazon-statements/server/candidate-auto-selection-service";
@@ -69,6 +70,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
   if (payeeResult.error || !payeeResult.data) {
     return NextResponse.json({ error: "Selected payee is not available." }, { status: 404 });
   }
+  if (!payeeMatchesStatement(String(payeeResult.data.type ?? ""), statementType)) {
+    return NextResponse.json({ error: "Selected payee is not compatible with this statement type." }, { status: 400 });
+  }
   if (vehiclesResult.error) throw new Error(vehiclesResult.error.message);
   if (revenueResult.error) throw new Error(revenueResult.error.message);
   if (fuelResult.error) throw new Error(fuelResult.error.message);
@@ -132,7 +136,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ bat
 
 function asSelectableSources(
   sourceIds: string[],
-  hints: Map<string, CandidateAutoSelectableSource>,
+  hints: Map<string, CandidateAutoSelectionHint>,
 ): CandidateAutoSelectableSource[] {
   return sourceIds.map((sourceId) => {
     const hint = hints.get(sourceId);
@@ -153,6 +157,12 @@ function validStatementType(value: unknown): CandidateStatementType | null {
     || value === "managed_investor"
     ? value
     : null;
+}
+
+function payeeMatchesStatement(type: string, statementType: CandidateStatementType): boolean {
+  if (statementType === "owner_operator") return type === "owner_operator";
+  if (statementType === "managed_investor") return type === "investor";
+  return type === "company_driver" || type === "external_carrier_driver";
 }
 
 function isPlaceholder(value: unknown): boolean {
