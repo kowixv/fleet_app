@@ -3,12 +3,16 @@ import { Document, Page } from "@react-pdf/renderer";
 import type { AmazonStatementViewModel } from "./statement-view-model";
 import {
   CalculationSummary,
+  DeductionSummary,
+  FinalSettlementSummary,
   FuelTable,
   IdentityGrid,
-  NotesAndSignatures,
+  RevenueMetrics,
   RevenueTable,
+  SignaturePanels,
   StatementFooter,
   StatementHeader,
+  StatementNotes,
   StatementWatermark,
   SummaryCards,
   TeamAllocation,
@@ -31,9 +35,25 @@ export function AmazonStatementPdfDocument({ model }: { model: AmazonStatementVi
         <SummaryCards model={model} />
         <CalculationSummary model={model} />
         <RevenueTable model={model} />
+        <RevenueMetrics model={model} />
+        <StatementFooter model={model} />
+      </Page>
+
+      <Page size="LETTER" style={styles.page} wrap>
+        <StatementWatermark model={model} />
+        <StatementHeader model={model} />
         <FuelTable model={model} />
+        <DeductionSummary model={model} />
+        <FinalSettlementSummary model={model} />
+        <StatementFooter model={model} />
+      </Page>
+
+      <Page size="LETTER" style={styles.page} wrap>
+        <StatementWatermark model={model} />
+        <StatementHeader model={model} />
+        <StatementNotes model={model} />
         <TeamAllocation model={model} />
-        <NotesAndSignatures model={model} />
+        <SignaturePanels model={model} />
         <StatementFooter model={model} />
       </Page>
     </Document>
