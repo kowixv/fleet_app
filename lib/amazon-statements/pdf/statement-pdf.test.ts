@@ -5,9 +5,11 @@ import {
   AMAZON_STATEMENT_TEMPLATE_V1,
   getAmazonStatementTemplate,
   knownAmazonStatementTemplateVersions,
+  renderAmazonStatementPdf,
 } from "./statement-template-registry";
 import { validateStatementViewModel } from "./statement-pdf-validation";
 import { buildAmazonStatementFixture } from "./statement-fixtures";
+import type { AmazonStatementViewModel } from "./statement-view-model";
 
 const componentsSource = readFileSync("lib/amazon-statements/pdf/statement-pdf-components.tsx", "utf8");
 const rendererSource = readFileSync("lib/amazon-statements/pdf/statement-pdf.tsx", "utf8");
@@ -87,6 +89,149 @@ describe("amazon statement PDF view model behavior", () => {
     expect(validateStatementViewModel(model, knownAmazonStatementTemplateVersions())).toEqual([]);
   });
 
+  it("validates exact company-driver totals for the Serkan production case", () => {
+    const model = serkanCompanyDriverFixture();
+    const oldExpectedNet = 11953.60;
+
+    expect(oldExpectedNet).not.toBe(model.summary.netAmount);
+    expect(model.summary).toMatchObject({
+      grossRevenue: 11953.60,
+      calculationBaseAmount: 3944.69,
+      totalDeductions: 0,
+      fuelDeductions: 0,
+      netAmount: 3944.69,
+    });
+    expect(model.revenueLines.reduce((sum, line) => sum + line.grossAmount, 0)).toBe(11953.60);
+    expect(model.fuelLines).toEqual([]);
+    expect(model.deductionLines).toEqual([]);
+    expect(validateStatementViewModel(model, knownAmazonStatementTemplateVersions())).toEqual([]);
+  });
+
+  it("validates company-driver net against driver gross pay minus driver deductions", () => {
+    const model = {
+      ...buildAmazonStatementFixture("company_driver"),
+      summary: {
+        grossRevenue: 10000,
+        calculationBaseAmount: 3300,
+        percentageDeductions: 0,
+        fixedDeductions: 100,
+        fuelDeductions: 0,
+        otherDeductions: 0,
+        totalDeductions: 100,
+        netAmount: 3200,
+      },
+      revenueLines: [{
+        ...buildAmazonStatementFixture("company_driver").revenueLines[0],
+        grossAmount: 10000,
+      }],
+      deductionLines: [{
+        id: "driver-advance",
+        displayOrder: 1,
+        type: "driver_advance",
+        label: "Driver advance",
+        calculationBasis: "fixed_amount" as const,
+        amount: 100,
+      }],
+    };
+
+    const codes = validateStatementViewModel(model, knownAmazonStatementTemplateVersions()).map((error) => error.code);
+    expect(codes).not.toContain("net_mismatch");
+    expect(codes).not.toContain("deduction_mismatch");
+    expect(codes).toEqual([]);
+  });
+
+  it("rejects invalid company-driver net totals", () => {
+    const model = serkanCompanyDriverFixture();
+    model.summary = {
+      ...model.summary,
+      grossRevenue: 10000,
+      calculationBaseAmount: 3300,
+      totalDeductions: 100,
+      fixedDeductions: 100,
+      netAmount: 3300,
+    };
+    model.revenueLines = [{ ...model.revenueLines[0], grossAmount: 10000 }];
+    model.deductionLines = [{
+      id: "driver-advance",
+      displayOrder: 1,
+      type: "driver_advance",
+      label: "Driver advance",
+      calculationBasis: "fixed_amount",
+      amount: 100,
+    }];
+
+    expect(validateStatementViewModel(model, knownAmazonStatementTemplateVersions()).map((error) => error.code)).toContain("net_mismatch");
+  });
+
+  it("keeps owner-operator and managed-investor net validation on gross minus deductions", () => {
+    const owner = {
+      ...buildAmazonStatementFixture("owner_operator_reference"),
+      summary: {
+        grossRevenue: 10000,
+        calculationBaseAmount: 10000,
+        percentageDeductions: 0,
+        fixedDeductions: 2500,
+        fuelDeductions: 0,
+        otherDeductions: 0,
+        totalDeductions: 2500,
+        netAmount: 7500,
+      },
+      revenueLines: [{
+        ...buildAmazonStatementFixture("owner_operator_reference").revenueLines[0],
+        grossAmount: 10000,
+      }],
+      fuelLines: [],
+      deductionLines: [{
+        id: "owner-deductions",
+        displayOrder: 1,
+        type: "owner_deductions",
+        label: "Owner deductions",
+        calculationBasis: "fixed_amount" as const,
+        amount: 2500,
+      }],
+    };
+    const investor = {
+      ...buildAmazonStatementFixture("managed_investor"),
+      summary: {
+        grossRevenue: 11953.60,
+        calculationBaseAmount: 11953.60,
+        percentageDeductions: 0,
+        fixedDeductions: 6790.21,
+        fuelDeductions: 0,
+        otherDeductions: 0,
+        totalDeductions: 6790.21,
+        netAmount: 5163.39,
+      },
+      revenueLines: [{
+        ...buildAmazonStatementFixture("managed_investor").revenueLines[0],
+        grossAmount: 11953.60,
+      }],
+      fuelLines: [],
+      deductionLines: [{
+        id: "investor-deductions",
+        displayOrder: 1,
+        type: "investor_deductions",
+        label: "Investor deductions",
+        calculationBasis: "fixed_amount" as const,
+        amount: 6790.21,
+      }],
+    };
+
+    expect(validateStatementViewModel(owner, knownAmazonStatementTemplateVersions())).toEqual([]);
+    expect(validateStatementViewModel(investor, knownAmazonStatementTemplateVersions())).toEqual([]);
+  });
+
+  it("renders the Serkan company-driver fixture as a real PDF buffer", async () => {
+    const model = serkanCompanyDriverFixture();
+    expect(validateStatementViewModel(model, knownAmazonStatementTemplateVersions())).toEqual([]);
+
+    const pdf = await renderAmazonStatementPdf(model);
+
+    expect(Buffer.isBuffer(pdf)).toBe(true);
+    expect(pdf.length).toBeGreaterThan(1000);
+    expect(pdf.subarray(0, 4).toString()).toBe("%PDF");
+  });
+
   it("supports negative net and status watermarks", () => {
     expect(buildAmazonStatementFixture("negative_net").summary.netAmount).toBeLessThan(0);
     expect(componentsSource).toContain("DRAFT");
@@ -143,3 +288,37 @@ describe("amazon statement PDF view model behavior", () => {
     }
   });
 });
+
+function serkanCompanyDriverFixture(): AmazonStatementViewModel {
+  const model = buildAmazonStatementFixture("company_driver");
+  return {
+    ...model,
+    candidateId: "candidate-serkan-bekisli",
+    documentId: "amazon-statement-serkan",
+    statementType: "company_driver",
+    candidateStatus: "needs_review",
+    payee: { name: "Serkan Bekisli" },
+    vehicleDisplay: "829",
+    periodStart: "2026-07-05",
+    periodEnd: "2026-07-11",
+    summary: {
+      grossRevenue: 11953.60,
+      calculationBaseAmount: 3944.69,
+      percentageDeductions: 0,
+      fixedDeductions: 0,
+      fuelDeductions: 0,
+      otherDeductions: 0,
+      totalDeductions: 0,
+      netAmount: 3944.69,
+    },
+    revenueLines: [{
+      ...model.revenueLines[0],
+      id: "serkan-revenue-1",
+      sourceRevenueItemId: "serkan-revenue-1",
+      grossAmount: 11953.60,
+    }],
+    fuelLines: [],
+    deductionLines: [],
+    teamAllocations: [],
+  };
+}

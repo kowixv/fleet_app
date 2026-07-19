@@ -18,6 +18,17 @@ export interface StatementPdfValidationError {
   details?: Record<string, unknown>;
 }
 
+export class StatementPdfValidationFailure extends Error {
+  readonly validationErrors: StatementPdfValidationError[];
+
+  constructor(validationErrors: StatementPdfValidationError[]) {
+    const codes = validationErrors.map((error) => error.code).join(", ");
+    super(`Amazon statement PDF validation failed: ${codes}`);
+    this.name = "StatementPdfValidationFailure";
+    this.validationErrors = validationErrors;
+  }
+}
+
 export function validateStatementViewModel(
   model: AmazonStatementViewModel,
   knownTemplateVersions: readonly string[] = [model.templateVersion],
@@ -45,9 +56,25 @@ export function validateStatementViewModel(
     errors.push({ code: "deduction_mismatch", message: "Deduction lines do not reconcile to saved total deductions.", details: { deductionTotal, totalDeductions: model.summary.totalDeductions } });
   }
 
-  const expectedNet = round2(model.summary.grossRevenue - model.summary.totalDeductions);
+  const driverStatement = model.statementType === "company_driver" || model.statementType === "box_truck_driver";
+  const expectedNet = driverStatement
+    ? round2(model.summary.calculationBaseAmount - model.summary.totalDeductions)
+    : round2(model.summary.grossRevenue - model.summary.totalDeductions);
   if (expectedNet !== round2(model.summary.netAmount)) {
-    errors.push({ code: "net_mismatch", message: "Saved net does not reconcile to saved gross minus saved deductions.", details: { expectedNet, netAmount: model.summary.netAmount } });
+    errors.push({
+      code: "net_mismatch",
+      message: driverStatement
+        ? "Driver net does not reconcile to driver gross pay minus driver deductions."
+        : "Saved net does not reconcile to saved gross minus saved deductions.",
+      details: {
+        statementType: model.statementType,
+        grossRevenue: model.summary.grossRevenue,
+        calculationBaseAmount: model.summary.calculationBaseAmount,
+        totalDeductions: model.summary.totalDeductions,
+        expectedNet,
+        netAmount: model.summary.netAmount,
+      },
+    });
   }
 
   if (model.teamAllocations.length > 0) {
@@ -72,7 +99,6 @@ export function validateStatementViewModel(
 export function assertValidStatementViewModel(model: AmazonStatementViewModel, knownTemplateVersions: readonly string[]): void {
   const errors = validateStatementViewModel(model, knownTemplateVersions);
   if (errors.length > 0) {
-    const codes = errors.map((error) => error.code).join(", ");
-    throw new Error(`Amazon statement PDF validation failed: ${codes}`);
+    throw new StatementPdfValidationFailure(errors);
   }
 }

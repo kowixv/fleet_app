@@ -78,6 +78,7 @@ describe("candidate PDF model", () => {
       template_version: "amazon-statement-v1",
       configuration_snapshot: { language_mode: "en" },
       calculation_snapshot: {
+        calculationBaseAmount: 300,
         engineInputs: {
           loads: [{ reference: "LOAD-2", grossAmount: 1000 }],
           expenses: [{ category: "parking", amount: 25 }],
@@ -93,11 +94,49 @@ describe("candidate PDF model", () => {
       fuel_deductions_amount: 0,
       other_deductions_amount: 0,
       total_deductions_amount: 25,
-      net_amount: 975,
+      net_amount: 275,
     });
 
     expect(model.deductionLines).toHaveLength(1);
     expect(model.deductionLines[0].type).toBe("expense_parking");
+    expect(model.summary.calculationBaseAmount).toBe(300);
+    expect(validateStatementViewModel(model, ["amazon-statement-v1"])).toEqual([]);
+  });
+
+  it("preserves needs-review status and derives legacy driver base from saved driver pay", () => {
+    const model = candidatePdfModel({
+      id: "candidate-3",
+      statement_type: "box_truck_driver",
+      status: "needs_review",
+      period_start: "2026-07-05",
+      period_end: "2026-07-11",
+      people: { full_name: "Driver" },
+      vehicles: { unit_number: "1503" },
+      template_version: "amazon-statement-v1",
+      configuration_snapshot: { language_mode: "en" },
+      calculation_snapshot: {
+        engineInputs: {
+          loads: [{ reference: "LOAD-3", grossAmount: 2000 }],
+          expenses: [],
+        },
+        lineItems: [
+          { key: "driver_pay", labelEn: "Driver pay (33%)", amount: 660 },
+        ],
+      },
+      gross_amount: 2000,
+      percentage_deductions_amount: 0,
+      fixed_deductions_amount: 0,
+      fuel_deductions_amount: 0,
+      other_deductions_amount: 0,
+      total_deductions_amount: 0,
+      net_amount: 660,
+      converted_settlement_id: null,
+    });
+
+    expect(model.candidateStatus).toBe("needs_review");
+    expect(model.summary.calculationBaseAmount).toBe(660);
+    expect(model.deductionLines).toHaveLength(0);
+    expect(validateStatementViewModel(model, ["amazon-statement-v1"])).toEqual([]);
   });
 
   it("uses normalized invoice, revenue, route, component, and fuel transaction details", () => {

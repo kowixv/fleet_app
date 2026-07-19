@@ -45,6 +45,7 @@ describe("vehicle create/edit form contract", () => {
   it("keeps the managed payload narrow and excludes removed settlement fields from the form", () => {
     expect(VEHICLE_FORM_FIELDS).toEqual([
       "vehicle_type",
+      "owner_id",
       "assigned_driver_id",
       "default_driver_pay_pct",
       "vin",

@@ -3,6 +3,11 @@ import { requireAmazonImportActor } from "@/lib/amazon-statements/server/auth";
 import { createClient } from "@/lib/supabase/server";
 import { renderAmazonStatementPdf } from "@/lib/amazon-statements/pdf/statement-template-registry";
 import {
+  StatementPdfValidationFailure,
+  type StatementPdfValidationError,
+} from "@/lib/amazon-statements/pdf/statement-pdf-validation";
+import { statementPdfResponse } from "@/lib/amazon-statements/pdf/statement-pdf-response";
+import {
   candidatePdfModel,
   type CandidatePdfContext,
   type CandidatePdfFuelDetail,
@@ -55,53 +60,43 @@ export async function GET(_request: Request, { params }: { params: Promise<{ can
       try {
         const fallbackModel = candidatePdfModel(data as DbRow, {});
         const fallbackPdf = await renderAmazonStatementPdf(fallbackModel);
-        console.warn("Amazon statement PDF rendered from saved calculation snapshot after detailed render failure", {
+        logStatementPdfFailure("Amazon statement PDF rendered from saved calculation snapshot after detailed render failure", {
           candidateId,
           organizationId: actor.organizationId,
-          error: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
+          statementType: data.statement_type,
+          candidateStatus: fallbackModel.candidateStatus,
+          error: primaryRenderError,
+          logger: console.warn,
         });
         return statementPdfResponse(fallbackPdf, data as DbRow, fallbackModel.candidateStatus, "snapshot-fallback");
       } catch (fallbackRenderError) {
-        console.error("Amazon statement PDF preview failed in detailed and fallback modes", {
+        const validationErrors = [
+          ...validationErrorsFor(primaryRenderError),
+          ...validationErrorsFor(fallbackRenderError),
+        ];
+        logStatementPdfFailure("Amazon statement PDF preview failed in detailed and fallback modes", {
           candidateId,
           organizationId: actor.organizationId,
-          detailedError: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
-          fallbackError: fallbackRenderError instanceof Error ? fallbackRenderError.message : String(fallbackRenderError),
+          statementType: data.statement_type,
+          candidateStatus: String(data.status ?? "unknown"),
+          error: fallbackRenderError,
+          validationErrors,
+          logger: console.error,
         });
+        return statementPdfFailureResponse(fallbackRenderError, validationErrors);
       }
     } else {
-      console.error("Amazon statement PDF snapshot fallback failed", {
+      logStatementPdfFailure("Amazon statement PDF snapshot fallback failed", {
         candidateId,
         organizationId: actor.organizationId,
-        error: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
+        statementType: data.statement_type,
+        candidateStatus: String(data.status ?? "unknown"),
+        error: primaryRenderError,
+        logger: console.error,
       });
+      return statementPdfFailureResponse(primaryRenderError);
     }
-
-    return NextResponse.json(
-      {
-        error: "Statement PDF could not be generated from the saved candidate snapshot.",
-        code: "statement_pdf_render_failed",
-      },
-      { status: 422 },
-    );
   }
-}
-
-function statementPdfResponse(
-  pdf: Uint8Array | Buffer,
-  candidate: DbRow,
-  candidateStatus: string,
-  detailMode: "canonical-details" | "snapshot-fallback",
-) {
-  const filename = safeFilename(`amazon-statement-${String(candidate.id).slice(0, 8)}-${candidateStatus}.pdf`);
-  return new NextResponse(new Uint8Array(pdf), {
-    headers: {
-      "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${filename}"`,
-      "Cache-Control": "private, no-store",
-      "X-Statement-Detail-Mode": detailMode,
-    },
-  });
 }
 
 async function loadCandidatePdfContext(args: {
@@ -355,6 +350,46 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function safeFilename(value: string) {
-  return value.replace(/[^a-zA-Z0-9._-]/g, "-");
+function statementPdfFailureResponse(error: unknown, knownValidationErrors?: StatementPdfValidationError[]) {
+  const validationErrors = knownValidationErrors ?? validationErrorsFor(error);
+  const validationCodes = validationErrors.map((validationError) => validationError.code);
+  return NextResponse.json(
+    {
+      error: "Statement PDF could not be generated.",
+      code: "statement_pdf_render_failed",
+      stage: validationCodes.length > 0 ? "validation" : "render",
+      ...(validationCodes.length > 0 ? { validationCodes } : {}),
+    },
+    { status: 422 },
+  );
+}
+
+function logStatementPdfFailure(
+  message: string,
+  args: {
+    candidateId: string;
+    organizationId: string;
+    statementType: unknown;
+    candidateStatus: string;
+    error: unknown;
+    validationErrors?: StatementPdfValidationError[];
+    logger: typeof console.error;
+  },
+) {
+  const error = args.error instanceof Error ? args.error : new Error(String(args.error));
+  const validationErrors = args.validationErrors ?? validationErrorsFor(args.error);
+  args.logger(message, {
+    candidateId: args.candidateId,
+    organizationId: args.organizationId,
+    statementType: String(args.statementType ?? "unknown"),
+    candidateStatus: args.candidateStatus,
+    errorName: error.name,
+    errorMessage: error.message,
+    errorStack: error.stack,
+    validationErrors,
+  });
+}
+
+function validationErrorsFor(error: unknown): StatementPdfValidationError[] {
+  return error instanceof StatementPdfValidationFailure ? error.validationErrors : [];
 }

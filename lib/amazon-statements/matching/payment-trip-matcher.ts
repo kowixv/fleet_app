@@ -47,6 +47,7 @@ export function matchPaymentTrips(paymentRows: PaymentSourceRow[], tripRows: Tri
     const loadCandidates = loadKey ? tripsByLoad.get(loadKey) ?? [] : [];
     if (loadCandidates.length === 1) {
       matches.push(makeMatch(paymentRow, loadCandidates[0], loadCandidates, MATCH_CONFIDENCE.exactLoad));
+      issues.push(...teamSplitIssues(loadCandidates));
       continue;
     }
     if (loadCandidates.length > 1) {
@@ -60,6 +61,7 @@ export function matchPaymentTrips(paymentRows: PaymentSourceRow[], tripRows: Tri
       const conflictReasons = tripConflictReasons(tripCandidates);
       if (conflictReasons.length === 0) {
         matches.push(makeMatch(paymentRow, tripCandidates[0] ?? null, tripCandidates, MATCH_CONFIDENCE.exactTrip));
+        issues.push(...teamSplitIssues(tripCandidates));
       } else {
         matches.push(makeMatch(paymentRow, null, tripCandidates, { ...MATCH_CONFIDENCE.ambiguousTrip, reasons: conflictReasons }));
         for (const reason of conflictReasons) {
@@ -121,7 +123,28 @@ function makeMatch(paymentRow: PaymentSourceRow, tripRow: TripSourceRow | null, 
 function tripConflictReasons(rows: TripSourceRow[]): string[] {
   const reasons: string[] = [];
   if (hasConflictingVehicles(rows)) reasons.push("conflicting_trip_vehicle");
+  if (hasConflictingDrivers(rows)) reasons.push("conflicting_trip_drivers");
   return reasons;
+}
+
+function hasConflictingDrivers(rows: TripSourceRow[]): boolean {
+  const loadKeys = new Set(rows.map((row) => normalizeMatchKey(row.normalizedValues.loadId)).filter(Boolean));
+  if (loadKeys.size > 1) return false;
+  const driverSets = new Set(rows.map((row) =>
+    row.normalizedValues.driverTokens.map((token) => normalizeMatchKey(token)).filter(Boolean).sort().join("|")
+  ).filter(Boolean));
+  return driverSets.size > 1;
+}
+
+function teamSplitIssues(rows: TripSourceRow[]): AmazonParserIssue[] {
+  if (rows.length !== 1) return [];
+  const row = rows[0].normalizedValues;
+  if (!row.requiresTeamAssignmentRule || row.driverTokens.length < 2) return [];
+  return [
+    matchingIssue("missing_team_split", "blocking", "Team driver assignment requires an approved split rule.", {
+      driverTokenCount: row.driverTokens.length,
+    }),
+  ];
 }
 
 function groupBy(rows: TripSourceRow[], keyFor: (row: TripSourceRow) => string | null): Map<string, TripSourceRow[]> {

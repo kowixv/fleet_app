@@ -5,7 +5,7 @@ import type { CandidateAdjustmentLine } from "./candidate-types";
 function line(
   adjustmentType: CandidateAdjustmentLine["adjustmentType"],
   displayOrder: number,
-  label = adjustmentType,
+  label: string = adjustmentType,
 ): CandidateAdjustmentLine {
   return {
     adjustmentType,

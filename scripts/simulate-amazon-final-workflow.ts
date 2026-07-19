@@ -350,6 +350,7 @@ function statementModel(previewRevision: string): AmazonStatementViewModel {
     periodEnd: "2026-07-11",
     summary: {
       grossRevenue: 9291.84,
+      calculationBaseAmount: 9291.84,
       percentageDeductions: 1115.02,
       fixedDeductions: 900,
       fuelDeductions: 2028.22,
