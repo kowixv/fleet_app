@@ -1,5 +1,4 @@
 import type { AmazonParsedSourceRow, AmazonPaymentDetailFields, AmazonParserIssue, AmazonTripsRowFields } from "../types";
-import { hasConflictingDrivers, teamRows } from "./driver-assignment";
 import { MATCH_CONFIDENCE, normalizeMatchKey, type AmazonMatchMethod, type AmazonMatchStatus } from "./match-confidence";
 import { dateRangesOverlap, facilityCompatible, hasConflictingVehicles } from "./vehicle-candidate";
 import { matchingIssue } from "./matching-issues";
@@ -48,13 +47,11 @@ export function matchPaymentTrips(paymentRows: PaymentSourceRow[], tripRows: Tri
     const loadCandidates = loadKey ? tripsByLoad.get(loadKey) ?? [] : [];
     if (loadCandidates.length === 1) {
       matches.push(makeMatch(paymentRow, loadCandidates[0], loadCandidates, MATCH_CONFIDENCE.exactLoad));
-      addTeamIssues(issues, loadCandidates);
       continue;
     }
     if (loadCandidates.length > 1) {
       matches.push(makeMatch(paymentRow, null, loadCandidates, MATCH_CONFIDENCE.ambiguousLoad));
       issues.push(matchingIssue("ambiguous_load_match", "blocking", "Payment row has multiple Trips rows with the same Load ID.", { candidateCount: loadCandidates.length }));
-      addTeamIssues(issues, loadCandidates);
       continue;
     }
 
@@ -69,18 +66,15 @@ export function matchPaymentTrips(paymentRows: PaymentSourceRow[], tripRows: Tri
           issues.push(matchingIssue(reason, "blocking", "Trip ID fallback has conflicting operational candidates.", { tripCandidateCount: tripCandidates.length }));
         }
       }
-      addTeamIssues(issues, tripCandidates);
       continue;
     }
 
     const inferred = tripRows.filter((tripRow) => dateRangesOverlap(payment, tripRow.normalizedValues) && facilityCompatible(payment, tripRow.normalizedValues));
     if (inferred.length === 1) {
       matches.push(makeMatch(paymentRow, inferred[0], inferred, MATCH_CONFIDENCE.inferredVehicleFacility));
-      addTeamIssues(issues, inferred);
     } else if (inferred.length > 1) {
       matches.push(makeMatch(paymentRow, null, inferred, { ...MATCH_CONFIDENCE.inferredVehicleFacility, status: "ambiguous", score: 0.45, reasons: ["ambiguous_inferred_match"] }));
       issues.push(matchingIssue("ambiguous_load_match", "blocking", "Vehicle/date/facility inference produced multiple candidates.", { candidateCount: inferred.length }));
-      addTeamIssues(issues, inferred);
     } else {
       matches.push(makeMatch(paymentRow, null, [], MATCH_CONFIDENCE.unmatched));
       issues.push(matchingIssue("unmatched_payment_row", "blocking", "Financial payment row has no Trips match.", { classification: payment.rowClassification }));
@@ -126,18 +120,8 @@ function makeMatch(paymentRow: PaymentSourceRow, tripRow: TripSourceRow | null, 
 
 function tripConflictReasons(rows: TripSourceRow[]): string[] {
   const reasons: string[] = [];
-  if (hasConflictingDrivers(rows)) reasons.push("conflicting_trip_drivers");
   if (hasConflictingVehicles(rows)) reasons.push("conflicting_trip_vehicle");
   return reasons;
-}
-
-function addTeamIssues(issues: AmazonParserIssue[], rows: TripSourceRow[]): void {
-  for (const row of teamRows(rows)) {
-    issues.push(matchingIssue("missing_team_split", "blocking", "Multiple driver tokens require an explicit team split rule.", {
-      tokenCount: row.normalizedValues.driverTokens.length,
-      sourceFingerprint: row.sourceFingerprint,
-    }));
-  }
 }
 
 function groupBy(rows: TripSourceRow[], keyFor: (row: TripSourceRow) => string | null): Map<string, TripSourceRow[]> {

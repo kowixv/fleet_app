@@ -118,7 +118,7 @@ function buildItem(invoiceId: string, groupingKey: string, matches: AmazonSource
     otherAmount,
     grossAmount,
     matchStatus: matches.some((match) => match.status === "inferred") ? "inferred" : "exact",
-    driverAssignmentStatus: matches.some((match) => match.relatedTripRows.some((trip) => trip.normalizedValues.requiresTeamAssignmentRule)) ? "needs_team_split" : "source_only",
+    driverAssignmentStatus: "source_only",
     vehicleAssignmentStatus: matches.every((match) => match.relatedTripRows.length > 0) ? "source_only" : "unmatched",
     reconciliationStatus: Math.abs(componentGross - grossAmount) <= 0.01 ? "passed" : "warning",
     sourceRevision,
