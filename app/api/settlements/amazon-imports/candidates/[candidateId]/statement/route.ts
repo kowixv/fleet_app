@@ -8,6 +8,8 @@ import {
   type CandidatePdfFuelDetail,
   type CandidatePdfRevenueDetail,
 } from "@/lib/amazon-statements/pdf/candidate-pdf-model";
+import { resolveStatementCompanyIdentity } from "@/lib/amazon-statements/pdf/statement-company-identity";
+import { resolveStatementRoute } from "@/lib/amazon-statements/pdf/statement-route-display";
 
 export const dynamic = "force-dynamic";
 
@@ -150,10 +152,14 @@ async function loadCandidatePdfContext(args: {
   );
   const invoice = invoiceResult.data as DbRow | null;
   const carrierIdentifier = stringOrNull(invoice?.carrier_identifier);
+  const identity = resolveStatementCompanyIdentity(
+    stringOrNull((organizationResult.data as DbRow | null)?.name),
+    carrierIdentifier,
+  );
 
   return {
-    companyName: stringOrNull((organizationResult.data as DbRow | null)?.name) ?? "ZYNP LLC",
-    companySecondary: carrierIdentifier ? `SCAC ${carrierIdentifier}` : "Amazon Relay statement",
+    companyName: identity.name,
+    companySecondary: identity.secondary,
     invoiceMetadata: invoice ? {
       invoiceNumber: stringOrNull(invoice.invoice_number),
       invoiceDate: stringOrNull(invoice.invoice_date),
@@ -178,12 +184,17 @@ function buildRevenueDetails(
     const fullGross = numberValue(item.gross_amount);
     const allocatedGross = numberValue(candidateRow.allocated_gross_amount);
     const ratio = fullGross === 0 ? 1 : allocatedGross / fullGross;
-    const serviceDate = stringOrNull(item.end_date) ?? stringOrNull(item.start_date);
+    const startDate = stringOrNull(item.start_date);
+    const endDate = stringOrNull(item.end_date);
+    const serviceDate = endDate ?? startDate;
     const originCode = stringOrNull(item.origin_facility_code);
     const destinationCode = stringOrNull(item.destination_facility_code);
-    const origin = resolveFacility(originCode, serviceDate, facilityRows);
-    const destination = resolveFacility(destinationCode, serviceDate, facilityRows);
-    const routeVerified = Boolean(origin && destination);
+    const route = resolveStatementRoute({
+      originCode,
+      destinationCode,
+      verifiedOrigin: resolveFacility(originCode, serviceDate, facilityRows),
+      verifiedDestination: resolveFacility(destinationCode, serviceDate, facilityRows),
+    });
     return {
       id: String(candidateRow.id ?? `candidate-revenue-${index + 1}`),
       sourceRevenueItemId: revenueItemId,
@@ -191,10 +202,11 @@ function buildRevenueDetails(
       tripId: stringOrNull(item.trip_id),
       loadId: stringOrNull(item.primary_load_id),
       date: serviceDate,
-      routeDisplay: routeVerified
-        ? `${origin} -> ${destination}`
-        : facilityCodeRoute(originCode, destinationCode),
-      routeVerified,
+      startDate,
+      endDate,
+      status: "Completed",
+      routeDisplay: route.display,
+      routeVerified: route.displayReady,
       distance: nullableNumber(item.distance),
       baseAmount: scaledMoney(item.base_amount, ratio),
       fuelSurchargeAmount: scaledMoney(item.fuel_surcharge_amount, ratio),
@@ -223,7 +235,7 @@ function buildFuelDetails(candidateRows: DbRow[], sourceLines: DbRow[]): Candida
       id: String(candidateRow.id ?? `candidate-fuel-${index + 1}`),
       sourceTransactionLineId: transactionLineId,
       displayOrder: integerValue(candidateRow.display_order, index + 1),
-      date: stringOrNull(transaction.transaction_at)?.slice(0, 10) ?? null,
+      date: stringOrNull(transaction.transaction_at),
       invoice: stringOrNull(transaction.invoice_number),
       merchant: stringOrNull(transaction.merchant_raw),
       location: cityState(transaction.city_raw, transaction.state_raw),
@@ -249,11 +261,6 @@ function resolveFacility(code: string | null, serviceDate: string | null, rows: 
     return (!from || serviceDate >= from) && (!to || serviceDate < to);
   });
   return row ? cityState(row.city, row.state) : null;
-}
-
-function facilityCodeRoute(origin: string | null, destination: string | null): string | null {
-  if (origin && destination) return `${origin} -> ${destination}`;
-  return origin ?? destination;
 }
 
 function cityState(city: unknown, state: unknown): string | null {

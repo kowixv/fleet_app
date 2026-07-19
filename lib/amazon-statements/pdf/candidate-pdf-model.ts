@@ -7,6 +7,9 @@ export interface CandidatePdfRevenueDetail {
   tripId: string | null;
   loadId: string | null;
   date: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  status?: string | null;
   routeDisplay: string | null;
   routeVerified: boolean;
   distance: number | null;
@@ -72,6 +75,9 @@ export function candidatePdfModel(
       tripId: line.tripId,
       loadId: line.loadId,
       date: line.date,
+      startDate: line.startDate,
+      endDate: line.endDate,
+      status: line.status,
       routeDisplay: line.routeDisplay,
       routeStatus: line.routeVerified ? "verified" as const : "pending_review" as const,
       distance: line.distance,
@@ -105,6 +111,7 @@ export function candidatePdfModel(
 
   const companyName = safeString(context.companyName) ?? "ZYNP LLC";
   const companySecondary = safeString(context.companySecondary) ?? "Amazon Relay statement";
+  const payeeName = safeRelatedName(row.people);
 
   return {
     candidateId: String(row.id),
@@ -116,7 +123,7 @@ export function candidatePdfModel(
     templateVersion: String(row.template_version ?? "amazon-statement-v1"),
     language: languageMode(configurationSnapshot.language_mode ?? snapshot.languageMode),
     company: { name: companyName, secondary: companySecondary },
-    payee: { name: safeRelatedName(row.people) },
+    payee: { name: payeeName },
     vehicleDisplay: safeRelatedUnit(row.vehicles),
     periodStart: String(row.period_start),
     periodEnd: String(row.period_end),
@@ -144,10 +151,24 @@ export function candidatePdfModel(
         source: "saved_calculation_snapshot",
       })),
     teamAllocations: [],
-    calculationNotes: ["Generated from the saved candidate and normalized Amazon source records."],
-    reconciliationIndicators: ["Revenue and fuel detail lines reconcile to the saved candidate totals."],
-    companySignature: { signedStatus: "pending" },
-    payeeSignature: { signedStatus: "pending" },
+    calculationNotes: [
+      "Same Trip ID source rows are consolidated into one statement line.",
+      "Routes show the first pickup and final delivery city/state; intermediate stops are omitted.",
+      "Amazon-paid tolls are included in gross revenue and are not treated as owner deductions.",
+    ],
+    reconciliationIndicators: [
+      "Revenue and fuel detail lines reconcile to the saved candidate totals.",
+      "No source file is reparsed during PDF generation.",
+    ],
+    companySignature: {
+      printedName: companyName,
+      title: "Authorized Representative",
+      signedStatus: "pending",
+    },
+    payeeSignature: {
+      printedName: payeeName,
+      signedStatus: "pending",
+    },
     generatedAt: new Date().toISOString(),
     footer: {
       templateVersion: String(row.template_version ?? "amazon-statement-v1"),
@@ -165,6 +186,9 @@ function fallbackRevenueLines(loads: Array<Record<string, unknown>>): AmazonStat
     tripId: null,
     loadId: safeString(load.loadNumber ?? load.load_number ?? load.reference),
     date: safeString(load.deliveryDate ?? load.delivery_date),
+    startDate: safeString(load.pickupDate ?? load.pickup_date),
+    endDate: safeString(load.deliveryDate ?? load.delivery_date),
+    status: "Completed",
     routeDisplay: safeString(load.route) ?? "Pending Review",
     routeStatus: safeString(load.route) ? "verified" : "pending_review",
     distance: nullableNumber(load.totalMiles ?? load.total_miles),
