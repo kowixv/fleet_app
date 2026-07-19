@@ -43,10 +43,12 @@ describe("exact source-label attribution", () => {
   });
 
   it("matches a full source name to a unique initial and surname person label", () => {
-    expect(initialSurnameTargetIds("Mustafa Celebi", [
+    const targets = [
       { id: "person-1", label: "M. CELEBI" },
       { id: "person-2", label: "A. CHORIEV" },
-    ])).toEqual(["person-1"]);
+    ];
+    expect(initialSurnameTargetIds("Mustafa Celebi", targets)).toEqual(["person-1"]);
+    expect(exactLabelTargetIds("Mustafa Celebi", targets)).toEqual(["person-1"]);
   });
 
   it("returns duplicate initial and surname targets so callers keep them ambiguous", () => {
