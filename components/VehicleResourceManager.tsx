@@ -15,6 +15,7 @@ export interface VehicleFormRow {
   id: string;
   unit_number: string;
   vehicle_type: string;
+  owner_id: string | null;
   assigned_driver_id: string | null;
   default_driver_pay_pct: number | null;
   vin: string | null;
@@ -30,7 +31,7 @@ export interface VehicleFormRow {
   has_maintenance_profile: boolean;
 }
 
-interface DriverOption {
+interface PersonOption {
   value: string;
   label: string;
 }
@@ -57,19 +58,21 @@ function numberValue(value: number | null) {
   return value == null ? "" : String(value);
 }
 
-function driverName(drivers: DriverOption[], id: string | null) {
-  return drivers.find((driver) => driver.value === id)?.label ?? "-";
+function personName(people: PersonOption[], id: string | null) {
+  return people.find((person) => person.value === id)?.label ?? "-";
 }
 
 export default function VehicleResourceManager({
   rows,
   drivers,
+  owners,
   pagination,
   includeInactive,
   canPermanentDelete,
 }: {
   rows: VehicleFormRow[];
-  drivers: DriverOption[];
+  drivers: PersonOption[];
+  owners: PersonOption[];
   pagination: Pagination;
   includeInactive: boolean;
   canPermanentDelete: boolean;
@@ -133,6 +136,7 @@ export default function VehicleResourceManager({
             <tr>
               <th className="th">Unit #</th>
               <th className="th">Tip</th>
+              <th className="th">Owner</th>
               <th className="th">Şoför</th>
               <th className="th">Plaka</th>
               <th className="th">Durum</th>
@@ -142,7 +146,7 @@ export default function VehicleResourceManager({
           <tbody className="divide-y divide-slate-100">
             {rows.length === 0 ? (
               <tr>
-                <td className="td text-slate-400" colSpan={6}>
+                <td className="td text-slate-400" colSpan={7}>
                   Henüz kayıt yok.
                 </td>
               </tr>
@@ -151,7 +155,8 @@ export default function VehicleResourceManager({
                 <tr key={row.id} className="hover:bg-slate-50">
                   <td className="td font-medium">{row.unit_number}</td>
                   <td className="td">{vehicleTypeLabel(row.vehicle_type)}</td>
-                  <td className="td">{driverName(drivers, row.assigned_driver_id)}</td>
+                  <td className="td">{personName(owners, row.owner_id)}</td>
+                  <td className="td">{personName(drivers, row.assigned_driver_id)}</td>
                   <td className="td">{row.plate ?? "-"}</td>
                   <td className="td">{statusLabel(row.status)}</td>
                   <td className="td text-right">
@@ -263,8 +268,20 @@ export default function VehicleResourceManager({
               </section>
 
               <section className="space-y-3">
-                <h3 className="text-sm font-semibold text-slate-900">Şoför Bilgileri</h3>
-                <div className="grid gap-3 md:grid-cols-2">
+                <h3 className="text-sm font-semibold text-slate-900">Owner / Şoför Bilgileri</h3>
+                <p className="text-xs text-slate-500">Owner Operator veya Investor kişisini Owner alanından; aktif sürücüyü Şoför alanından bağlayın.</p>
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <label className="label">Owner</label>
+                    <select name="owner_id" className="input" defaultValue={editing?.owner_id ?? ""}>
+                      <option value="">-</option>
+                      {owners.map((owner) => (
+                        <option key={owner.value} value={owner.value}>
+                          {owner.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="label">Şoför</label>
                     <select name="assigned_driver_id" className="input" defaultValue={editing?.assigned_driver_id ?? ""}>
