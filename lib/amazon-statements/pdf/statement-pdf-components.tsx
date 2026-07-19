@@ -242,9 +242,9 @@ function SectionHeading({ title, intro }: { title: string; intro?: string }) {
 
 function SummaryCard({ labelText, value, style, valueStyle }: { labelText: string; value: string; style?: any; valueStyle?: any }) {
   return (
-    <View style={[styles.card, style]}>
+    <View style={style ? [styles.card, style] : styles.card}>
       <T style={styles.cardLabel}>{labelText}</T>
-      <T style={[styles.cardValue, valueStyle]}>{value}</T>
+      <T style={valueStyle ? [styles.cardValue, valueStyle] : styles.cardValue}>{value}</T>
     </View>
   );
 }
@@ -269,7 +269,7 @@ function IdentityRow({
       <T style={styles.identityLabel}>{leftLabel}</T>
       <T style={styles.identityValue}>{displayOrNA(leftValue)}</T>
       <T style={styles.identityLabel}>{rightLabel}</T>
-      <T style={[styles.identityValueLast, rightValueStyle]}>{displayOrNA(rightValue)}</T>
+      <T style={rightValueStyle ? [styles.identityValueLast, rightValueStyle] : styles.identityValueLast}>{displayOrNA(rightValue)}</T>
     </View>
   );
 }
@@ -358,7 +358,7 @@ export function CalculationSummary({ model }: { model: AmazonStatementViewModel 
       ))}
       <View style={styles.netSummaryRow}>
         <T style={styles.netSummaryLabel}>Net settlement payable / Odenecek net tutar</T>
-        <T style={[styles.netSummaryAmount, model.summary.netAmount < 0 ? styles.negative : undefined]}>{formatMoney(model.summary.netAmount)}</T>
+        <T style={model.summary.netAmount < 0 ? [styles.netSummaryAmount, styles.negative] : styles.netSummaryAmount}>{formatMoney(model.summary.netAmount)}</T>
       </View>
     </View>
   );
@@ -387,7 +387,7 @@ export function RevenueTable({ model }: { model: AmazonStatementViewModel }) {
           <T style={[styles.th, styles.right, { width: "8%" }]}>Gross</T>
         </View>
         {model.revenueLines.map((line, index) => (
-          <View key={line.id} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]} wrap={false}>
+          <View key={line.id} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow} wrap={false}>
             <T style={[styles.td, { width: "9%" }]}>{formatRevenueDate(line)}</T>
             <T style={[styles.td, { width: "13%" }]}>{displayOrNA(line.tripId ?? line.loadId)}</T>
             <T style={[styles.td, { width: "23%" }]}>{routeDisplay(line)}</T>
@@ -450,7 +450,7 @@ export function FuelTable({ model }: { model: AmazonStatementViewModel }) {
           <T style={[styles.th, styles.right, { width: "8%" }]}>Amount</T>
         </View>
         {model.fuelLines.map((line, index) => (
-          <View key={line.id} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]} wrap={false}>
+          <View key={line.id} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow} wrap={false}>
             <T style={[styles.td, { width: "13%" }]}>{line.continuation ? "" : formatDateTime(line.date)}</T>
             <T style={[styles.td, { width: "8%" }]}>{line.continuation ? "" : displayOrNA(line.invoice)}</T>
             <T style={[styles.td, { width: "23%" }]}>{line.continuation ? "" : displayOrNA(line.merchant)}</T>
@@ -459,7 +459,7 @@ export function FuelTable({ model }: { model: AmazonStatementViewModel }) {
             <T style={[styles.td, styles.right, { width: "8%" }]}>{formatNumber(line.quantity, 2)}</T>
             <T style={[styles.td, styles.right, { width: "8%" }]}>{line.chargedPpu == null ? "N/A" : formatMoney(line.chargedPpu)}</T>
             <T style={[styles.td, styles.right, { width: "7%" }]}>{line.discountAmount == null ? "$0.00" : formatMoney(line.discountAmount)}</T>
-            <T style={[styles.tdBold, styles.right, line.amount < 0 ? styles.negative : undefined, { width: "8%" }]}>{formatMoney(line.amount)}</T>
+            <T style={line.amount < 0 ? [styles.tdBold, styles.right, styles.negative, { width: "8%" }] : [styles.tdBold, styles.right, { width: "8%" }]}>{formatMoney(line.amount)}</T>
           </View>
         ))}
         <View style={styles.tableTotalRow} wrap={false}>
@@ -505,7 +505,7 @@ export function DeductionSummary({ model }: { model: AmazonStatementViewModel })
           <T style={[styles.th, styles.right, { width: "15%" }]}>Amount / Tutar</T>
         </View>
         {rows.map((row, index) => (
-          <View key={row.key} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]} wrap={false}>
+          <View key={row.key} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow} wrap={false}>
             <T style={[styles.td, styles.center, { width: "8%" }]}>{String(index + 1)}</T>
             <T style={[styles.td, { width: "34%" }]}>{row.label}</T>
             <T style={[styles.td, { width: "43%" }]}>{row.basis}</T>
@@ -537,14 +537,14 @@ export function FinalSettlementSummary({ model }: { model: AmazonStatementViewMo
           <T style={[styles.tdBold, styles.right, { width: "18%" }]}>{formatMoney(model.summary.grossRevenue)}</T>
         </View>
         {rows.map((row, index) => (
-          <View key={row.key} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]}>
+          <View key={row.key} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow}>
             <T style={[styles.td, { width: "82%" }]}>{row.label}</T>
             <T style={[styles.tdBold, styles.right, styles.negative, { width: "18%" }]}>{formatMoney(-Math.abs(row.amount))}</T>
           </View>
         ))}
         <View style={styles.netSummaryRow}>
           <T style={styles.netSummaryLabel}>{`NET PAYABLE TO ${model.payee.name.toUpperCase()} / ODENECEK NET`}</T>
-          <T style={[styles.netSummaryAmount, model.summary.netAmount < 0 ? styles.negative : undefined]}>{formatMoney(model.summary.netAmount)}</T>
+          <T style={model.summary.netAmount < 0 ? [styles.netSummaryAmount, styles.negative] : styles.netSummaryAmount}>{formatMoney(model.summary.netAmount)}</T>
         </View>
       </View>
     </View>
@@ -558,7 +558,7 @@ export function TeamAllocation({ model }: { model: AmazonStatementViewModel }) {
       <SectionHeading title={label("teamAllocation", model.language)} />
       <View style={styles.table}>
         {model.teamAllocations.map((line, index) => (
-          <View key={line.id} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]}>
+          <View key={line.id} style={index % 2 ? [styles.tableRow, styles.tableRowAlt] : styles.tableRow}>
             <T style={[styles.td, { width: "75%" }]}>{`${line.memberName} (${(line.basisPoints / 100).toFixed(2)}%)`}</T>
             <T style={[styles.tdBold, styles.right, { width: "25%" }]}>{formatMoney(line.amount)}</T>
           </View>
