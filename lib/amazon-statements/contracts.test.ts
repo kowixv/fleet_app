@@ -16,8 +16,8 @@ import {
   potentialExternalVehicleIdentifierConflict,
 } from "./contracts";
 
-const migration = readFileSync("supabase/migrations/20260716010000_amazon_import_core.sql", "utf8");
-const schema = readFileSync("supabase/schema.sql", "utf8");
+const migration = readFileSync("supabase/migrations/20260716010000_amazon_import_core.sql", "utf8").replace(/\r\n/g, "\n");
+const schema = readFileSync("supabase/schema.sql", "utf8").replace(/\r\n/g, "\n");
 const contracts = readFileSync("lib/amazon-statements/contracts.ts", "utf8");
 const types = readFileSync("lib/amazon-statements/types.ts", "utf8");
 

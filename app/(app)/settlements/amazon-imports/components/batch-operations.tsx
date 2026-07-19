@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { archiveAmazonImportBatchAction, retryAmazonImportBatchAction } from "../actions";
+import { archiveAmazonImportBatchAction, reconcileAmazonImportBatchAction, retryAmazonImportBatchAction } from "../actions";
 import WorkflowActionResult from "./workflow-action-result";
 
 export default function BatchOperations({
@@ -28,6 +28,11 @@ export default function BatchOperations({
     run(() => retryAmazonImportBatchAction(batchId), "Batch returned to uploaded status.");
   }
 
+  function reconcile() {
+    if (!confirm("Run payment/trip matching and canonical revenue reconciliation for this parsed batch? This is safe to run again.")) return;
+    run(() => reconcileAmazonImportBatchAction(batchId), "Payment/trip reconciliation refreshed.");
+  }
+
   function run(action: () => Promise<{ ok: true; data: unknown } | { ok: false; error: { message: string } }>, okText: string) {
     setMessage(null);
     startTransition(async () => {
@@ -51,6 +56,7 @@ export default function BatchOperations({
       {message ? <WorkflowActionResult type={message.type} message={message.text} /> : null}
       <div className="flex flex-wrap gap-2">
         <button className="btn-ghost" type="button" disabled={!canMutate || pending || status !== "failed"} onClick={retry}>Retry failed parsing</button>
+        <button className="btn-primary" type="button" disabled={!canMutate || pending || !["parsed", "needs_review", "reconciled"].includes(status)} onClick={reconcile}>Run reconciliation / matching</button>
         <button className="btn-ghost" type="button" disabled={!canMutate || pending || status === "archived"} onClick={archive}>Archive batch</button>
       </div>
     </section>
