@@ -33,6 +33,9 @@ export interface AmazonStatementRevenueLine {
   tripId?: string | null;
   loadId?: string | null;
   date?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  status?: string | null;
   routeDisplay: string | null;
   routeStatus: "verified" | "pending_review" | "not_applicable";
   weight?: string | number | null;
