@@ -112,6 +112,12 @@ export function round2(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
 }
 
+/** Preserve basis-point precision in labels without trailing zeroes. */
+export function formatPercentage(rateValue: number): string {
+  const percentage = round2(rateValue * 100);
+  return percentage.toFixed(2).replace(/\.00$/, "").replace(/(\.\d)0$/, "$1");
+}
+
 function sumLoads(loads: LoadInput[] | undefined): number {
   return round2((loads ?? []).reduce((s, l) => s + (l.grossAmount || 0), 0));
 }
@@ -219,8 +225,8 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     const lineItems: LineItem[] = [
       {
         key: "driver_pay",
-        labelEn: `Driver pay (${(pct * 100).toFixed(0)}%)`,
-        labelTr: `Şoför payı (%${(pct * 100).toFixed(0)})`,
+        labelEn: `Driver pay (${formatPercentage(pct)}%)`,
+        labelTr: `Şoför payı (%${formatPercentage(pct)})`,
         amount: driverPay,
       },
       ...expenses.map(expenseLine),
@@ -244,8 +250,8 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
         },
         {
           key: "driver_pay",
-          labelEn: `Driver Gross Pay (${(pct * 100).toFixed(0)}%)`,
-          labelTr: `Sofor brut payi (%${(pct * 100).toFixed(0)})`,
+          labelEn: `Driver Gross Pay (${formatPercentage(pct)}%)`,
+          labelTr: `Sofor brut payi (%${formatPercentage(pct)})`,
           amount: driverPay,
           role: "base",
         },
@@ -268,8 +274,8 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
     const lineItems: LineItem[] = [
       {
         key: "company_fee",
-        labelEn: `Company fee (${(config.companyFeePct * 100).toFixed(0)}%)`,
-        labelTr: `Şirket kesintisi (%${(config.companyFeePct * 100).toFixed(0)})`,
+        labelEn: `Company fee (${formatPercentage(config.companyFeePct)}%)`,
+        labelTr: `Şirket kesintisi (%${formatPercentage(config.companyFeePct)})`,
         amount: -companyFee,
         isOurRevenue: feeIsOurs,
       },
@@ -326,15 +332,15 @@ export function computeSettlement(input: SettlementInput): SettlementResult {
   const lineItems: LineItem[] = [
     {
       key: "external_carrier_fee",
-      labelEn: `External carrier fee (${(config.externalCarrierFeePct * 100).toFixed(0)}%)`,
-      labelTr: `Dış carrier kesintisi (%${(config.externalCarrierFeePct * 100).toFixed(0)})`,
+      labelEn: `External carrier fee (${formatPercentage(config.externalCarrierFeePct)}%)`,
+      labelTr: `Dış carrier kesintisi (%${formatPercentage(config.externalCarrierFeePct)})`,
       amount: -extFee,
       isOurRevenue: false,
     },
     {
       key: "driver_pay",
-      labelEn: `Driver pay (${((config.driverPayPct ?? 0) * 100).toFixed(0)}%)`,
-      labelTr: `Şoför payı (%${((config.driverPayPct ?? 0) * 100).toFixed(0)})`,
+      labelEn: `Driver pay (${formatPercentage(config.driverPayPct ?? 0)}%)`,
+      labelTr: `Şoför payı (%${formatPercentage(config.driverPayPct ?? 0)})`,
       amount: -driverPay,
     },
     ...expenses.map(expenseLine),
