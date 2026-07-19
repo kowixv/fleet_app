@@ -21,7 +21,10 @@ export function buildCandidateSettlementConfig(config: CandidateCalculationConfi
   const issues: CandidateIssue[] = [];
   const driverPayPct = basisPointsToFraction(config.driverPayBasisPoints);
   const companyFeePct = basisPointsToFraction(config.companyFeeBasisPoints);
-  const externalCarrierFeePct = basisPointsToFraction(config.externalCarrierFeeBasisPoints);
+  const managedInvestorFeeBasisPoints = config.statementType === "managed_investor"
+    ? config.companyFeeBasisPoints ?? config.externalCarrierFeeBasisPoints
+    : config.externalCarrierFeeBasisPoints;
+  const externalCarrierFeePct = basisPointsToFraction(managedInvestorFeeBasisPoints);
 
   if ((config.statementType === "company_driver" || config.statementType === "box_truck_driver" || config.statementType === "managed_investor") && driverPayPct === null) {
     issues.push(candidateIssue("missing_configuration", "blocking", "Driver percentage must be explicitly configured.", { field: "driverPayBasisPoints" }));
