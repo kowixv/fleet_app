@@ -42,6 +42,8 @@ describe("amazon upload security helpers", () => {
   });
 
   it("rejects invalid extension, MIME, size and signature", () => {
+    expect(storageSource).toContain("assertAmazonFileEnvelope");
+    expect(storageSource).toContain("sizeBytes");
     expect(storageSource).toContain("invalid_file_extension");
     expect(storageSource).toContain("invalid_mime_type");
     expect(storageSource).toContain("file_too_large");
@@ -53,7 +55,21 @@ describe("amazon upload security helpers", () => {
     expect(storageSource).toContain("buildAmazonImportStoragePath");
     expect(storageSource).toContain("assertExpectedAmazonStoragePath");
     expect(storageSource).toContain("verifyStoredAmazonObject");
+    expect(fileServiceSource).toContain("assertExpectedAmazonStoragePath({");
+    expect(fileServiceSource).toContain("path: file.storage_path");
     expect(fileServiceSource).toContain(".download(storagePath)");
+  });
+
+  it("validates upload envelopes before buffering browser files", () => {
+    const envelopeIndex = actionSource.indexOf("assertAmazonUploadEnvelope({");
+    const bufferIndex = actionSource.indexOf("await file.arrayBuffer()");
+    expect(envelopeIndex).toBeGreaterThan(-1);
+    expect(bufferIndex).toBeGreaterThan(-1);
+    expect(envelopeIndex).toBeLessThan(bufferIndex);
+  });
+
+  it("scopes duplicate upload idempotency to the current batch", () => {
+    expect(fileServiceSource).toMatch(/\.eq\("organization_id", input\.actor\.organizationId\)[\s\S]*\.eq\("batch_id", input\.upload\.batchId\)[\s\S]*\.eq\("source_type", input\.upload\.sourceType\)[\s\S]*\.eq\("sha256_hash", sha256Hash\)/);
   });
 });
 

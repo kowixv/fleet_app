@@ -126,6 +126,21 @@ export function assertAmazonFileSecurity(args: {
   mimeType: string | null;
   bytes: Uint8Array;
 }): void {
+  assertAmazonFileEnvelope({
+    sourceType: args.sourceType,
+    filename: args.filename,
+    mimeType: args.mimeType,
+    sizeBytes: args.bytes.byteLength,
+  });
+  assertMagicBytes(args.sourceType, args.bytes);
+}
+
+export function assertAmazonFileEnvelope(args: {
+  sourceType: AmazonImportSourceType;
+  filename: string;
+  mimeType: string | null;
+  sizeBytes: number;
+}): void {
   const format = SOURCE_FORMATS[args.sourceType];
   const displayFilename = sanitizeAmazonDisplayFilename(args.filename).toLowerCase();
   assertWorkflow(displayFilename.endsWith(format.extension), {
@@ -141,18 +156,17 @@ export function assertAmazonFileSecurity(args: {
       details: { mimeType: args.mimeType },
     });
   }
-  assertWorkflow(args.bytes.byteLength > 0, {
+  assertWorkflow(args.sizeBytes > 0, {
     code: "empty_file",
     message: "Uploaded file is empty.",
     stage: "upload_files",
   });
-  assertWorkflow(args.bytes.byteLength <= MAX_FILE_BYTES[args.sourceType], {
+  assertWorkflow(args.sizeBytes <= MAX_FILE_BYTES[args.sourceType], {
     code: "file_too_large",
     message: "Uploaded file exceeds the allowed size.",
     stage: "upload_files",
     details: { maxBytes: MAX_FILE_BYTES[args.sourceType] },
   });
-  assertMagicBytes(args.sourceType, args.bytes);
 }
 
 function assertMagicBytes(sourceType: AmazonImportSourceType, bytes: Uint8Array): void {

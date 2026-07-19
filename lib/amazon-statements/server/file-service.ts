@@ -6,6 +6,7 @@ import type { AmazonImportSourceType } from "../types";
 import { assertWorkflow } from "./workflow-errors";
 import {
   amazonFileSha256,
+  assertAmazonFileEnvelope,
   assertAmazonFileSecurity,
   assertExpectedAmazonStoragePath,
   buildAmazonImportStoragePath,
@@ -25,6 +26,15 @@ export function parseAmazonSourceType(value: unknown): AmazonImportSourceType {
     stage: "upload_files",
   });
   return sourceType;
+}
+
+export function assertAmazonUploadEnvelope(args: {
+  sourceType: AmazonImportSourceType;
+  filename: string;
+  mimeType: string | null;
+  sizeBytes: number;
+}): void {
+  assertAmazonFileEnvelope(args);
 }
 
 export async function registerAmazonImportFile(input: {
@@ -47,6 +57,7 @@ export async function registerAmazonImportFile(input: {
     .from("amazon_import_files")
     .select("id")
     .eq("organization_id", input.actor.organizationId)
+    .eq("batch_id", input.upload.batchId)
     .eq("source_type", input.upload.sourceType)
     .eq("sha256_hash", sha256Hash)
     .in("status", ["uploaded", "parsing", "parsed"])
@@ -140,6 +151,13 @@ export async function downloadAmazonImportFile(actor: AmazonWorkflowActor, file:
     code: "wrong_organization",
     message: "Amazon import file does not belong to this organization.",
     stage: "parse_files",
+  });
+  assertExpectedAmazonStoragePath({
+    path: file.storage_path,
+    organizationId: actor.organizationId,
+    batchId: file.batch_id,
+    sourceType: file.source_type,
+    sha256Hash: file.sha256_hash,
   });
   const service = createServiceClient();
   const { data, error } = await service.storage.from(AMAZON_IMPORT_BUCKET).download(file.storage_path);
