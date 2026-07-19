@@ -3,7 +3,11 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { normalizeExternalVehicleIdentifier } from "../contracts";
 import type { CandidateAutoSelectionHint } from "../candidates/candidate-auto-selection";
-import { exactLabelTargetIds, type ExactLabelTarget } from "../candidates/exact-label-attribution";
+import {
+  exactLabelTargetIds,
+  splitExactSourceLabels,
+  type ExactLabelTarget,
+} from "../candidates/exact-label-attribution";
 import { normalizeReferenceValue } from "../resolution/resolution-types";
 
 type DbRow = Record<string, unknown>;
@@ -113,7 +117,7 @@ async function loadRevenueHints(args: {
   const [tripResult, tokenResult] = await Promise.all([
     supabase
       .from("amazon_trip_rows")
-      .select("id, tractor_external_id")
+      .select("id, raw_driver_text, tractor_external_id")
       .eq("organization_id", args.organizationId)
       .eq("batch_id", args.batchId)
       .in("id", tripRowIds),
@@ -149,7 +153,13 @@ async function loadRevenueHints(args: {
     const exactReasons = new Set<string>();
 
     for (const tripId of tripIds) {
-      for (const token of driverTokensByTrip.get(tripId) ?? []) {
+      const trip = tripById.get(tripId);
+      const persistedTokens = driverTokensByTrip.get(tripId) ?? [];
+      const sourceDriverLabels = persistedTokens.length > 0
+        ? persistedTokens
+        : splitExactSourceLabels(stringOrNull(trip?.raw_driver_text));
+
+      for (const token of sourceDriverLabels) {
         const normalizedToken = normalizeReferenceValue(token);
         if (!normalizedToken) continue;
         const mappedForToken = new Set<string>();
@@ -165,11 +175,15 @@ async function loadRevenueHints(args: {
         } else {
           const directIds = exactLabelTargetIds(token, peopleTargets);
           for (const personId of directIds) personIds.add(personId);
-          if (directIds.length > 0) exactReasons.add("exact_source_driver_label");
+          if (directIds.length > 0) {
+            exactReasons.add(persistedTokens.length > 0
+              ? "exact_source_driver_label"
+              : "exact_raw_trip_driver_text");
+          }
         }
       }
 
-      const tractorExternalId = stringOrNull(tripById.get(tripId)?.tractor_external_id);
+      const tractorExternalId = stringOrNull(trip?.tractor_external_id);
       if (!tractorExternalId) continue;
       const normalizedVehicle = normalizeExternalVehicleIdentifier(tractorExternalId);
       const mappedForVehicle = new Set<string>();
