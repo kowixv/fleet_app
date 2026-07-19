@@ -53,6 +53,7 @@ export default async function VehiclesPage({
     <VehicleResourceManager
       rows={rows}
       drivers={opts.drivers}
+      owners={opts.owners}
       pagination={{ page: currentPage, pageSize: DEFAULT_PAGE_SIZE, total: vehiclesRes.count ?? 0 }}
       includeInactive={includeInactive}
       canPermanentDelete={canPermanentDelete}
