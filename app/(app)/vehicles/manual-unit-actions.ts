@@ -50,6 +50,7 @@ function buildVehicleFormPayload(input: Record<string, unknown>) {
     vehicle: {
       unit_number: manualUnitNumber(input.unit_number),
       vehicle_type: type,
+      owner_id: vehicleId(input.owner_id),
       assigned_driver_id: vehicleId(input.assigned_driver_id),
       default_driver_pay_pct: optionalPercentFraction(input.default_driver_pay_pct),
       vin: normalizeUpperText(input.vin),
@@ -82,6 +83,20 @@ async function assertDriverInOrg(driverId: string | null, organizationId: string
   if (!data) throw new Error("Seçilen şoför bu organizasyona ait değil.");
 }
 
+async function assertOwnerInOrg(ownerId: string | null, organizationId: string) {
+  if (!ownerId) return;
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("people")
+    .select("id")
+    .eq("id", ownerId)
+    .eq("organization_id", organizationId)
+    .in("type", ["owner_operator", "investor"])
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (!data) throw new Error("Seçilen owner bu organizasyona ait değil.");
+}
+
 function friendlyUnitNumberError(error: { code?: string | null; message?: string | null; details?: string | null; hint?: string | null; constraint?: string | null }) {
   if (isGeneratedUnitNumberCollision(error)) {
     return "Bu unit numarası zaten kullanılıyor. Başka bir unit numarası girin.";
@@ -96,7 +111,10 @@ export async function saveVehicleWithManualUnitFromForm(input: Record<string, un
 
   try {
     payload = buildVehicleFormPayload(input);
-    await assertDriverInOrg(payload.vehicle.assigned_driver_id, profile.organization_id);
+    await Promise.all([
+      assertDriverInOrg(payload.vehicle.assigned_driver_id, profile.organization_id),
+      assertOwnerInOrg(payload.vehicle.owner_id, profile.organization_id),
+    ]);
   } catch (error) {
     return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
   }
