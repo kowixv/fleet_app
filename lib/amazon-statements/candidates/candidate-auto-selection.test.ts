@@ -13,6 +13,14 @@ const exactDriverSource: CandidateAutoSelectableSource = {
   autoSelectionReasons: ["approved_driver_mapping", "approved_vehicle_mapping"],
 };
 
+const exactDriverOnlySource: CandidateAutoSelectableSource = {
+  sourceId: "revenue-driver-only",
+  suggestedPersonIds: ["driver-1"],
+  suggestedVehicleIds: [],
+  autoSelectionStatus: "exact",
+  autoSelectionReasons: ["exact_raw_trip_driver_text"],
+};
+
 const exactVehicleOnlySource: CandidateAutoSelectableSource = {
   sourceId: "fuel-1",
   suggestedPersonIds: [],
@@ -54,6 +62,34 @@ describe("candidate source auto-selection", () => {
     });
 
     expect(result.selectedSourceIds).toEqual(["fuel-1", "revenue-1"]);
+    expect(result.reviewRequiredCount).toBe(1);
+  });
+
+  it("uses the selected owned unit's assigned driver as a revenue-only fallback", () => {
+    const result = autoSelectCandidateSources({
+      statementType: "managed_investor",
+      payeeId: "owner-1",
+      vehicleId: "vehicle-1",
+      vehicles: [{ id: "vehicle-1", ownerId: "owner-1", assignedDriverId: "driver-1" }],
+      sources: [exactDriverOnlySource],
+      allowAssignedDriverFallback: true,
+    });
+
+    expect(result.selectedSourceIds).toEqual(["revenue-driver-only"]);
+    expect(result.exactMatchCount).toBe(1);
+    expect(result.reviewRequiredCount).toBe(0);
+  });
+
+  it("does not use the assigned-driver fallback unless the caller enables it", () => {
+    const result = autoSelectCandidateSources({
+      statementType: "managed_investor",
+      payeeId: "owner-1",
+      vehicleId: "vehicle-1",
+      vehicles: [{ id: "vehicle-1", ownerId: "owner-1", assignedDriverId: "driver-1" }],
+      sources: [exactDriverOnlySource],
+    });
+
+    expect(result.selectedSourceIds).toEqual([]);
     expect(result.reviewRequiredCount).toBe(1);
   });
 
