@@ -1,6 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getAmazonImportBatchDetailForUi } from "@/lib/amazon-statements/server/ui-read-service";
+import { requireAmazonImportActor } from "@/lib/amazon-statements/server/auth";
+import { previewAmazonProjectionForBatch } from "@/lib/amazon-statements/server/final-workflow-service";
+import { projectionPreviewToUi } from "@/lib/amazon-statements/projection/projection-ui";
 import AmazonImportStatusBadge from "../components/amazon-import-status-badge";
 import AmazonImportStepper from "../components/amazon-import-stepper";
 import SourceFileUpload from "../components/source-file-upload";
@@ -30,7 +33,28 @@ export default async function AmazonImportDetailPage({
   const activeTab = TABS.includes(query?.tab as Tab) ? query?.tab as Tab : "overview";
   const batch = await getAmazonImportBatchDetailForUi(id);
   if (!batch) notFound();
+
   const hasBlockingIssues = batch.issues.some((issue) => issue.severity === "blocking" && issue.uniqueRootCount > 0);
+  const revenueReconciliationPassed = batch.reconciliation.revenue.status === "passed";
+  const hasCanonicalRevenue = Number(batch.reconciliation.revenue.canonicalRevenueItemCount ?? 0) > 0;
+  let projection = batch.projection;
+  let projectionPreviewUnavailable = false;
+
+  if (!hasBlockingIssues && revenueReconciliationPassed && hasCanonicalRevenue) {
+    try {
+      const actor = await requireAmazonImportActor();
+      const preview = await previewAmazonProjectionForBatch({ actor, batchId: id });
+      projection = projectionPreviewToUi(preview);
+    } catch {
+      projectionPreviewUnavailable = true;
+    }
+  }
+
+  const projectionBlocked = hasBlockingIssues
+    || !revenueReconciliationPassed
+    || !hasCanonicalRevenue
+    || projectionPreviewUnavailable;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
@@ -81,7 +105,7 @@ export default async function AmazonImportDetailPage({
           <BatchOperations batchId={batch.id} status={batch.status} canMutate={batch.canMutate} />
           <ReconciliationSummary revenue={batch.reconciliation.revenue} fuel={batch.reconciliation.fuel} />
           <ReferenceReadinessSummary readiness={batch.referenceReadiness} />
-          <ProjectionSummary batchId={batch.id} projection={batch.projection} canMutate={batch.canMutate} blocked={hasBlockingIssues} />
+          <ProjectionSummary batchId={batch.id} projection={projection} canMutate={batch.canMutate} blocked={projectionBlocked} />
           <CandidateSummary batchId={batch.id} candidates={batch.candidates} canMutate={batch.canMutate} />
         </>
       ) : null}
@@ -104,7 +128,7 @@ export default async function AmazonImportDetailPage({
           </section>
         </>
       ) : null}
-      {activeTab === "projection" ? <ProjectionSummary batchId={batch.id} projection={batch.projection} canMutate={batch.canMutate} blocked={hasBlockingIssues} /> : null}
+      {activeTab === "projection" ? <ProjectionSummary batchId={batch.id} projection={projection} canMutate={batch.canMutate} blocked={projectionBlocked} /> : null}
       {activeTab === "candidates" ? <CandidateSummary batchId={batch.id} candidates={batch.candidates} canMutate={batch.canMutate} /> : null}
       {activeTab === "statements" ? <CandidateSummary batchId={batch.id} candidates={batch.candidates} canMutate={batch.canMutate} /> : null}
       {activeTab === "history" ? <HistoryTimeline history={batch.history} /> : null}
