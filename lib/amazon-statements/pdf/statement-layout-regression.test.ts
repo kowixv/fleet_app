@@ -16,7 +16,7 @@ describe("reference-style Amazon statement PDF", () => {
     expect(components).toContain('navy: "#173f5f"');
     expect(components).toContain("paleGreen");
     expect(components).toContain("paleGold");
-    expect(components).toContain("Revenue Details");
+    expect(components).toContain('label("revenueDetails"');
     expect(components).toContain("Expense Details");
     expect(components).toContain("Final Settlement Summary");
     expect(components).toContain("COMPANY SIGNATURE");
