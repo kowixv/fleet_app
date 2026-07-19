@@ -2,6 +2,8 @@ import { round2 } from "@/lib/settlement/engine";
 import type { CandidateFuelSelection, CandidateRevenueSelection, FuelInclusionPolicy } from "./candidate-types";
 import { candidateIssue, type CandidateIssue } from "./candidate-issues";
 
+const FUEL_POSTING_GRACE_DAYS = 1;
+
 export function validateRevenueSelections(args: {
   organizationId: string;
   periodStart: string;
@@ -76,7 +78,12 @@ export function validateFuelSelections(args: {
     }
     if (!fuelDateAllowed(selection, args)) {
       if (!selection.periodOverrideApproved) {
-        issues.push(candidateIssue("source_outside_period", "blocking", "Fuel source date is outside the selected fuel inclusion policy.", { policy: args.fuelInclusionPolicy }, "fuel", selection.transactionLineId));
+        issues.push(candidateIssue("source_outside_period", "blocking", "Fuel source date is outside the selected fuel inclusion policy.", {
+          policy: args.fuelInclusionPolicy,
+          periodStart: args.periodStart,
+          periodEnd: args.periodEnd,
+          postingGraceDays: args.fuelInclusionPolicy === "transaction_date_in_period" ? FUEL_POSTING_GRACE_DAYS : 0,
+        }, "fuel", selection.transactionLineId));
       } else if (!selection.periodOverrideReason?.trim()) {
         issues.push(candidateIssue("source_outside_period", "blocking", "Approved out-of-period fuel selection must preserve an audit reason.", { policy: args.fuelInclusionPolicy }, "fuel", selection.transactionLineId));
       }
@@ -91,5 +98,18 @@ function fuelDateAllowed(selection: CandidateFuelSelection, args: { periodStart:
     return Boolean(selection.reportPeriodStart && selection.reportPeriodEnd && selection.reportPeriodStart <= args.periodEnd && selection.reportPeriodEnd >= args.periodStart);
   }
   const date = selection.transactionDate ?? selection.projectedExpense.date ?? null;
-  return Boolean(date && date >= args.periodStart && date <= args.periodEnd);
+  if (!date) return false;
+
+  // Weekly fuel-card reports can post the final transaction on the calendar day
+  // immediately after the statement week. Keep the weekly source intact while
+  // still blocking older or materially future-dated transactions.
+  const allowedEnd = addIsoDays(args.periodEnd, FUEL_POSTING_GRACE_DAYS);
+  return date >= args.periodStart && date <= allowedEnd;
+}
+
+function addIsoDays(value: string, days: number): string {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  parsed.setUTCDate(parsed.getUTCDate() + days);
+  return parsed.toISOString().slice(0, 10);
 }
