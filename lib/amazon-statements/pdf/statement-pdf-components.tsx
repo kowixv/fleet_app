@@ -29,7 +29,7 @@ const colors = {
 
 export const styles = StyleSheet.create({
   page: {
-    paddingTop: 28,
+    paddingTop: 98,
     paddingBottom: 38,
     paddingHorizontal: 28,
     fontFamily: "Helvetica",
@@ -38,11 +38,13 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.white,
   },
   header: {
-    marginHorizontal: -28,
-    marginTop: -28,
-    marginBottom: 18,
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    minHeight: 78,
     paddingTop: 18,
-    paddingBottom: 17,
+    paddingBottom: 16,
     paddingHorizontal: 34,
     backgroundColor: colors.navy,
     flexDirection: "row",
@@ -88,7 +90,7 @@ export const styles = StyleSheet.create({
   },
   identityTable: { borderWidth: 1, borderColor: colors.line, marginBottom: 8 },
   identityRow: { flexDirection: "row", minHeight: 24, borderBottomWidth: 1, borderBottomColor: colors.line },
-  identityRowLast: { flexDirection: "row", minHeight: 28 },
+  identityRowLast: { flexDirection: "row", minHeight: 29 },
   identityLabel: {
     width: "19%",
     paddingVertical: 5,
@@ -109,7 +111,7 @@ export const styles = StyleSheet.create({
     borderRightColor: colors.line,
   },
   identityValueLast: { width: "31%", paddingVertical: 5, paddingHorizontal: 7, fontSize: 7.4 },
-  invoiceValue: { fontSize: 6.2, lineHeight: 1.13 },
+  invoiceValue: { fontSize: 6.15, lineHeight: 1.12 },
   cards: { flexDirection: "row", marginTop: 6, marginBottom: 8 },
   card: {
     width: "20%",
@@ -120,8 +122,8 @@ export const styles = StyleSheet.create({
     borderColor: colors.line,
     justifyContent: "space-between",
   },
-  cardLabel: { minHeight: 24, textAlign: "center", color: colors.blueText, fontSize: 6.4, lineHeight: 1.08 },
-  cardValue: { marginTop: 5, textAlign: "center", fontFamily: "Helvetica-Bold", fontSize: 13.5, color: colors.navyDark },
+  cardLabel: { minHeight: 24, textAlign: "center", color: colors.blueText, fontSize: 6.35, lineHeight: 1.08 },
+  cardValue: { marginTop: 5, textAlign: "center", fontFamily: "Helvetica-Bold", fontSize: 13.3, color: colors.navyDark },
   grossCard: { backgroundColor: colors.paleBlue },
   fixedCard: { backgroundColor: colors.palePeach },
   percentageCard: { backgroundColor: colors.paleRose },
@@ -286,12 +288,11 @@ export function StatementWatermark({ model }: { model: AmazonStatementViewModel 
 }
 
 export function StatementHeader({ model }: { model: AmazonStatementViewModel }) {
-  const primaryTitle = `${statementTitle(model.statementType, "en").toUpperCase()} SETTLEMENT STATEMENT`;
   return (
     <View style={styles.header} fixed>
       <View style={styles.headerLeft}>
-        <T style={styles.title}>{primaryTitle}</T>
-        <T style={styles.subtitle}>{statementTitle(model.statementType, model.language)}</T>
+        <T style={styles.title}>{primaryStatementTitle(model)}</T>
+        <T style={styles.subtitle}>{secondaryStatementTitle(model)}</T>
       </View>
       <View style={styles.headerRight}>
         <T style={styles.companyName}>{model.company.name}</T>
@@ -340,8 +341,8 @@ export function SummaryCards({ model }: { model: AmazonStatementViewModel }) {
   return (
     <View style={styles.cards} wrap={false}>
       <SummaryCard style={styles.grossCard} labelText={`${terms.gross.toUpperCase()}\nTOPLAM BRUT GELIR`} value={formatMoney(model.summary.grossRevenue)} />
-      <SummaryCard style={styles.fixedCard} valueStyle={styles.negative} labelText="FIXED DEDUCTIONS\nSABIT KESINTILER" value={formatMoney(-Math.abs(model.summary.fixedDeductions))} />
-      <SummaryCard style={styles.percentageCard} valueStyle={styles.negative} labelText="COMPANY / PERCENT FEE\nSIRKET KESINTISI" value={formatMoney(-Math.abs(model.summary.percentageDeductions))} />
+      <SummaryCard style={styles.fixedCard} valueStyle={styles.negative} labelText={fixedDeductionCardLabel(model)} value={formatMoney(-Math.abs(model.summary.fixedDeductions))} />
+      <SummaryCard style={styles.percentageCard} valueStyle={styles.negative} labelText="COMPANY FEE\nSIRKET KESINTISI" value={formatMoney(-Math.abs(model.summary.percentageDeductions))} />
       <SummaryCard style={styles.fuelCard} valueStyle={styles.negative} labelText="FUEL / DEF\nYAKIT / DEF" value={formatMoney(-Math.abs(model.summary.fuelDeductions))} />
       <SummaryCard style={styles.netCard} valueStyle={model.summary.netAmount < 0 ? styles.negative : styles.positive} labelText={`${terms.net.toUpperCase()}\nODENECEK NET`} value={formatMoney(model.summary.netAmount)} />
     </View>
@@ -357,7 +358,7 @@ export function CalculationSummary({ model }: { model: AmazonStatementViewModel 
         <T style={[styles.bandHeaderText, styles.right, { width: "22%" }]}>Amount / Tutar</T>
       </View>
       <View style={styles.summaryRow}>
-        <T style={styles.summaryLabel}>Amazon Relay gross assigned to {model.payee.name}</T>
+        <T style={styles.summaryLabel}>{`Amazon Relay gross assigned to ${model.payee.name}`}</T>
         <T style={styles.summaryAmount}>{formatMoney(model.summary.grossRevenue)}</T>
       </View>
       {rows.map((row) => (
@@ -400,7 +401,7 @@ export function RevenueTable({ model }: { model: AmazonStatementViewModel }) {
           <View key={line.id} style={[styles.tableRow, index % 2 ? styles.tableRowAlt : undefined]} wrap={false}>
             <T style={[styles.td, { width: "9%" }]}>{formatRevenueDate(line)}</T>
             <T style={[styles.td, { width: "13%" }]}>{displayOrNA(line.tripId ?? line.loadId)}</T>
-            <T style={[styles.td, { width: "23%" }]}>{displayOrNA(line.routeDisplay)}</T>
+            <T style={[styles.td, { width: "23%" }]}>{routeDisplay(line)}</T>
             <T style={[styles.td, styles.center, { width: "10%" }]}>{line.status ?? "Completed"}</T>
             <T style={[styles.td, styles.right, { width: "7%" }]}>{formatNumber(line.distance, 2)}</T>
             <T style={[styles.td, styles.center, { width: "7%" }]}>{line.weight == null ? "N/A" : String(line.weight)}</T>
@@ -658,6 +659,7 @@ interface DisplayDeductionRow {
   amount: number;
   basis: string;
   calculationLabel: string;
+  order: number;
 }
 
 function displayDeductionRows(model: AmazonStatementViewModel): DisplayDeductionRow[] {
@@ -668,6 +670,7 @@ function displayDeductionRows(model: AmazonStatementViewModel): DisplayDeduction
     amount: Math.abs(line.amount),
     basis: deductionBasis(line, model),
     calculationLabel: calculationLabel(line, model),
+    order: deductionOrder(line),
   }));
   if (Math.abs(model.summary.fuelDeductions) > 0.004) {
     rows.push({
@@ -676,13 +679,22 @@ function displayDeductionRows(model: AmazonStatementViewModel): DisplayDeduction
       amount: Math.abs(model.summary.fuelDeductions),
       basis: "Selected fuel-card product-line total / Secili yakit karti satirlari",
       calculationLabel: "Fuel and DEF card deduction / Yakit ve DEF karti kesintisi",
+      order: 40,
     });
   }
-  return rows;
+  return rows.sort((a, b) => a.order - b.order || a.key.localeCompare(b.key));
 }
 
 function isFuelDeduction(line: AmazonStatementDeductionLine): boolean {
   return /fuel|def/i.test(`${line.type} ${line.label}`);
+}
+
+function deductionOrder(line: AmazonStatementDeductionLine): number {
+  const value = `${line.type} ${line.label}`;
+  if (/insurance/i.test(value)) return 10;
+  if (/eld|safety|ifta/i.test(value)) return 20;
+  if (/company fee|percentage/i.test(value)) return 30;
+  return 35;
 }
 
 function deductionBasis(line: AmazonStatementDeductionLine, model: AmazonStatementViewModel): string {
@@ -726,17 +738,19 @@ function fuelTotals(model: AmazonStatementViewModel) {
 }
 
 function fuelProductGroups(model: AmazonStatementViewModel) {
-  const groups = new Map<string, { product: string; quantity: number; amount: number }>();
+  const groups = new Map<string, { product: string; quantity: number; amount: number; ppuWeighted: number }>();
   for (const line of model.fuelLines) {
     const product = line.product.toUpperCase();
-    const current = groups.get(product) ?? { product, quantity: 0, amount: 0 };
-    current.quantity += Number(line.quantity ?? 0);
+    const current = groups.get(product) ?? { product, quantity: 0, amount: 0, ppuWeighted: 0 };
+    const quantity = Number(line.quantity ?? 0);
+    current.quantity += quantity;
     current.amount += Number(line.amount ?? 0);
+    current.ppuWeighted += Number(line.chargedPpu ?? 0) * quantity;
     groups.set(product, current);
   }
   return [...groups.values()].map((group) => ({
     ...group,
-    averagePpu: group.quantity > 0 ? group.amount / group.quantity : 0,
+    averagePpu: group.quantity > 0 ? group.ppuWeighted / group.quantity : 0,
   }));
 }
 
@@ -768,6 +782,29 @@ function wrapIdentifier(value: string | null | undefined): string {
   const raw = displayOrNA(value);
   if (raw === "N/A" || raw.length <= 22) return raw;
   return raw.match(/.{1,18}/g)?.join(" ") ?? raw;
+}
+
+function primaryStatementTitle(model: AmazonStatementViewModel): string {
+  const base = statementTitle(model.statementType, "en").replace(/\s+Statement$/i, "");
+  return `${base.toUpperCase()} SETTLEMENT STATEMENT`;
+}
+
+function secondaryStatementTitle(model: AmazonStatementViewModel): string {
+  if (model.language === "en") return "Amazon Relay payment statement";
+  if (model.language === "tr") return `${statementTitle(model.statementType, "tr")} - Odeme Dokumu`;
+  return `${statementTitle(model.statementType, "tr")} - English / Turkce`;
+}
+
+function fixedDeductionCardLabel(model: AmazonStatementViewModel): string {
+  const labels = model.deductionLines.filter((line) => !isFuelDeduction(line)).map((line) => `${line.type} ${line.label}`).join(" ");
+  return /insurance/i.test(labels) && /eld|safety|ifta/i.test(labels)
+    ? "INSURANCE + ELD/SAFETY\nSIGORTA + ELD/GUVENLIK"
+    : "FIXED DEDUCTIONS\nSABIT KESINTILER";
+}
+
+function routeDisplay(line: AmazonStatementRevenueLine): string {
+  if (line.routeDisplay) return line.routeDisplay;
+  return line.routeStatus === "pending_review" ? "Pending Review" : "N/A";
 }
 
 function roleDisplay(model: AmazonStatementViewModel): string {
