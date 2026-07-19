@@ -1,18 +1,12 @@
 import React from "react";
 import { Document, Page } from "@react-pdf/renderer";
 import type { AmazonStatementViewModel } from "./statement-view-model";
+import { DriverStatementPdfDocument } from "./driver-statement-pdf";
 import {
-  CalculationSummary,
-  DeductionSummary,
-  IdentityGrid,
   RevenueMetrics,
-  RevenueTable,
-  SignaturePanels,
   StatementFooter,
-  StatementHeader,
   StatementNotes,
   StatementWatermark,
-  SummaryCards,
   TeamAllocation,
   styles,
 } from "./statement-pdf-components";
@@ -33,40 +27,6 @@ export function AmazonStatementPdfDocument({ model }: { model: AmazonStatementVi
     return <DriverStatementPdfDocument model={model} />;
   }
   return <OwnerStatementPdfDocument model={model} />;
-}
-
-function DriverStatementPdfDocument({ model }: { model: AmazonStatementViewModel }) {
-  const hasDeductions = model.deductionLines.length > 0 || Math.abs(model.summary.totalDeductions) > 0.004;
-  return (
-    <Document
-      title={`${model.documentId} ${model.templateVersion}`}
-      author={model.company.name}
-      subject="Amazon driver statement candidate PDF"
-      producer={`fleet-app ${model.templateVersion}`}
-      creator="fleet-app"
-    >
-      <Page size="LETTER" style={styles.page} wrap>
-        <StatementWatermark model={model} />
-        <StatementHeader model={model} />
-        <IdentityGrid model={model} />
-        <SummaryCards model={model} />
-        <CalculationSummary model={model} />
-        <RevenueTable model={model} />
-        <RevenueMetrics model={model} />
-        <StatementFooter model={model} />
-      </Page>
-
-      <Page size="LETTER" style={styles.page} wrap>
-        <StatementWatermark model={model} />
-        <StatementHeader model={model} />
-        {hasDeductions ? <DeductionSummary model={model} /> : null}
-        <StatementNotes model={model} />
-        <TeamAllocation model={model} />
-        <SignaturePanels model={model} />
-        <StatementFooter model={model} />
-      </Page>
-    </Document>
-  );
 }
 
 function OwnerStatementPdfDocument({ model }: { model: AmazonStatementViewModel }) {
