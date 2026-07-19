@@ -30,34 +30,78 @@ export async function GET(_request: Request, { params }: { params: Promise<{ can
     return NextResponse.json({ error: "Statement candidate is not available." }, { status: 404 });
   }
 
+  let detailedContext: CandidatePdfContext | null = null;
   try {
-    const context = await loadCandidatePdfContext({
+    detailedContext = await loadCandidatePdfContext({
       supabase,
       organizationId: actor.organizationId,
       batchId: String(data.batch_id),
       candidateId,
     });
-    const model = candidatePdfModel(data as DbRow, context);
-    const pdf = await renderAmazonStatementPdf(model);
-    const filename = safeFilename(`amazon-statement-${String(data.id).slice(0, 8)}-${model.candidateStatus}.pdf`);
-    return new NextResponse(new Uint8Array(pdf), {
-      headers: {
-        "Content-Type": "application/pdf",
-        "Content-Disposition": `inline; filename="${filename}"`,
-        "Cache-Control": "private, no-store",
-      },
-    });
-  } catch (renderError) {
-    console.error("Amazon statement PDF preview failed", {
+  } catch (contextError) {
+    console.warn("Amazon statement PDF detail hydration failed; using saved calculation snapshot", {
       candidateId,
       organizationId: actor.organizationId,
-      error: renderError instanceof Error ? renderError.message : String(renderError),
+      error: contextError instanceof Error ? contextError.message : String(contextError),
     });
+  }
+
+  try {
+    const model = candidatePdfModel(data as DbRow, detailedContext ?? {});
+    const pdf = await renderAmazonStatementPdf(model);
+    return statementPdfResponse(pdf, data as DbRow, model.candidateStatus, detailedContext ? "canonical-details" : "snapshot-fallback");
+  } catch (primaryRenderError) {
+    if (detailedContext) {
+      try {
+        const fallbackModel = candidatePdfModel(data as DbRow, {});
+        const fallbackPdf = await renderAmazonStatementPdf(fallbackModel);
+        console.warn("Amazon statement PDF rendered from saved calculation snapshot after detailed render failure", {
+          candidateId,
+          organizationId: actor.organizationId,
+          error: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
+        });
+        return statementPdfResponse(fallbackPdf, data as DbRow, fallbackModel.candidateStatus, "snapshot-fallback");
+      } catch (fallbackRenderError) {
+        console.error("Amazon statement PDF preview failed in detailed and fallback modes", {
+          candidateId,
+          organizationId: actor.organizationId,
+          detailedError: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
+          fallbackError: fallbackRenderError instanceof Error ? fallbackRenderError.message : String(fallbackRenderError),
+        });
+      }
+    } else {
+      console.error("Amazon statement PDF snapshot fallback failed", {
+        candidateId,
+        organizationId: actor.organizationId,
+        error: primaryRenderError instanceof Error ? primaryRenderError.message : String(primaryRenderError),
+      });
+    }
+
     return NextResponse.json(
-      { error: "Statement PDF could not be generated from the saved source details. Recalculate and save the candidate, then try again." },
+      {
+        error: "Statement PDF could not be generated from the saved candidate snapshot.",
+        code: "statement_pdf_render_failed",
+      },
       { status: 422 },
     );
   }
+}
+
+function statementPdfResponse(
+  pdf: Uint8Array | Buffer,
+  candidate: DbRow,
+  candidateStatus: string,
+  detailMode: "canonical-details" | "snapshot-fallback",
+) {
+  const filename = safeFilename(`amazon-statement-${String(candidate.id).slice(0, 8)}-${candidateStatus}.pdf`);
+  return new NextResponse(new Uint8Array(pdf), {
+    headers: {
+      "Content-Type": "application/pdf",
+      "Content-Disposition": `inline; filename="${filename}"`,
+      "Cache-Control": "private, no-store",
+      "X-Statement-Detail-Mode": detailMode,
+    },
+  });
 }
 
 async function loadCandidatePdfContext(args: {
