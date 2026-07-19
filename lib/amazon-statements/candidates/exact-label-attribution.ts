@@ -12,6 +12,18 @@ export function compactExactLabel(value: string | null | undefined): string | nu
   return compact || null;
 }
 
+export function splitExactSourceLabels(value: string | null | undefined): string[] {
+  const raw = String(value ?? "").trim();
+  if (!raw) return [];
+
+  const parts = raw
+    .split(/\s*(?:\/|\||;|\+|&|\bAND\b)\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return [...new Set(parts.length > 0 ? parts : [raw])];
+}
+
 export function exactLabelTargetIds(
   label: string | null | undefined,
   targets: ExactLabelTarget[],
