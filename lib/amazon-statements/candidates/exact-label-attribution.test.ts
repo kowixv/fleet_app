@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { compactExactLabel, exactLabelTargetIds, splitExactSourceLabels } from "./exact-label-attribution";
+import {
+  compactExactLabel,
+  exactLabelTargetIds,
+  initialSurnameTargetIds,
+  splitExactSourceLabels,
+} from "./exact-label-attribution";
 
 describe("exact source-label attribution", () => {
   it("matches punctuation and spacing variants without fuzzy matching", () => {
@@ -35,5 +40,28 @@ describe("exact source-label attribution", () => {
     expect(splitExactSourceLabels("M.CELEBI")).toEqual(["M.CELEBI"]);
     expect(splitExactSourceLabels("M.CELEBI / C.MANESS")).toEqual(["M.CELEBI", "C.MANESS"]);
     expect(splitExactSourceLabels("M.CELEBI & C.MANESS")).toEqual(["M.CELEBI", "C.MANESS"]);
+  });
+
+  it("matches a full source name to a unique initial and surname person label", () => {
+    const targets = [
+      { id: "person-1", label: "M. CELEBI" },
+      { id: "person-2", label: "A. CHORIEV" },
+    ];
+    expect(initialSurnameTargetIds("Mustafa Celebi", targets)).toEqual(["person-1"]);
+    expect(exactLabelTargetIds("Mustafa Celebi", targets)).toEqual(["person-1"]);
+  });
+
+  it("returns duplicate initial and surname targets so callers keep them ambiguous", () => {
+    expect(initialSurnameTargetIds("Mustafa Celebi", [
+      { id: "person-1", label: "M. CELEBI" },
+      { id: "person-2", label: "Mert Celebi" },
+    ])).toEqual(["person-1", "person-2"]);
+  });
+
+  it("does not match a different surname or a surname-only label", () => {
+    expect(initialSurnameTargetIds("Mustafa Celebi", [
+      { id: "person-1", label: "M. CELIK" },
+      { id: "person-2", label: "CELEBI" },
+    ])).toEqual([]);
   });
 });
