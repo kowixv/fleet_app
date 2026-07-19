@@ -1,6 +1,6 @@
 "use client";
 
-import { saveVehicleFromForm } from "@/app/(app)/vehicles/actions";
+import { saveVehicleWithManualUnitFromForm } from "@/app/(app)/vehicles/manual-unit-actions";
 import {
   ENGINE_TYPE_SUGGESTIONS,
   TRUCK_COLOR_SUGGESTIONS,
@@ -102,7 +102,7 @@ export default function VehicleResourceManager({
     if (editing) values.id = editing.id;
     values.has_maintenance_profile = editing?.has_maintenance_profile ? "1" : "";
     startTransition(async () => {
-      const result = await saveVehicleFromForm(values);
+      const result = await saveVehicleWithManualUnitFromForm(values);
       if (!result.ok) {
         setError(result.error);
         return;
@@ -207,7 +207,17 @@ export default function VehicleResourceManager({
             <form action={onSubmit} className="space-y-5">
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold text-slate-900">Araç Bilgileri</h3>
-                <div className="grid gap-3 md:grid-cols-2">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <label className="label">Unit #</label>
+                    <input
+                      name="unit_number"
+                      className="input uppercase"
+                      required
+                      placeholder="1501"
+                      defaultValue={editing?.unit_number ?? ""}
+                    />
+                  </div>
                   <div>
                     <label className="label">Tip</label>
                     <select name="vehicle_type" className="input" required defaultValue={editing?.vehicle_type ?? "truck"}>
