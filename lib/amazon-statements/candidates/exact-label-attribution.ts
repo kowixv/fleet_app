@@ -37,3 +37,37 @@ export function exactLabelTargetIds(
       .filter(Boolean),
   )];
 }
+
+export function initialSurnameTargetIds(
+  label: string | null | undefined,
+  targets: ExactLabelTarget[],
+): string[] {
+  const source = nameSignature(label);
+  if (!source) return [];
+
+  return [...new Set(
+    targets
+      .filter((target) => {
+        const candidate = nameSignature(target.label);
+        return candidate !== null
+          && candidate.firstInitial === source.firstInitial
+          && candidate.surname === source.surname;
+      })
+      .map((target) => target.id)
+      .filter(Boolean),
+  )];
+}
+
+function nameSignature(value: string | null | undefined): { firstInitial: string; surname: string } | null {
+  const tokens = String(value ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .match(/[A-Z0-9]+/g) ?? [];
+
+  if (tokens.length < 2) return null;
+  const first = tokens[0];
+  const surname = tokens[tokens.length - 1];
+  if (!first || !surname || surname.length < 2) return null;
+  return { firstInitial: first[0], surname };
+}
