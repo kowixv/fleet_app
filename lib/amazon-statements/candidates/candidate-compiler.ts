@@ -177,8 +177,11 @@ function loadInputsFromRevenue(selections: CandidateRevenueSelection[]): LoadInp
     }));
 }
 
-function orderedAdjustmentLines(lines: CandidateAdjustmentLine[]): CandidateAdjustmentLine[] {
-  return lines.slice().sort((a, b) => a.displayOrder - b.displayOrder || a.adjustmentType.localeCompare(b.adjustmentType));
+export function orderedAdjustmentLines(lines: CandidateAdjustmentLine[]): CandidateAdjustmentLine[] {
+  return lines
+    .slice()
+    .sort((a, b) => a.displayOrder - b.displayOrder || a.adjustmentType.localeCompare(b.adjustmentType))
+    .map((line, index) => ({ ...line, displayOrder: index }));
 }
 
 function enginePercentageLines(config: CandidateCalculationConfig, result: ReturnType<typeof computeSettlement>): CandidateAdjustmentLine[] {
