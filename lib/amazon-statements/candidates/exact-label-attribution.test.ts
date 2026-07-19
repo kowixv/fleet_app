@@ -1,0 +1,33 @@
+import { describe, expect, it } from "vitest";
+import { compactExactLabel, exactLabelTargetIds } from "./exact-label-attribution";
+
+describe("exact source-label attribution", () => {
+  it("matches punctuation and spacing variants without fuzzy matching", () => {
+    expect(compactExactLabel("M.CELEBI")).toBe("MCELEBI");
+    expect(compactExactLabel("M. CELEBI")).toBe("MCELEBI");
+    expect(exactLabelTargetIds("M.CELEBI", [
+      { id: "person-1", label: "M. CELEBI" },
+      { id: "person-2", label: "M. CELIK" },
+    ])).toEqual(["person-1"]);
+  });
+
+  it("matches exact unit labels", () => {
+    expect(exactLabelTargetIds("1501", [
+      { id: "vehicle-1501", label: "1501" },
+      { id: "vehicle-1502", label: "1502" },
+    ])).toEqual(["vehicle-1501"]);
+  });
+
+  it("returns every duplicate exact target so callers mark it ambiguous", () => {
+    expect(exactLabelTargetIds("M CELEBI", [
+      { id: "person-1", label: "M. CELEBI" },
+      { id: "person-2", label: "M CELEBI" },
+    ])).toEqual(["person-1", "person-2"]);
+  });
+
+  it("does not use partial or approximate names", () => {
+    expect(exactLabelTargetIds("CELEBI", [
+      { id: "person-1", label: "M. CELEBI" },
+    ])).toEqual([]);
+  });
+});

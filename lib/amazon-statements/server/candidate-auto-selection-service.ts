@@ -3,6 +3,7 @@ import "server-only";
 import { createClient } from "@/lib/supabase/server";
 import { normalizeExternalVehicleIdentifier } from "../contracts";
 import type { CandidateAutoSelectionHint } from "../candidates/candidate-auto-selection";
+import { exactLabelTargetIds, type ExactLabelTarget } from "../candidates/exact-label-attribution";
 import { normalizeReferenceValue } from "../resolution/resolution-types";
 
 type DbRow = Record<string, unknown>;
@@ -39,7 +40,14 @@ async function loadRevenueHints(args: {
   if (args.revenueItemIds.length === 0) return result;
 
   const supabase = await createClient();
-  const [sourceResult, itemResult, driverMappingResult, vehicleMappingResult] = await Promise.all([
+  const [
+    sourceResult,
+    itemResult,
+    driverMappingResult,
+    vehicleMappingResult,
+    peopleResult,
+    vehiclesResult,
+  ] = await Promise.all([
     supabase
       .from("amazon_revenue_item_sources")
       .select("revenue_item_id, payment_row_id")
@@ -64,8 +72,24 @@ async function loadRevenueHints(args: {
       .eq("organization_id", args.organizationId)
       .eq("provider", "amazon")
       .in("identifier_type", ["tractor_vehicle_id", "amazon_unit"]),
+    supabase
+      .from("people")
+      .select("id, full_name")
+      .eq("organization_id", args.organizationId)
+      .in("type", ["company_driver", "external_carrier_driver", "owner_operator", "investor"]),
+    supabase
+      .from("vehicles")
+      .select("id, unit_number")
+      .eq("organization_id", args.organizationId),
   ]);
-  for (const query of [sourceResult, itemResult, driverMappingResult, vehicleMappingResult]) {
+  for (const query of [
+    sourceResult,
+    itemResult,
+    driverMappingResult,
+    vehicleMappingResult,
+    peopleResult,
+    vehiclesResult,
+  ]) {
     if (query.error) throw new Error(query.error.message);
   }
 
@@ -109,6 +133,8 @@ async function loadRevenueHints(args: {
   const driverTokensByTrip = groupValues((tokenResult.data ?? []) as DbRow[], "trip_row_id", "normalized_name");
   const driverMappings = (driverMappingResult.data ?? []) as DbRow[];
   const vehicleMappings = (vehicleMappingResult.data ?? []) as DbRow[];
+  const peopleTargets = labelTargets((peopleResult.data ?? []) as DbRow[], "full_name");
+  const vehicleTargets = labelTargets((vehiclesResult.data ?? []) as DbRow[], "unit_number");
 
   for (const revenueItemId of args.revenueItemIds) {
     const item = itemById.get(revenueItemId);
@@ -120,37 +146,53 @@ async function loadRevenueHints(args: {
     const tripIds = uniqueStrings(paymentIds.flatMap((paymentId) => tripIdsByPayment.get(paymentId) ?? []));
     const personIds = new Set<string>();
     const vehicleIds = new Set<string>();
+    const exactReasons = new Set<string>();
 
     for (const tripId of tripIds) {
       for (const token of driverTokensByTrip.get(tripId) ?? []) {
         const normalizedToken = normalizeReferenceValue(token);
         if (!normalizedToken) continue;
+        const mappedForToken = new Set<string>();
         for (const mapping of driverMappings) {
           if (normalizeReferenceValue(stringOrNull(mapping.normalized_value)) !== normalizedToken) continue;
           if (!activeOn(mapping, serviceDate)) continue;
           const personId = stringOrNull(mapping.person_id);
-          if (personId) personIds.add(personId);
+          if (personId) mappedForToken.add(personId);
+        }
+        if (mappedForToken.size > 0) {
+          for (const personId of mappedForToken) personIds.add(personId);
+          exactReasons.add("approved_driver_mapping");
+        } else {
+          const directIds = exactLabelTargetIds(token, peopleTargets);
+          for (const personId of directIds) personIds.add(personId);
+          if (directIds.length > 0) exactReasons.add("exact_source_driver_label");
         }
       }
 
       const tractorExternalId = stringOrNull(tripById.get(tripId)?.tractor_external_id);
       if (!tractorExternalId) continue;
       const normalizedVehicle = normalizeExternalVehicleIdentifier(tractorExternalId);
+      const mappedForVehicle = new Set<string>();
       for (const mapping of vehicleMappings) {
         if (normalizeExternalVehicleIdentifier(String(mapping.normalized_value ?? "")) !== normalizedVehicle) continue;
         if (!activeOn(mapping, serviceDate)) continue;
         const vehicleId = stringOrNull(mapping.vehicle_id);
-        if (vehicleId) vehicleIds.add(vehicleId);
+        if (vehicleId) mappedForVehicle.add(vehicleId);
+      }
+      if (mappedForVehicle.size > 0) {
+        for (const vehicleId of mappedForVehicle) vehicleIds.add(vehicleId);
+        exactReasons.add("approved_vehicle_mapping");
+      } else {
+        const directIds = exactLabelTargetIds(tractorExternalId, vehicleTargets);
+        for (const vehicleId of directIds) vehicleIds.add(vehicleId);
+        if (directIds.length > 0) exactReasons.add("exact_source_unit_label");
       }
     }
 
     result.set(revenueItemId, attributionHint({
       personIds: [...personIds],
       vehicleIds: [...vehicleIds],
-      exactReasons: [
-        ...(personIds.size === 1 ? ["approved_driver_mapping"] : []),
-        ...(vehicleIds.size === 1 ? ["approved_vehicle_mapping"] : []),
-      ],
+      exactReasons: [...exactReasons],
       ambiguousReasons: [
         ...(personIds.size > 1 ? ["multiple_driver_targets"] : []),
         ...(vehicleIds.size > 1 ? ["multiple_vehicle_targets"] : []),
@@ -172,12 +214,25 @@ async function loadFuelHints(args: {
   if (args.fuelLineIds.length === 0) return result;
 
   const supabase = await createClient();
-  const lineResult = await supabase
-    .from("fuel_import_transaction_lines")
-    .select("id, transaction_id")
-    .eq("organization_id", args.organizationId)
-    .in("id", args.fuelLineIds);
-  if (lineResult.error) throw new Error(lineResult.error.message);
+  const [lineResult, peopleResult, vehiclesResult] = await Promise.all([
+    supabase
+      .from("fuel_import_transaction_lines")
+      .select("id, transaction_id")
+      .eq("organization_id", args.organizationId)
+      .in("id", args.fuelLineIds),
+    supabase
+      .from("people")
+      .select("id, full_name")
+      .eq("organization_id", args.organizationId)
+      .in("type", ["company_driver", "external_carrier_driver", "owner_operator", "investor"]),
+    supabase
+      .from("vehicles")
+      .select("id, unit_number")
+      .eq("organization_id", args.organizationId),
+  ]);
+  for (const query of [lineResult, peopleResult, vehiclesResult]) {
+    if (query.error) throw new Error(query.error.message);
+  }
   const lineRows = (lineResult.data ?? []) as DbRow[];
   const transactionIds = uniqueStrings(lineRows.map((row) => stringOrNull(row.transaction_id)));
   if (transactionIds.length === 0) return result;
@@ -192,17 +247,29 @@ async function loadFuelHints(args: {
   const cardGroupIds = uniqueStrings(transactionRows.map((row) => stringOrNull(row.card_group_id)));
   if (cardGroupIds.length === 0) return result;
 
-  const matchResult = await supabase
-    .from("fuel_import_matches")
-    .select("card_group_id, transaction_id, vehicle_id, driver_id, status, match_method")
-    .eq("organization_id", args.organizationId)
-    .eq("batch_id", args.batchId)
-    .in("card_group_id", cardGroupIds)
-    .in("status", ["exact", "manually_approved"]);
+  const [matchResult, cardGroupResult] = await Promise.all([
+    supabase
+      .from("fuel_import_matches")
+      .select("card_group_id, transaction_id, vehicle_id, driver_id, status, match_method")
+      .eq("organization_id", args.organizationId)
+      .eq("batch_id", args.batchId)
+      .in("card_group_id", cardGroupIds)
+      .in("status", ["exact", "manually_approved"]),
+    supabase
+      .from("fuel_import_card_groups")
+      .select("id, driver_label_raw, driver_label_normalized, unit_label_raw, unit_label_normalized")
+      .eq("organization_id", args.organizationId)
+      .in("id", cardGroupIds),
+  ]);
   if (matchResult.error) throw new Error(matchResult.error.message);
+  if (cardGroupResult.error) throw new Error(cardGroupResult.error.message);
 
   const transactionById = new Map(transactionRows.map((row) => [String(row.id), row]));
+  const cardGroupById = new Map(((cardGroupResult.data ?? []) as DbRow[]).map((row) => [String(row.id), row]));
   const matches = (matchResult.data ?? []) as DbRow[];
+  const peopleTargets = labelTargets((peopleResult.data ?? []) as DbRow[], "full_name");
+  const vehicleTargets = labelTargets((vehiclesResult.data ?? []) as DbRow[], "unit_number");
+
   for (const line of lineRows) {
     const lineId = String(line.id);
     const transactionId = String(line.transaction_id);
@@ -210,14 +277,26 @@ async function loadFuelHints(args: {
     const transactionMatches = matches.filter((match) => stringOrNull(match.transaction_id) === transactionId);
     const groupMatches = matches.filter((match) => !stringOrNull(match.transaction_id) && stringOrNull(match.card_group_id) === cardGroupId);
     const selectedMatches = transactionMatches.length > 0 ? transactionMatches : groupMatches;
-    const personIds = uniqueStrings(selectedMatches.map((match) => stringOrNull(match.driver_id)));
-    const vehicleIds = uniqueStrings(selectedMatches.map((match) => stringOrNull(match.vehicle_id)));
+    let personIds = uniqueStrings(selectedMatches.map((match) => stringOrNull(match.driver_id)));
+    let vehicleIds = uniqueStrings(selectedMatches.map((match) => stringOrNull(match.vehicle_id)));
     const methods = uniqueStrings(selectedMatches.map((match) => stringOrNull(match.match_method)));
+    const group = cardGroupId ? cardGroupById.get(cardGroupId) : undefined;
+
+    if (personIds.length === 0 && group) {
+      const driverLabel = stringOrNull(group.driver_label_normalized) ?? stringOrNull(group.driver_label_raw);
+      personIds = exactLabelTargetIds(driverLabel, peopleTargets);
+      if (personIds.length > 0) methods.push("exact_source_driver_label");
+    }
+    if (vehicleIds.length === 0 && group) {
+      const unitLabel = stringOrNull(group.unit_label_normalized) ?? stringOrNull(group.unit_label_raw);
+      vehicleIds = exactLabelTargetIds(unitLabel, vehicleTargets);
+      if (vehicleIds.length > 0) methods.push("exact_source_unit_label");
+    }
 
     result.set(lineId, attributionHint({
       personIds,
       vehicleIds,
-      exactReasons: methods.length > 0 ? methods.map((method) => `approved_fuel_${method}`) : ["approved_fuel_assignment"],
+      exactReasons: uniqueStrings(methods).map((method) => `approved_fuel_${method}`),
       ambiguousReasons: [
         ...(personIds.length > 1 ? ["multiple_fuel_driver_targets"] : []),
         ...(vehicleIds.length > 1 ? ["multiple_fuel_vehicle_targets"] : []),
@@ -280,6 +359,12 @@ function groupValues(rows: DbRow[], keyField: string, valueField: string): Map<s
     result.set(key, uniqueStrings([...(result.get(key) ?? []), value]));
   }
   return result;
+}
+
+function labelTargets(rows: DbRow[], labelField: string): ExactLabelTarget[] {
+  return rows
+    .map((row) => ({ id: stringOrNull(row.id), label: stringOrNull(row[labelField]) }))
+    .filter((row): row is ExactLabelTarget => Boolean(row.id));
 }
 
 function uniqueStrings(values: Array<string | null>): string[] {
