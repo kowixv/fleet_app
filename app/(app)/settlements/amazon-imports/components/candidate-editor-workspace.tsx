@@ -98,6 +98,17 @@ type AdjustmentState = {
   amount: string;
 };
 
+type AutoSelectionResponse = {
+  vehicleId: string | null;
+  selectedRevenueItemIds: string[];
+  selectedFuelLineIds: string[];
+  exactRevenueCount: number;
+  exactFuelCount: number;
+  revenueReviewRequiredCount: number;
+  fuelReviewRequiredCount: number;
+  error?: string;
+};
+
 const STATEMENT_TYPES: Array<{ value: StatementType; label: string }> = [
   { value: "company_driver", label: "Company Driver" },
   { value: "box_truck_driver", label: "Box Truck Driver" },
@@ -119,6 +130,7 @@ const DEFAULT_ADJUSTMENTS: AdjustmentState[] = [
 export default function CandidateEditorWorkspace({ view }: { view: EditorView }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
+  const [autoSelecting, setAutoSelecting] = useState(false);
   const [message, setMessage] = useState<{ type: "ok" | "error" | "info"; text: string } | null>(null);
   const [preview, setPreview] = useState(view.calculation);
   const [statementType, setStatementType] = useState<StatementType | "">(view.statementType ?? "");
@@ -172,6 +184,65 @@ export default function CandidateEditorWorkspace({ view }: { view: EditorView })
       selectedFuelLineIds: fuelPolicy === "no_fuel" ? [] : selectedFuel,
       fixedAdjustments: fixedAdjustments.filter((adjustment) => adjustment.adjustmentType !== "company_percentage" && adjustment.adjustmentType !== "driver_percentage"),
     };
+  }
+
+  async function applyAutomaticSelection(nextStatementType: StatementType | "", nextPayeeId: string, nextVehicleId: string) {
+    if (!nextStatementType || !nextPayeeId) {
+      setSelectedRevenue([]);
+      setSelectedFuel([]);
+      setPreview(null);
+      return;
+    }
+
+    setAutoSelecting(true);
+    setMessage({ type: "info", text: "Finding exact Trips and fuel assignments for the selected payee..." });
+    try {
+      const response = await fetch(`/api/settlements/amazon-imports/${view.batchId}/candidate-auto-selection`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          statementType: nextStatementType,
+          payeeId: nextPayeeId,
+          vehicleId: nextVehicleId || null,
+        }),
+      });
+      const data = await response.json() as AutoSelectionResponse;
+      if (!response.ok) throw new Error(data.error ?? "Automatic source selection failed.");
+
+      if (data.vehicleId) setVehicleId(data.vehicleId);
+      setSelectedRevenue(data.selectedRevenueItemIds);
+      setSelectedFuel(data.selectedFuelLineIds);
+      setPreview(null);
+      const reviewCount = data.revenueReviewRequiredCount + data.fuelReviewRequiredCount;
+      setMessage({
+        type: reviewCount > 0 ? "info" : "ok",
+        text: `Exact matches selected automatically: ${data.exactRevenueCount} load(s), ${data.exactFuelCount} fuel line(s).${reviewCount > 0 ? ` ${reviewCount} unmatched or ambiguous row(s) remain unselected for review.` : ""}`,
+      });
+    } catch (error) {
+      setMessage({ type: "error", text: error instanceof Error ? error.message : "Automatic source selection failed." });
+    } finally {
+      setAutoSelecting(false);
+    }
+  }
+
+  function handleStatementTypeChange(next: StatementType | "") {
+    setStatementType(next);
+    setPayeeId("");
+    setVehicleId("");
+    setSelectedRevenue([]);
+    setSelectedFuel([]);
+    setPreview(null);
+    setMessage(null);
+  }
+
+  function handlePayeeChange(nextPayeeId: string) {
+    setPayeeId(nextPayeeId);
+    void applyAutomaticSelection(statementType, nextPayeeId, vehicleId);
+  }
+
+  function handleVehicleChange(nextVehicleId: string) {
+    setVehicleId(nextVehicleId);
+    void applyAutomaticSelection(statementType, payeeId, nextVehicleId);
   }
 
   function recalculate() {
@@ -254,7 +325,7 @@ export default function CandidateEditorWorkspace({ view }: { view: EditorView })
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="font-semibold">Candidate editor</h2>
-            <p className="text-sm text-slate-500">Status: {view.status}. Source selections, accounting lane, and financial totals are revalidated server-side.</p>
+            <p className="text-sm text-slate-500">Status: {view.status}. Exact approved source mappings are selected automatically; manual edits remain available.</p>
           </div>
           <Link className="btn-ghost" href={`/settlements/amazon-imports/${view.batchId}?tab=candidates`}>Back to candidates</Link>
         </div>
@@ -262,20 +333,20 @@ export default function CandidateEditorWorkspace({ view }: { view: EditorView })
       {message ? <WorkflowActionResult type={message.type} message={message.text} /> : null}
       <section className="card grid gap-3 md:grid-cols-3">
         <label className="text-sm">Statement type
-          <select className="input mt-1" value={statementType} disabled={readOnly} onChange={(event) => setStatementType(event.target.value as StatementType | "")}>
+          <select className="input mt-1" value={statementType} disabled={readOnly || autoSelecting} onChange={(event) => handleStatementTypeChange(event.target.value as StatementType | "")}>
             <option value="">Select statement type</option>
             {STATEMENT_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
           </select>
         </label>
         <label className="text-sm">Payee
-          <select className="input mt-1" value={payeeId} disabled={readOnly} onChange={(event) => setPayeeId(event.target.value)}>
+          <select className="input mt-1" value={payeeId} disabled={readOnly || autoSelecting} onChange={(event) => handlePayeeChange(event.target.value)}>
             <option value="">Select approved payee</option>
             {compatiblePeople.map((person) => <option key={person.id} value={person.id}>{person.label}</option>)}
           </select>
         </label>
         <label className="text-sm">Unit
-          <select className="input mt-1" value={vehicleId} disabled={readOnly} onChange={(event) => setVehicleId(event.target.value)}>
-            <option value="">Optional unit</option>
+          <select className="input mt-1" value={vehicleId} disabled={readOnly || autoSelecting} onChange={(event) => handleVehicleChange(event.target.value)}>
+            <option value="">Auto-select exact unit</option>
             {view.options.vehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.label}</option>)}
           </select>
         </label>
@@ -303,23 +374,25 @@ export default function CandidateEditorWorkspace({ view }: { view: EditorView })
       <section className="card space-y-2">
         <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
           <div>
-            <h3 className="font-semibold">Team allocation</h3>
-            <p className="text-sm text-slate-500">Team-driver rows require an approved split rule before the candidate can become Ready.</p>
+            <h3 className="font-semibold">Automatic source selection</h3>
+            <p className="text-sm text-slate-500">Trips CSV driver mappings and approved unit/fuel assignments are used. Ambiguous or unmatched rows stay unselected.</p>
           </div>
-          <Link className="btn-ghost" href={`/settlements/amazon-imports/${view.batchId}/references`}>Review team rules</Link>
+          <button className="btn-ghost" type="button" disabled={readOnly || autoSelecting || !statementType || !payeeId} onClick={() => void applyAutomaticSelection(statementType, payeeId, vehicleId)}>
+            {autoSelecting ? "Matching..." : "Reapply exact matches"}
+          </button>
         </div>
       </section>
       <SourceTable
         title="Revenue sources"
         rows={compatibleRevenue}
         selected={selectedRevenue}
-        readOnly={readOnly}
+        readOnly={readOnly || autoSelecting}
         onSelect={setSelectedRevenue}
       />
       <FuelTable
         rows={compatibleFuel}
         selected={selectedFuel}
-        readOnly={readOnly || fuelPolicy === "no_fuel"}
+        readOnly={readOnly || fuelPolicy === "no_fuel" || autoSelecting}
         onSelect={setSelectedFuel}
       />
       <section className="card space-y-3">
@@ -361,12 +434,12 @@ export default function CandidateEditorWorkspace({ view }: { view: EditorView })
         {preview?.warnings.length ? <WorkflowActionResult type="info" message={`Warnings: ${preview.warnings.join(", ")}`} /> : null}
       </section>
       <div className="card flex flex-wrap gap-2">
-        <button className="btn-ghost" type="button" disabled={readOnly || pending} onClick={recalculate}>Recalculate</button>
-        <button className="btn-primary" type="button" disabled={readOnly || pending} onClick={save}>Save Draft</button>
-        <button className="btn-ghost" type="button" disabled={!view.candidateId || readOnly || pending} onClick={approve}>Approve Ready</button>
-        <button className="btn-primary" type="button" disabled={!view.candidateId || view.status !== "ready" || pending} onClick={convert}>Convert to Settlement</button>
+        <button className="btn-ghost" type="button" disabled={readOnly || pending || autoSelecting} onClick={recalculate}>Recalculate</button>
+        <button className="btn-primary" type="button" disabled={readOnly || pending || autoSelecting} onClick={save}>Save Draft</button>
+        <button className="btn-ghost" type="button" disabled={!view.candidateId || readOnly || pending || autoSelecting} onClick={approve}>Approve Ready</button>
+        <button className="btn-primary" type="button" disabled={!view.candidateId || view.status !== "ready" || pending || autoSelecting} onClick={convert}>Convert to Settlement</button>
         {view.candidateId ? <a className="btn-ghost" href={`/api/settlements/amazon-imports/candidates/${view.candidateId}/statement`} target="_blank" rel="noreferrer">Preview PDF</a> : null}
-        <button className="btn-ghost" type="button" disabled={!view.candidateId || readOnly || pending} onClick={archive}>Archive</button>
+        <button className="btn-ghost" type="button" disabled={!view.candidateId || readOnly || pending || autoSelecting} onClick={archive}>Archive</button>
       </div>
     </div>
   );
@@ -389,7 +462,7 @@ function SourceTable({ title, rows, selected, readOnly, onSelect }: {
     <section className="card overflow-x-auto p-0">
       <div className="flex items-center justify-between p-4">
         <div><h3 className="font-semibold">{title}</h3><p className="text-sm text-slate-500">{selected.length} selected, {usd(total)}</p></div>
-        <button className="btn-ghost" type="button" disabled={readOnly} onClick={() => onSelect(rows.map((row) => row.revenueItemId))}>Select all compatible</button>
+        <button className="btn-ghost" type="button" disabled={readOnly} onClick={() => onSelect(rows.map((row) => row.revenueItemId))}>Select all visible (manual)</button>
       </div>
       <table className="w-full min-w-[980px]"><tbody>{rows.map((row) => (
         <tr key={row.revenueItemId} className="border-t border-slate-100">
@@ -416,7 +489,7 @@ function FuelTable({ rows, selected, readOnly, onSelect }: {
     <section className="card overflow-x-auto p-0">
       <div className="flex items-center justify-between p-4">
         <div><h3 className="font-semibold">Fuel product lines</h3><p className="text-sm text-slate-500">{selected.length} selected, {usd(total)}. Discounts are informational only.</p></div>
-        <button className="btn-ghost" type="button" disabled={readOnly} onClick={() => onSelect(rows.map((row) => row.transactionLineId))}>Select all compatible</button>
+        <button className="btn-ghost" type="button" disabled={readOnly} onClick={() => onSelect(rows.map((row) => row.transactionLineId))}>Select all visible (manual)</button>
       </div>
       <table className="w-full min-w-[860px]"><tbody>{rows.map((row) => (
         <tr key={row.transactionLineId} className="border-t border-slate-100">
