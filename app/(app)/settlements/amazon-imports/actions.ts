@@ -2,7 +2,7 @@
 
 import { requireAmazonImportActor } from "@/lib/amazon-statements/server/auth";
 import { createAmazonImportBatch, transitionAmazonBatch } from "@/lib/amazon-statements/server/batch-service";
-import { parseAmazonSourceType } from "@/lib/amazon-statements/server/file-service";
+import { assertAmazonUploadEnvelope, parseAmazonSourceType } from "@/lib/amazon-statements/server/file-service";
 import { approveAmazonCandidate, archiveAmazonCandidate } from "@/lib/amazon-statements/server/candidate-service";
 import { convertSavedAmazonCandidate } from "@/lib/amazon-statements/server/conversion-service";
 import { reconcileAmazonPaymentTripBatch } from "@/lib/amazon-statements/server/matching-service";
@@ -121,6 +121,12 @@ export async function registerAmazonImportFileAction(form: FormData): Promise<Am
     if (!batchId) throw new Error("Batch ID is required.");
     const sourceType = parseAmazonSourceType(sourceTypeRaw);
     if (!(file instanceof File)) throw new Error("Import file is required.");
+    assertAmazonUploadEnvelope({
+      sourceType,
+      filename: file.name,
+      mimeType: file.type || null,
+      sizeBytes: file.size,
+    });
     const registered = await createAmazonImportUpload({
       actor,
       upload: {
