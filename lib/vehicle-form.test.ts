@@ -6,6 +6,7 @@ import {
   REMOVED_VEHICLE_FORM_FIELDS,
   VEHICLE_FORM_BUSINESS_LABELS,
   VEHICLE_FORM_FIELDS,
+  VEHICLE_STATUS_OPTIONS,
   VEHICLE_TYPE_OPTIONS,
   VEHICLES_ORG_UNIT_NUMBER_CONSTRAINT,
   generatedVehicleUnitNumber,
@@ -18,7 +19,9 @@ describe("vehicle create/edit form contract", () => {
   const component = readFileSync("components/VehicleResourceManager.tsx", "utf8");
   const page = readFileSync("app/(app)/vehicles/page.tsx", "utf8");
   const actions = readFileSync("app/(app)/vehicles/actions.ts", "utf8");
+  const manualActions = readFileSync("app/(app)/vehicles/manual-unit-actions.ts", "utf8");
   const migration = readFileSync("supabase/migrations/20260714040000_vehicle_edit_profile_fields.sql", "utf8");
+  const statusMigration = readFileSync("supabase/migrations/20260721010000_vehicle_yard_hometime_status.sql", "utf8");
   const allowlist = readFileSync("lib/crud-allowlist.ts", "utf8");
 
   it("defines exactly the requested visible business fields", () => {
@@ -33,6 +36,7 @@ describe("vehicle create/edit form contract", () => {
       "Plaka",
       "Durum",
       "Not",
+      "Mileage",
       "Engine Hour",
       "Engine Type",
       "Truck Color",
@@ -42,7 +46,7 @@ describe("vehicle create/edit form contract", () => {
     }
   });
 
-  it("keeps the managed payload narrow and excludes removed settlement fields from the form", () => {
+  it("keeps the managed payload narrow and includes current mileage", () => {
     expect(VEHICLE_FORM_FIELDS).toEqual([
       "vehicle_type",
       "owner_id",
@@ -55,6 +59,7 @@ describe("vehicle create/edit form contract", () => {
       "plate",
       "status",
       "notes",
+      "current_mileage",
       "engine_hours",
       "engine_model",
       "truck_color",
@@ -62,6 +67,9 @@ describe("vehicle create/edit form contract", () => {
     for (const field of REMOVED_VEHICLE_FORM_FIELDS) {
       expect(component).not.toContain(`name="${field}"`);
     }
+    expect(component).toContain('name="current_mileage"');
+    expect(manualActions).toContain('current_mileage: optionalNonNegativeNumber(input.current_mileage, "Mileage")');
+    expect(allowlist).toContain('"current_mileage"');
     expect(component).not.toContain("Company Fee");
     expect(component).not.toContain("External Carrier");
     expect(component).not.toContain("Komisyon");
@@ -77,13 +85,27 @@ describe("vehicle create/edit form contract", () => {
     expect(component).not.toContain("power_only");
   });
 
-  it("supports suggested and custom engine types while rejecting negative engine hours", () => {
+  it("supports active, repair, yard/hometime and inactive operations statuses", () => {
+    expect(VEHICLE_STATUS_OPTIONS.map((option) => option.value)).toEqual([
+      "active",
+      "in_repair",
+      "yard_hometime",
+      "inactive",
+    ]);
+    expect(VEHICLE_STATUS_OPTIONS.find((option) => option.value === "yard_hometime")?.label).toBe("YARD/HOMETIME");
+    expect(page).toContain('["active", "in_repair", "yard_hometime"]');
+    expect(statusMigration).toContain("'yard_hometime'");
+  });
+
+  it("supports suggested and custom engine types while rejecting negative engine hours or mileage", () => {
     expect(ENGINE_TYPE_SUGGESTIONS).toContain("Cummins X15");
     expect(ENGINE_TYPE_SUGGESTIONS).toContain("PACCAR MX-13");
     expect(component).toContain('list="engine-type-suggestions"');
     expect(optionalNonNegativeNumber("0", "Engine Hour")).toBe(0);
+    expect(optionalNonNegativeNumber("482077", "Mileage")).toBe(482077);
     expect(optionalNonNegativeNumber("", "Engine Hour")).toBeNull();
     expect(() => optionalNonNegativeNumber("-1", "Engine Hour")).toThrow(/zero or greater/);
+    expect(() => optionalNonNegativeNumber("-1", "Mileage")).toThrow(/zero or greater/);
   });
 
   it("loads and saves engine profile data through vehicle_maintenance_profiles", () => {
@@ -118,7 +140,7 @@ describe("vehicle create/edit form contract", () => {
     expect(GENERATED_UNIT_NUMBER_PREFIX).toBe("UNIT-");
   });
 
-  it("keeps unit_number out of edit payloads so plate changes do not rename units", () => {
+  it("keeps unit_number out of legacy edit payloads so plate changes do not rename units", () => {
     const saveAction = actions.slice(actions.indexOf("export async function saveVehicleFromForm"));
     const editBranch = saveAction.slice(saveAction.indexOf("if (vehicleRecordId)"), saveAction.indexOf("} else {"));
     expect(editBranch).toContain(".update(payload.vehicle)");
