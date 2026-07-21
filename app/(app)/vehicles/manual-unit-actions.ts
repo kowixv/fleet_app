@@ -59,6 +59,7 @@ function buildVehicleFormPayload(input: Record<string, unknown>) {
       model: optionalText(input.model),
       plate: normalizeUpperText(input.plate),
       truck_color: optionalText(input.truck_color),
+      current_mileage: optionalNonNegativeNumber(input.current_mileage, "Mileage"),
       status,
       notes: optionalText(input.notes),
     },
