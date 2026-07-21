@@ -44,6 +44,7 @@ describe("vehicle mileage write contract", () => {
     expect(crud).not.toMatch(/from\(table\)\.update\([^)]*current_mileage/s);
     expect(clean("vehicles", { unit_number: "101", current_mileage: 999 })).toEqual({
       unit_number: "101",
+      current_mileage: 999,
     });
   });
 
