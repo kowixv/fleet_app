@@ -4,6 +4,7 @@ import MaintenanceNav from "@/components/MaintenanceNav";
 import UnitMaintenancePlans from "@/components/UnitMaintenancePlans";
 import UnitMileageInline from "@/components/UnitMileageInline";
 import VehicleMaintenanceCostPanel from "@/components/VehicleMaintenanceCostPanel";
+import VehicleThumbnail from "@/components/VehicleThumbnail";
 import {
   computePM,
   formatPMRemaining,
@@ -89,7 +90,7 @@ export default async function MaintenanceUnitDetailPage({
   const tab = selectedTab(query.tab);
   const supabase = await createClient();
   const [vehicleRes, rulesRes, settingsRes, profileRes, criticalFindingsRes] = await Promise.all([
-    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, status").eq("id", vehicleId).single(),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, truck_color, status").eq("id", vehicleId).single(),
     supabase
       .from("maintenance_rules")
       .select("id, vehicle_id, vehicle_type, service_type, active, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
@@ -319,9 +320,13 @@ export default async function MaintenanceUnitDetailPage({
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
-            <div>
-              <p className="text-sm text-slate-500">Unit</p>
-              <h1 className="text-2xl font-bold">{vehicle.unit_number}</h1>
+            <div className="flex items-center gap-3">
+              <VehicleThumbnail vehicle={vehicle} />
+              <div>
+                <p className="text-sm text-slate-500">Unit</p>
+                <h1 className="text-2xl font-bold">{vehicle.unit_number}</h1>
+                <p className="text-xs text-slate-500">{[vehicle.make, vehicle.model].filter(Boolean).join(" ") || vehicle.vehicle_type}</p>
+              </div>
             </div>
             <UnitMileageInline vehicleId={vehicle.id} unitNumber={vehicle.unit_number} currentMileage={vehicle.current_mileage} />
           </div>

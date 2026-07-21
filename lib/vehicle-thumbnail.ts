@@ -1,33 +1,35 @@
 export type VehicleThumbnailVariant =
-  | "aero_sleeper"
-  | "conventional_sleeper"
-  | "vocational_daycab"
-  | "box_truck"
-  | "generic_truck";
+  | "peterbilt_semi"
+  | "kenworth_semi"
+  | "freightliner_semi"
+  | "international_box"
+  | "generic_semi"
+  | "generic_box";
 
-export interface VehicleThumbnailInput {
+export interface VehicleThumbnailVehicle {
   make?: string | null;
   model?: string | null;
-  color?: string | null;
-  vehicleType?: string | null;
+  truck_color?: string | null;
+  vehicle_type?: string | null;
 }
 
-export interface VehicleThumbnailDescriptor {
-  variant: VehicleThumbnailVariant;
+export interface VehicleThumbnailColors {
   bodyColor: string;
   accentColor: string;
-  wheelColor: string;
-  label: string;
+  needsOutline: boolean;
 }
 
 const NAMED_COLORS: Record<string, string> = {
   white: "#f8fafc",
   black: "#111827",
   blue: "#2563eb",
+  "dark blue": "#1e3a8a",
   navy: "#1e3a8a",
+  "light blue": "#60a5fa",
   yellow: "#eab308",
   red: "#dc2626",
   silver: "#a8b0ba",
+  "metallic silver": "#a8b0ba",
   gray: "#6b7280",
   grey: "#6b7280",
   green: "#15803d",
@@ -38,110 +40,87 @@ const NAMED_COLORS: Record<string, string> = {
   gold: "#d4a017",
 };
 
-const AERO_MODELS = [
-  "579",
-  "t680",
-  "cascadia",
-  "vnl",
-  "lt",
-  "anthem",
-  "prostar",
-  "760",
-  "780",
-];
+const FALLBACK_BODY_COLOR = "#64748b";
 
-const CONVENTIONAL_MODELS = [
-  "389",
-  "379",
-  "w900",
-  "9900",
-  "coronado",
-  "classic xl",
-  "western star 4900",
-];
+export function normalizeVehicleThumbnailText(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLowerCase().replace(/\s+/g, " ") : "";
+}
 
-const VOCATIONAL_MODELS = [
-  "567",
-  "t880",
-  "49x",
-  "47x",
-  "114sd",
-  "122sd",
-  "granite",
-  "hx",
-];
+export function getVehicleThumbnailVariant(vehicle: VehicleThumbnailVehicle): VehicleThumbnailVariant {
+  const make = normalizeVehicleThumbnailText(vehicle.make);
+  const model = normalizeVehicleThumbnailText(vehicle.model);
+  const type = normalizeVehicleThumbnailText(vehicle.vehicle_type).replace(/_/g, " ");
+  const identity = `${make} ${model}`.trim();
 
-const BOX_MODELS = [
-  "m2",
-  "mv",
-  "4300",
-  "4400",
-  "business class",
-  "hino",
-  "isuzu",
-  "ftr",
-  "npr",
-];
+  if (isBoxTruck(type, identity)) {
+    return identity.includes("international") ? "international_box" : "generic_box";
+  }
 
-export function resolveVehicleThumbnail(input: VehicleThumbnailInput): VehicleThumbnailDescriptor {
-  const make = normalize(input.make);
-  const model = normalize(input.model);
-  const combined = `${make} ${model}`.trim();
-  const bodyColor = resolveVehicleColor(input.color);
-  const variant = resolveVariant({
-    combined,
-    vehicleType: normalize(input.vehicleType),
-  });
+  if (hasToken(identity, "international")) {
+    return "international_box";
+  }
 
-  const displayName = [cleanDisplay(input.make), cleanDisplay(input.model)].filter(Boolean).join(" ")
-    || (variant === "box_truck" ? "Box Truck" : "Semi Truck");
-  const displayColor = cleanDisplay(input.color) || "Default color";
+  if (hasToken(identity, "peterbilt") || hasToken(identity, "579") || hasToken(identity, "567")) {
+    return "peterbilt_semi";
+  }
+  if (hasToken(identity, "kenworth") || hasToken(identity, "t680") || hasToken(identity, "t880")) {
+    return "kenworth_semi";
+  }
+  if (hasToken(identity, "freightliner") || hasToken(identity, "cascadia")) {
+    return "freightliner_semi";
+  }
 
+  return "generic_semi";
+}
+
+export function getVehicleThumbnailColors(truckColor: unknown): VehicleThumbnailColors {
+  const bodyColor = normalizeTruckColor(truckColor);
   return {
-    variant,
     bodyColor,
-    accentColor: accentFor(bodyColor),
-    wheelColor: "#1f2937",
-    label: `${displayName}, ${displayColor}`,
+    accentColor: accentForBodyColor(bodyColor),
+    needsOutline: bodyColor === "#f8fafc",
   };
 }
 
-export function resolveVehicleColor(value: string | null | undefined): string {
-  const normalized = normalize(value);
-  if (!normalized) return "#64748b";
-  if (NAMED_COLORS[normalized]) return NAMED_COLORS[normalized];
-  if (/^#[0-9a-f]{6}$/i.test(normalized)) return normalized.toLowerCase();
-  if (/^[0-9a-f]{6}$/i.test(normalized)) return `#${normalized.toLowerCase()}`;
-  return "#64748b";
+function normalizeTruckColor(value: unknown): string {
+  const normalized = normalizeVehicleThumbnailText(value);
+  if (!normalized) return FALLBACK_BODY_COLOR;
+  if (/(url\(|var\(|rgba?\(|hsla?\(|javascript:|;|<|>)/i.test(normalized)) return FALLBACK_BODY_COLOR;
+
+  const withoutHash = normalized.startsWith("#") ? normalized.slice(1) : normalized;
+  if (/^[0-9a-f]{6}$/i.test(withoutHash)) return `#${withoutHash.toLowerCase()}`;
+
+  return NAMED_COLORS[normalized] ?? FALLBACK_BODY_COLOR;
 }
 
-function resolveVariant(args: { combined: string; vehicleType: string }): VehicleThumbnailVariant {
-  if (args.vehicleType === "box_truck") return "box_truck";
-  if (BOX_MODELS.some((token) => args.combined.includes(token))) return "box_truck";
-  if (CONVENTIONAL_MODELS.some((token) => args.combined.includes(token))) return "conventional_sleeper";
-  if (VOCATIONAL_MODELS.some((token) => args.combined.includes(token))) return "vocational_daycab";
-  if (AERO_MODELS.some((token) => args.combined.includes(token))) return "aero_sleeper";
-  return "generic_truck";
+function hasToken(value: string, token: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${escapeRegExp(token)}([^a-z0-9]|$)`, "i").test(value);
 }
 
-function accentFor(bodyColor: string): string {
-  const hex = bodyColor.slice(1);
-  const r = Number.parseInt(hex.slice(0, 2), 16);
-  const g = Number.parseInt(hex.slice(2, 4), 16);
-  const b = Number.parseInt(hex.slice(4, 6), 16);
-  const factor = (r + g + b) / 3 > 180 ? 0.72 : 1.28;
-  const clamp = (channel: number) => Math.max(0, Math.min(255, Math.round(channel * factor)));
-  return `#${[clamp(r), clamp(g), clamp(b)].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+function isBoxTruck(type: string, identity: string): boolean {
+  if (hasToken(type, "box truck")) return true;
+  return [
+    "box truck",
+    "straight truck",
+    "cube truck",
+    "cargo box",
+    "van body",
+    "reefer box",
+    "m2",
+    "m2 106",
+    "mv",
+    "4300",
+    "npr",
+    "hino",
+  ].some((token) => hasToken(identity, token));
 }
 
-function normalize(value: string | null | undefined): string {
-  return String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[_-]+/g, " ")
-    .replace(/\s+/g, " ");
+function accentForBodyColor(bodyColor: string): string {
+  if (bodyColor === "#111827" || bodyColor === "#1e3a8a" || bodyColor === "#7f1d1d") return "#cbd5e1";
+  if (bodyColor === "#f8fafc") return "#94a3b8";
+  return "#334155";
 }
 
-function cleanDisplay(value: string | null | undefined): string {
-  return String(value ?? "").trim();
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
