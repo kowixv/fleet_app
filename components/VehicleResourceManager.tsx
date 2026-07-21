@@ -1,6 +1,8 @@
 "use client";
 
 import { saveVehicleWithManualUnitFromForm } from "@/app/(app)/vehicles/manual-unit-actions";
+import VehicleRemovalActions from "@/components/VehicleRemovalActions";
+import VehicleThumbnail from "@/components/VehicleThumbnail";
 import {
   ENGINE_TYPE_SUGGESTIONS,
   TRUCK_COLOR_SUGGESTIONS,
@@ -9,7 +11,6 @@ import {
 } from "@/lib/vehicle-form";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
-import VehicleRemovalActions from "@/components/VehicleRemovalActions";
 
 export interface VehicleFormRow {
   id: string;
@@ -61,6 +62,11 @@ function numberValue(value: number | null) {
 
 function personName(people: PersonOption[], id: string | null) {
   return people.find((person) => person.value === id)?.label ?? "-";
+}
+
+function vehicleDisplayName(row: VehicleFormRow) {
+  const parts = [row.make, row.model].map((value) => value?.trim()).filter(Boolean);
+  return parts.length > 0 ? parts.join(" ") : vehicleTypeLabel(row.vehicle_type);
 }
 
 export default function VehicleResourceManager({
@@ -154,7 +160,22 @@ export default function VehicleResourceManager({
             ) : (
               rows.map((row) => (
                 <tr key={row.id} className="hover:bg-slate-50">
-                  <td className="td font-medium">{row.unit_number}</td>
+                  <td className="td">
+                    <div className="flex min-w-[190px] items-center gap-3">
+                      <VehicleThumbnail
+                        make={row.make}
+                        model={row.model}
+                        color={row.truck_color}
+                        vehicleType={row.vehicle_type}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-semibold text-slate-900">{row.unit_number}</div>
+                        <div className="max-w-[150px] truncate text-xs text-slate-500" title={vehicleDisplayName(row)}>
+                          {vehicleDisplayName(row)}
+                        </div>
+                      </div>
+                    </div>
+                  </td>
                   <td className="td">{vehicleTypeLabel(row.vehicle_type)}</td>
                   <td className="td">{personName(owners, row.owner_id)}</td>
                   <td className="td">{personName(drivers, row.assigned_driver_id)}</td>
@@ -204,7 +225,19 @@ export default function VehicleResourceManager({
         <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4">
           <div className="card my-8 w-full max-w-4xl">
             <div className="mb-4 flex items-center justify-between">
-              <h2 className="font-semibold">{editing ? "Düzenle" : "Araç"}</h2>
+              <div className="flex items-center gap-3">
+                {editing && (
+                  <VehicleThumbnail
+                    make={editing.make}
+                    model={editing.model}
+                    color={editing.truck_color}
+                    vehicleType={editing.vehicle_type}
+                    width={72}
+                    height={42}
+                  />
+                )}
+                <h2 className="font-semibold">{editing ? "Düzenle" : "Araç"}</h2>
+              </div>
               <button onClick={() => setOpen(false)} className="text-slate-400">
                 X
               </button>
