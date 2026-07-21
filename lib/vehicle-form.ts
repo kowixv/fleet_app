@@ -9,6 +9,7 @@ export const VEHICLE_FORM_BUSINESS_LABELS = [
   "Plaka",
   "Durum",
   "Not",
+  "Mileage",
   "Engine Hour",
   "Engine Type",
   "Truck Color",
@@ -22,6 +23,7 @@ export const VEHICLE_TYPE_OPTIONS = [
 export const VEHICLE_STATUS_OPTIONS = [
   { value: "active", label: "Aktif" },
   { value: "in_repair", label: "Tamirde" },
+  { value: "yard_hometime", label: "YARD/HOMETIME" },
   { value: "inactive", label: "Pasif" },
 ] as const;
 
@@ -58,6 +60,7 @@ export const VEHICLE_FORM_FIELDS = [
   "plate",
   "status",
   "notes",
+  "current_mileage",
   "engine_hours",
   "engine_model",
   "truck_color",
@@ -72,7 +75,6 @@ export const REMOVED_VEHICLE_FORM_FIELDS = [
   "external_carrier_fee_pct",
   "management_commission_type",
   "management_commission_amount",
-  "current_mileage",
 ] as const;
 
 export type VehicleTypeValue = (typeof VEHICLE_TYPE_OPTIONS)[number]["value"];

@@ -24,6 +24,7 @@ export interface VehicleFormRow {
   model: string | null;
   plate: string | null;
   truck_color: string | null;
+  current_mileage: number | null;
   status: string | null;
   notes: string | null;
   engine_model: string | null;
@@ -310,7 +311,7 @@ export default function VehicleResourceManager({
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold text-slate-900">Operasyon Bilgileri</h3>
-                <div className="grid gap-3 md:grid-cols-3">
+                <div className="grid gap-3 md:grid-cols-4">
                   <div>
                     <label className="label">Durum</label>
                     <select name="status" className="input" required defaultValue={editing?.status ?? "active"}>
@@ -320,6 +321,18 @@ export default function VehicleResourceManager({
                         </option>
                       ))}
                     </select>
+                  </div>
+                  <div>
+                    <label className="label">Mileage</label>
+                    <input
+                      name="current_mileage"
+                      type="number"
+                      min="0"
+                      step="1"
+                      className="input"
+                      placeholder="482077"
+                      defaultValue={numberValue(editing?.current_mileage ?? null)}
+                    />
                   </div>
                   <div>
                     <label className="label">Engine Type</label>
