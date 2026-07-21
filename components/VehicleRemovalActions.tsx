@@ -17,6 +17,7 @@ interface VehicleRow {
 function statusBadge(status: string | null) {
   if (status === "inactive") return <span className="badge bg-slate-100 text-slate-700">Pasif</span>;
   if (status === "in_repair") return <span className="badge bg-amber-100 text-amber-700">Tamirde</span>;
+  if (status === "yard_hometime") return <span className="badge bg-blue-100 text-blue-700">YARD/HOMETIME</span>;
   return null;
 }
 
