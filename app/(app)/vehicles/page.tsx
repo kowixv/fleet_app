@@ -23,7 +23,7 @@ export default async function VehiclesPage({
     .select("*", { count: "exact" })
     .order("unit_number", { ascending: true })
     .range(from, from + DEFAULT_PAGE_SIZE - 1);
-  if (!includeInactive) vehiclesQuery = vehiclesQuery.in("status", ["active", "in_repair"]);
+  if (!includeInactive) vehiclesQuery = vehiclesQuery.in("status", ["active", "in_repair", "yard_hometime"]);
 
   const [vehiclesRes, opts] = await Promise.all([vehiclesQuery, fetchOptions()]);
   if (vehiclesRes.error) throw new Error(`Vehicle data failed to load: ${vehiclesRes.error.message}`);
