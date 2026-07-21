@@ -30,4 +30,20 @@ describe("crud allowlist", () => {
     const out = clean("external_carriers", { name: "X" });
     expect(out).toEqual({ name: "X" });
   });
+
+  it("allows vehicle mileage while still blocking spoofed vehicle fields", () => {
+    const out = clean("vehicles", {
+      current_mileage: 482077,
+      status: "active",
+      organization_id: "attacker-org",
+      arbitrary_field: "blocked",
+    });
+
+    expect(out).toEqual({
+      current_mileage: 482077,
+      status: "active",
+    });
+    expect(out).not.toHaveProperty("organization_id");
+    expect(out).not.toHaveProperty("arbitrary_field");
+  });
 });

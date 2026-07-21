@@ -162,12 +162,7 @@ export default function VehicleResourceManager({
                 <tr key={row.id} className="hover:bg-slate-50">
                   <td className="td">
                     <div className="flex min-w-[190px] items-center gap-3">
-                      <VehicleThumbnail
-                        make={row.make}
-                        model={row.model}
-                        color={row.truck_color}
-                        vehicleType={row.vehicle_type}
-                      />
+                      <VehicleThumbnail vehicle={row} />
                       <div className="min-w-0">
                         <div className="font-semibold text-slate-900">{row.unit_number}</div>
                         <div className="max-w-[150px] truncate text-xs text-slate-500" title={vehicleDisplayName(row)}>
@@ -228,12 +223,8 @@ export default function VehicleResourceManager({
               <div className="flex items-center gap-3">
                 {editing && (
                   <VehicleThumbnail
-                    make={editing.make}
-                    model={editing.model}
-                    color={editing.truck_color}
-                    vehicleType={editing.vehicle_type}
-                    width={72}
-                    height={42}
+                    vehicle={editing}
+                    size="preview"
                   />
                 )}
                 <h2 className="font-semibold">{editing ? "Düzenle" : "Araç"}</h2>

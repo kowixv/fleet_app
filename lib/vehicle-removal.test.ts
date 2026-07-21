@@ -37,8 +37,8 @@ describe("vehicle safe removal workflow", () => {
     expect(vehicleManager).toContain("VehicleRemovalActions");
   });
 
-  it("hides inactive units by default and preserves pagination with the inactive filter", () => {
-    expect(page).toContain('vehiclesQuery.in("status", ["active", "in_repair"])');
+  it("hides inactive units by default while showing operational non-inactive statuses", () => {
+    expect(page).toContain('vehiclesQuery.in("status", ["active", "in_repair", "yard_hometime"])');
     expect(page).toContain('showInactive === "1"');
     expect(vehicleManager).toContain("Pasif Unitleri");
     expect(vehicleManager).toContain("&showInactive=1");
