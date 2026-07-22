@@ -1,14 +1,27 @@
+"use client";
+
 import {
-  getVehicleThumbnailColors,
-  getVehicleThumbnailVariant,
+  colorLabel,
+  isPhotoVariant,
+  resolveVehicleThumbnail,
+  type VehicleSvgVariant,
   type VehicleThumbnailVehicle,
   type VehicleThumbnailVariant,
 } from "@/lib/vehicle-thumbnail";
+import { useMemo, useState, type CSSProperties } from "react";
 
-type Size = "list" | "preview";
+type Size = "list" | "preview" | "detail";
 
 interface Props {
-  vehicle: VehicleThumbnailVehicle;
+  vehicle?: VehicleThumbnailVehicle;
+  make?: string | null;
+  model?: string | null;
+  color?: string | null;
+  vehicleType?: string | null;
+  width?: number;
+  height?: number;
+  priority?: boolean;
+  className?: string;
   size?: Size;
 }
 
@@ -18,87 +31,169 @@ interface SvgProps {
   outlineColor: string;
 }
 
-const sizeClass: Record<Size, string> = {
-  list: "h-[50px] w-[88px]",
-  preview: "h-16 w-[110px]",
+const sizePreset: Record<Size, { width: number; height: number }> = {
+  list: { width: 96, height: 60 },
+  preview: { width: 150, height: 95 },
+  detail: { width: 220, height: 138 },
 };
 
-export default function VehicleThumbnail({ vehicle, size = "list" }: Props) {
-  const variant = getVehicleThumbnailVariant(vehicle);
-  const colors = getVehicleThumbnailColors(vehicle.truck_color);
-  const outlineColor = colors.needsOutline ? "#64748b" : "#475569";
-  const label = thumbnailLabel(variant);
+export default function VehicleThumbnail({
+  vehicle,
+  make,
+  model,
+  color,
+  vehicleType,
+  width,
+  height,
+  priority = false,
+  className = "",
+  size = "list",
+}: Props) {
+  const input = useMemo<VehicleThumbnailVehicle>(() => ({
+    make: make ?? vehicle?.make ?? null,
+    model: model ?? vehicle?.model ?? null,
+    truck_color: color ?? vehicle?.truck_color ?? vehicle?.color ?? null,
+    vehicle_type: vehicleType ?? vehicle?.vehicle_type ?? vehicle?.vehicleType ?? null,
+  }), [color, make, model, vehicle, vehicleType]);
+  const descriptor = resolveVehicleThumbnail(input);
+  const [failedVariant, setFailedVariant] = useState<VehicleThumbnailVariant | null>(null);
+  const dimensions = sizePreset[size];
+  const resolvedWidth = width ?? dimensions.width;
+  const resolvedHeight = height ?? dimensions.height;
+  const outlineColor = descriptor.colors.needsOutline ? "#64748b" : "#475569";
+  const label = `${colorLabel(input.truck_color)} ${descriptor.label}`;
+  const photoAsset = descriptor.photoAsset && descriptor.variant !== failedVariant ? descriptor.photoAsset : null;
 
   return (
     <div
-      className={`${sizeClass[size]} shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50`}
+      className={`relative shrink-0 overflow-hidden rounded-md border border-slate-200 bg-slate-50 ${className}`}
+      style={{ width: resolvedWidth, height: resolvedHeight }}
       title={label}
+      role="img"
       aria-label={label}
     >
-      {renderSilhouette(variant, { ...colors, outlineColor })}
+      {photoAsset ? (
+        <PhotoThumbnail
+          variant={descriptor.variant}
+          asset={photoAsset}
+          bodyColor={descriptor.colors.bodyColor}
+          luminance={descriptor.colors.luminance}
+          priority={priority}
+          onError={() => {
+            if (process.env.NODE_ENV !== "production") {
+              console.warn(`Vehicle thumbnail asset failed for ${descriptor.variant}; using SVG fallback.`);
+            }
+            setFailedVariant(descriptor.variant);
+          }}
+        />
+      ) : (
+        renderSilhouette(fallbackSvgVariant(descriptor.variant), {
+          bodyColor: descriptor.colors.bodyColor,
+          accentColor: descriptor.colors.accentColor,
+          outlineColor,
+        })
+      )}
     </div>
   );
 }
 
-function renderSilhouette(variant: VehicleThumbnailVariant, props: SvgProps) {
+function PhotoThumbnail({
+  variant,
+  asset,
+  bodyColor,
+  luminance,
+  priority,
+  onError,
+}: {
+  variant: VehicleThumbnailVariant;
+  asset: NonNullable<ReturnType<typeof resolveVehicleThumbnail>["photoAsset"]>;
+  bodyColor: string;
+  luminance: number;
+  priority: boolean;
+  onError: () => void;
+}) {
+  const maskStyle: CSSProperties = {
+    WebkitMaskImage: `url(${asset.maskSrc})`,
+    maskImage: `url(${asset.maskSrc})`,
+    WebkitMaskRepeat: "no-repeat",
+    maskRepeat: "no-repeat",
+    WebkitMaskSize: "contain",
+    maskSize: "contain",
+    WebkitMaskPosition: asset.objectPosition,
+    maskPosition: asset.objectPosition,
+  };
+  const toneBlendMode = luminance > 0.72 ? "screen" : "multiply";
+  const toneOpacity = luminance > 0.72 ? 0.26 : luminance < 0.18 ? 0.3 : 0.12;
+
+  return (
+    <>
+      <img
+        src={asset.baseSrc}
+        alt=""
+        aria-hidden="true"
+        className="absolute inset-0 h-full w-full object-contain"
+        style={{ objectPosition: asset.objectPosition }}
+        loading={priority ? "eager" : "lazy"}
+        decoding="async"
+        onError={onError}
+        data-vehicle-thumbnail-variant={isPhotoVariant(variant) ? variant : undefined}
+      />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 h-full w-full object-contain"
+        style={{
+          ...maskStyle,
+          backgroundColor: bodyColor,
+          mixBlendMode: "color",
+        }}
+      />
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 h-full w-full object-contain"
+        style={{
+          ...maskStyle,
+          backgroundColor: bodyColor,
+          mixBlendMode: toneBlendMode,
+          opacity: toneOpacity,
+        }}
+      />
+    </>
+  );
+}
+
+function renderSilhouette(variant: VehicleSvgVariant, props: SvgProps) {
   switch (variant) {
-    case "peterbilt_semi":
-      return <PeterbiltSemi {...props} />;
-    case "kenworth_semi":
+    case "kenworth_svg":
       return <KenworthSemi {...props} />;
-    case "freightliner_semi":
-      return <FreightlinerSemi {...props} />;
-    case "international_box":
-    case "generic_box":
+    case "international_svg":
+      return <InternationalSemi {...props} />;
+    case "generic_box_svg":
       return <BoxTruck {...props} />;
-    case "generic_semi":
+    case "generic_semi_svg":
     default:
       return <GenericSemi {...props} />;
   }
 }
 
-function thumbnailLabel(variant: VehicleThumbnailVariant): string {
+function fallbackSvgVariant(variant: VehicleThumbnailVariant): VehicleSvgVariant {
   switch (variant) {
-    case "peterbilt_semi":
-      return "Peterbilt-style semi truck thumbnail";
-    case "kenworth_semi":
-      return "Kenworth-style semi truck thumbnail";
-    case "freightliner_semi":
-      return "Freightliner-style semi truck thumbnail";
-    case "international_box":
-      return "International-style box truck thumbnail";
-    case "generic_box":
-      return "Box truck thumbnail";
-    case "generic_semi":
+    case "box_truck_photo":
+      return "generic_box_svg";
+    case "kenworth_svg":
+    case "international_svg":
+    case "generic_box_svg":
+    case "generic_semi_svg":
+      return variant;
+    case "peterbilt_photo":
+    case "freightliner_photo":
     default:
-      return "Generic semi truck thumbnail";
+      return "generic_semi_svg";
   }
-}
-
-function PeterbiltSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
-  return (
-    <svg viewBox="0 0 120 64" role="img" aria-label="Peterbilt-style semi truck silhouette" className="h-full w-full">
-      <title>Peterbilt-style semi truck silhouette</title>
-      <path d="M15 47h92l4 6H11z" fill={accentColor} />
-      <path d="M19 44V25c0-8 6-14 14-15h16c8 0 13 5 15 13l3 14 39 3 3 7H19z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M49 19c7 1 11 6 12 15h-16V19z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" />
-      <path d="M27 17h17v20H22V25c0-4 2-7 5-8z" fill={bodyColor} stroke={outlineColor} strokeWidth="1" />
-      <path d="M66 36l38 3v-9c-8-3-24-5-38-5z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.2" strokeLinejoin="round" />
-      <path d="M102 31h7v14h-9z" fill={accentColor} stroke={outlineColor} strokeWidth="1" />
-      <path d="M105 41h5v3h-5z" fill="#fde68a" />
-      <path d="M70 40h32" stroke={outlineColor} strokeWidth="1.2" strokeLinecap="round" />
-      <path d="M35 18v-7h5v7" stroke={accentColor} strokeWidth="2" strokeLinecap="round" />
-      <Wheel cx={30} cy={50} />
-      <Wheel cx={86} cy={50} />
-      <Wheel cx={101} cy={50} />
-    </svg>
-  );
 }
 
 function KenworthSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
   return (
-    <svg viewBox="0 0 120 64" role="img" aria-label="Kenworth-style semi truck silhouette" className="h-full w-full">
-      <title>Kenworth-style semi truck silhouette</title>
+    <svg viewBox="0 0 120 64" aria-hidden="true" className="h-full w-full">
       <path d="M13 48h94l5 5H9z" fill={accentColor} />
       <path d="M20 45V22l8-10h30l12 16 34 2 5 15H20z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
       <path d="M45 17h12l9 13H45z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />
@@ -115,18 +210,18 @@ function KenworthSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
   );
 }
 
-function FreightlinerSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
+function InternationalSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
   return (
-    <svg viewBox="0 0 120 64" role="img" aria-label="Freightliner-style semi truck silhouette" className="h-full w-full">
-      <title>Freightliner-style semi truck silhouette</title>
-      <path d="M13 48h91c5 0 8 2 9 5H10z" fill={accentColor} />
-      <path d="M19 45V26c0-9 8-16 18-16h16c10 0 17 8 20 18l28 2c7 1 11 6 11 15H19z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
-      <path d="M40 17c11 1 19 7 24 17H41z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />
-      <path d="M26 18c-4 2-6 6-6 12v11h17V18z" fill={bodyColor} stroke={outlineColor} strokeWidth="1" />
-      <path d="M70 29l31 2c6 1 9 5 10 11H74z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.1" strokeLinejoin="round" />
-      <path d="M98 33c7 1 11 4 13 10h-12z" fill={accentColor} stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />
-      <path d="M100 39l10 2-1 3-10-1z" fill="#fde68a" />
-      <path d="M57 40c14 2 28 2 42 1" stroke={outlineColor} strokeWidth="1.2" strokeLinecap="round" />
+    <svg viewBox="0 0 120 64" aria-hidden="true" className="h-full w-full">
+      <path d="M12 48h94l5 5H9z" fill={accentColor} />
+      <path d="M19 45V19c0-4 3-7 7-7h26c6 0 11 4 14 11l7 17 32 2 4 3H19z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M44 18h11c5 4 8 9 10 17H44z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" />
+      <path d="M26 17h15v25H20V23c0-3 3-6 6-6z" fill={bodyColor} stroke={outlineColor} strokeWidth="1" />
+      <path d="M70 31h31l6 10H75z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M100 33h8v12h-8z" fill={accentColor} stroke={outlineColor} strokeWidth="1" />
+      <path d="M102 40h6v3h-6z" fill="#fde68a" />
+      <path d="M59 40h42" stroke={outlineColor} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M31 13h17" stroke={accentColor} strokeWidth="2" strokeLinecap="round" />
       <Wheel cx={31} cy={50} />
       <Wheel cx={84} cy={50} />
       <Wheel cx={99} cy={50} />
@@ -136,8 +231,7 @@ function FreightlinerSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
 
 function BoxTruck({ bodyColor, accentColor, outlineColor }: SvgProps) {
   return (
-    <svg viewBox="0 0 120 64" role="img" aria-label="Box truck silhouette" className="h-full w-full">
-      <title>Box truck silhouette</title>
+    <svg viewBox="0 0 120 64" aria-hidden="true" className="h-full w-full">
       <path d="M12 48h96l4 5H9z" fill={accentColor} />
       <path d="M12 16h58v31H12z" fill="#f8fafc" stroke={outlineColor} strokeWidth="1.5" />
       <path d="M70 29h13l8 8v10H70z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
@@ -154,8 +248,7 @@ function BoxTruck({ bodyColor, accentColor, outlineColor }: SvgProps) {
 
 function GenericSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
   return (
-    <svg viewBox="0 0 120 64" role="img" aria-label="Generic semi truck silhouette" className="h-full w-full">
-      <title>Generic semi truck silhouette</title>
+    <svg viewBox="0 0 120 64" aria-hidden="true" className="h-full w-full">
       <path d="M14 48h94l4 5H10z" fill={accentColor} />
       <path d="M19 45V25c0-7 6-13 14-13h19c7 0 13 6 15 14l36 2 6 17H19z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
       <path d="M45 18h11c5 4 8 9 9 15H45z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />

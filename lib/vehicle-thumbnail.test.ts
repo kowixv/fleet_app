@@ -1,84 +1,175 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
+import sharp from "sharp";
 import { describe, expect, it } from "vitest";
+import { VEHICLE_THUMBNAIL_ARTWORK_CONFIGS } from "../scripts/vehicle-thumbnail-asset-config";
+import {
+  GENERATED_VEHICLE_THUMBNAIL_ASSETS,
+  VEHICLE_PHOTO_ASSETS,
+} from "./vehicle-thumbnail-assets";
 import {
   getVehicleThumbnailColors,
   getVehicleThumbnailVariant,
+  resolveVehicleThumbnail,
 } from "./vehicle-thumbnail";
 
+const repoRoot = process.cwd();
+
 describe("vehicle thumbnail selection", () => {
-  it("maps Peterbilt 579 to the Peterbilt semi silhouette", () => {
-    expect(getVehicleThumbnailVariant({ make: " Peterbilt ", model: "579", vehicle_type: "truck" })).toBe("peterbilt_semi");
-    expect(getVehicleThumbnailVariant({ make: "PETERBILT", model: "579", vehicle_type: "truck" })).toBe("peterbilt_semi");
-    expect(getVehicleThumbnailVariant({ make: null, model: "Peterbilt 579", vehicle_type: "truck" })).toBe("peterbilt_semi");
-    expect(getVehicleThumbnailVariant({ make: null, model: "579", vehicle_type: "truck" })).toBe("peterbilt_semi");
+  it("maps Peterbilt makes and model-only records to the Peterbilt photo", () => {
+    expect(getVehicleThumbnailVariant({ make: "Peterbilt", model: "579", vehicle_type: "truck" })).toBe("peterbilt_photo");
+    expect(getVehicleThumbnailVariant({ make: null, model: "579", vehicle_type: "truck" })).toBe("peterbilt_photo");
+    expect(getVehicleThumbnailVariant({ make: "  PETERBILT  ", model: "Model 579", vehicle_type: "truck" })).toBe("peterbilt_photo");
+    expect(getVehicleThumbnailVariant({ make: "Pete", model: "579", vehicle_type: "truck" })).toBe("peterbilt_photo");
   });
 
-  it("maps Kenworth T680 to the Kenworth semi silhouette", () => {
-    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "truck" })).toBe("kenworth_semi");
-    expect(getVehicleThumbnailVariant({ make: null, model: "t680", vehicle_type: "truck" })).toBe("kenworth_semi");
+  it("maps Freightliner Cascadia records to the Freightliner photo", () => {
+    expect(getVehicleThumbnailVariant({ make: "Freightliner", model: "Cascadia", vehicle_type: "truck" })).toBe("freightliner_photo");
+    expect(getVehicleThumbnailVariant({ make: null, model: "Cascadia", vehicle_type: "truck" })).toBe("freightliner_photo");
+    expect(getVehicleThumbnailVariant({ make: "FREIGHTLINER", model: "CAS-CADIA", vehicle_type: "truck" })).toBe("freightliner_photo");
+    expect(getVehicleThumbnailVariant({ make: null, model: "freightliner cascadia", vehicle_type: "truck" })).toBe("freightliner_photo");
   });
 
-  it("maps Freightliner Cascadia to the Freightliner semi silhouette", () => {
-    expect(getVehicleThumbnailVariant({ make: "Freightliner", model: "Cascadia", vehicle_type: "truck" })).toBe("freightliner_semi");
-    expect(getVehicleThumbnailVariant({ make: null, model: "freightliner cascadia", vehicle_type: "truck" })).toBe("freightliner_semi");
+  it("prioritizes box-truck type and common box-truck model signals", () => {
+    expect(getVehicleThumbnailVariant({ make: "Freightliner", model: "M2", vehicle_type: "box_truck" })).toBe("box_truck_photo");
+    expect(getVehicleThumbnailVariant({ make: "International", model: "MV", vehicle_type: "box_truck" })).toBe("box_truck_photo");
+    expect(getVehicleThumbnailVariant({ make: "International", model: "4300", vehicle_type: "truck" })).toBe("box_truck_photo");
+    expect(getVehicleThumbnailVariant({ make: "Isuzu", model: "NPR", vehicle_type: "truck" })).toBe("box_truck_photo");
+    expect(getVehicleThumbnailVariant({ make: "Unknown", model: "Custom", vehicle_type: "box_truck" })).toBe("box_truck_photo");
   });
 
-  it("prefers a box-truck silhouette for International box trucks", () => {
-    expect(getVehicleThumbnailVariant({ make: "International", model: "4300 Box Truck", vehicle_type: "truck" })).toBe("international_box");
-    expect(getVehicleThumbnailVariant({ make: "International", model: "MV", vehicle_type: "box_truck" })).toBe("international_box");
-    expect(getVehicleThumbnailVariant({ make: "International", model: null, vehicle_type: "truck" })).toBe("international_box");
+  it("keeps Kenworth and non-box International vehicles out of Peterbilt/Freightliner photos", () => {
+    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "truck" })).toBe("kenworth_svg");
+    expect(getVehicleThumbnailVariant({ make: null, model: "T880", vehicle_type: "truck" })).toBe("kenworth_svg");
+    expect(getVehicleThumbnailVariant({ make: "International", model: null, vehicle_type: "truck" })).toBe("international_svg");
+    expect(getVehicleThumbnailVariant({ make: "International", model: "LT", vehicle_type: "truck" })).toBe("international_svg");
   });
 
-  it("falls back safely for unknown vehicles", () => {
-    expect(getVehicleThumbnailVariant({ make: null, model: null, vehicle_type: "truck" })).toBe("generic_semi");
-    expect(getVehicleThumbnailVariant({ make: "Unknown", model: "Custom", vehicle_type: "box_truck" })).toBe("generic_box");
-  });
-
-  it("normalizes safe truck colors and rejects unsafe values", () => {
-    expect(getVehicleThumbnailColors("blue")).toMatchObject({ bodyColor: "#2563eb" });
-    expect(getVehicleThumbnailColors("dark blue")).toMatchObject({ bodyColor: "#1e3a8a", accentColor: "#cbd5e1" });
-    expect(getVehicleThumbnailColors(" metallic silver ")).toMatchObject({ bodyColor: "#a8b0ba" });
-    expect(getVehicleThumbnailColors("dc2626")).toMatchObject({ bodyColor: "#dc2626" });
-    expect(getVehicleThumbnailColors("#15803D")).toMatchObject({ bodyColor: "#15803d" });
-    expect(getVehicleThumbnailColors("url(javascript:alert(1))")).toMatchObject({ bodyColor: "#64748b" });
-  });
-
-  it("resolves each major brand to a different SVG variant", () => {
-    const variants = [
-      getVehicleThumbnailVariant({ make: "Peterbilt", model: "579", vehicle_type: "truck" }),
-      getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "truck" }),
-      getVehicleThumbnailVariant({ make: "Freightliner", model: "Cascadia", vehicle_type: "truck" }),
-      getVehicleThumbnailVariant({ make: "International", model: "4300 Box Truck", vehicle_type: "truck" }),
-    ];
-
-    expect(new Set(variants).size).toBe(4);
-  });
-
-  it("keeps white trucks visible against the light thumbnail background", () => {
-    expect(getVehicleThumbnailColors("white")).toEqual({
-      bodyColor: "#f8fafc",
-      accentColor: "#94a3b8",
-      needsOutline: true,
-    });
-  });
-
-  it("uses distinct SVG paths for Peterbilt, Kenworth, and Freightliner semi geometry", () => {
-    const source = readFileSync("components/VehicleThumbnail.tsx", "utf8");
-    const peterbiltPaths = pathDataFor(source, "PeterbiltSemi");
-    const kenworthPaths = pathDataFor(source, "KenworthSemi");
-    const freightlinerPaths = pathDataFor(source, "FreightlinerSemi");
-
-    expect(peterbiltPaths).not.toEqual(kenworthPaths);
-    expect(peterbiltPaths).not.toEqual(freightlinerPaths);
-    expect(kenworthPaths).not.toEqual(freightlinerPaths);
+  it("falls back safely for unknown semis", () => {
+    expect(getVehicleThumbnailVariant({ make: null, model: null, vehicle_type: "truck" })).toBe("generic_semi_svg");
+    expect(getVehicleThumbnailVariant({ make: "Unknown", model: "Custom", vehicle_type: null })).toBe("generic_semi_svg");
   });
 });
 
-function pathDataFor(source: string, componentName: string): string[] {
-  const start = source.indexOf(`function ${componentName}`);
-  expect(start).toBeGreaterThanOrEqual(0);
-  const rest = source.slice(start);
-  const nextComponent = rest.slice(1).search(/\nfunction [A-Z]/);
-  const componentSource = nextComponent >= 0 ? rest.slice(0, nextComponent + 1) : rest;
-  return [...componentSource.matchAll(/<path d="([^"]+)"/g)].map((match) => match[1]);
-}
+describe("vehicle thumbnail color normalization", () => {
+  it("supports named, multiword, and hex colors", () => {
+    expect(getVehicleThumbnailColors("blue")).toMatchObject({ bodyColor: "#2563eb" });
+    expect(getVehicleThumbnailColors("red")).toMatchObject({ bodyColor: "#dc2626" });
+    expect(getVehicleThumbnailColors("yellow")).toMatchObject({ bodyColor: "#eab308" });
+    expect(getVehicleThumbnailColors("white")).toMatchObject({ bodyColor: "#f8fafc", needsOutline: true });
+    expect(getVehicleThumbnailColors("black")).toMatchObject({ bodyColor: "#111827" });
+    expect(getVehicleThumbnailColors("silver")).toMatchObject({ bodyColor: "#a8b0ba" });
+    expect(getVehicleThumbnailColors("dark-blue")).toMatchObject({ bodyColor: "#1e3a8a" });
+    expect(getVehicleThumbnailColors("light_blue")).toMatchObject({ bodyColor: "#60a5fa" });
+    expect(getVehicleThumbnailColors(" metallic   silver ")).toMatchObject({ bodyColor: "#a8b0ba" });
+    expect(getVehicleThumbnailColors("#12ABEF")).toMatchObject({ bodyColor: "#12abef" });
+    expect(getVehicleThumbnailColors("12ABEF")).toMatchObject({ bodyColor: "#12abef" });
+  });
+
+  it("rejects unsafe or unsupported CSS values", () => {
+    expect(getVehicleThumbnailColors("url(javascript:alert(1))")).toMatchObject({ bodyColor: "#64748b" });
+    expect(getVehicleThumbnailColors("var(--truck-color)")).toMatchObject({ bodyColor: "#64748b" });
+    expect(getVehicleThumbnailColors("rgb(1,2,3)")).toMatchObject({ bodyColor: "#64748b" });
+    expect(getVehicleThumbnailColors("transparent")).toMatchObject({ bodyColor: "#64748b" });
+    expect(getVehicleThumbnailColors("currentColor")).toMatchObject({ bodyColor: "#64748b" });
+    expect(getVehicleThumbnailColors("expression(alert(1))")).toMatchObject({ bodyColor: "#64748b" });
+  });
+
+  it("includes the resolved color and asset descriptor", () => {
+    expect(resolveVehicleThumbnail({ make: "Peterbilt", model: "579", truck_color: "red" })).toMatchObject({
+      variant: "peterbilt_photo",
+      colors: { bodyColor: "#dc2626" },
+      photoAsset: VEHICLE_PHOTO_ASSETS.peterbilt_photo,
+    });
+  });
+});
+
+describe("vehicle thumbnail asset manifest", () => {
+  it("uses only local static manifest paths", () => {
+    for (const assetPath of GENERATED_VEHICLE_THUMBNAIL_ASSETS) {
+      expect(assetPath.startsWith("/vehicle-thumbnails/generated/")).toBe(true);
+      expect(assetPath).not.toMatch(/^https?:\/\//i);
+      expect(assetPath).not.toContain("..");
+    }
+  });
+
+  it("has source images present for deterministic asset generation", () => {
+    for (const config of VEHICLE_THUMBNAIL_ARTWORK_CONFIGS) {
+      expect(existsSync(config.sourcePath)).toBe(true);
+      expect(statSync(config.sourcePath).size).toBeGreaterThan(100_000);
+    }
+  });
+});
+
+describe("vehicle thumbnail UI integration", () => {
+  it("passes make, model, color, and vehicleType in the Vehicles list and editor preview", () => {
+    const source = readFileSync(path.join(repoRoot, "components", "VehicleResourceManager.tsx"), "utf8");
+    expect(source).toContain("make={row.make}");
+    expect(source).toContain("model={row.model}");
+    expect(source).toContain("color={row.truck_color}");
+    expect(source).toContain("vehicleType={row.vehicle_type}");
+    expect(source).toContain("make={previewVehicle.make}");
+    expect(source).toContain("model={previewVehicle.model}");
+    expect(source).toContain("color={previewVehicle.truck_color}");
+    expect(source).toContain("vehicleType={previewVehicle.vehicle_type}");
+  });
+
+  it("passes make, model, color, and vehicleType in the maintenance detail page", () => {
+    const source = readFileSync(path.join(repoRoot, "app", "(app)", "maintenance", "units", "[vehicleId]", "page.tsx"), "utf8");
+    expect(source).toContain("make={vehicle.make}");
+    expect(source).toContain("model={vehicle.model}");
+    expect(source).toContain("color={vehicle.truck_color}");
+    expect(source).toContain("vehicleType={vehicle.vehicle_type}");
+    expect(source).toContain("make, model, truck_color");
+  });
+});
+
+describe("generated vehicle thumbnail assets", () => {
+  it("writes expected base, mask, and preview files", () => {
+    for (const assetPath of GENERATED_VEHICLE_THUMBNAIL_ASSETS) {
+      const absolutePath = path.join(repoRoot, "public", assetPath.replace(/^\//, ""));
+      expect(existsSync(absolutePath), assetPath).toBe(true);
+      expect(statSync(absolutePath).size, assetPath).toBeGreaterThan(500);
+    }
+  });
+
+  it("keeps generated file sizes suitable for compact table thumbnails", () => {
+    for (const assetPath of GENERATED_VEHICLE_THUMBNAIL_ASSETS) {
+      const absolutePath = path.join(repoRoot, "public", assetPath.replace(/^\//, ""));
+      const size = statSync(absolutePath).size;
+      expect(size, assetPath).toBeLessThan(assetPath.endsWith(".webp") ? 260_000 : 160_000);
+    }
+  });
+
+  it("keeps generated dimensions inside configured limits", async () => {
+    for (const config of VEHICLE_THUMBNAIL_ARTWORK_CONFIGS) {
+      const baseMetadata = await sharp(config.outputBasePath).metadata();
+      const maskMetadata = await sharp(config.outputMaskPath).metadata();
+      expect(baseMetadata.width).toBe(config.resizeWidth);
+      expect(maskMetadata.width).toBe(baseMetadata.width);
+      expect(maskMetadata.height).toBe(baseMetadata.height);
+      expect(baseMetadata.width ?? 0).toBeLessThanOrEqual(900);
+      expect(baseMetadata.height ?? 0).toBeLessThanOrEqual(900);
+    }
+  });
+
+  it("generates masks that are neither empty nor full-frame and protect key samples", async () => {
+    for (const config of VEHICLE_THUMBNAIL_ARTWORK_CONFIGS) {
+      const { data, info } = await sharp(config.outputMaskPath).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      let active = 0;
+      for (let index = 0; index < info.width * info.height; index += 1) {
+        if ((data[index * info.channels + 3] ?? 0) > 16) active += 1;
+      }
+      const coverage = active / (info.width * info.height);
+      expect(coverage, `${config.key} mask coverage`).toBeGreaterThan(0.03);
+      expect(coverage, `${config.key} mask coverage`).toBeLessThan(0.65);
+
+      for (const sample of config.protectedSamples) {
+        const x = Math.min(info.width - 1, Math.max(0, Math.round(sample.xRatio * info.width)));
+        const y = Math.min(info.height - 1, Math.max(0, Math.round(sample.yRatio * info.height)));
+        const maskValue = data[(y * info.width + x) * info.channels + 3] ?? 0;
+        expect(maskValue, `${config.key} ${sample.label}`).toBeLessThanOrEqual(sample.maxMaskValue);
+      }
+    }
+  });
+});

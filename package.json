@@ -10,7 +10,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "smoke:fal": "node scripts/fal-smoke.mjs",
-    "maintenance:invoice": "tsx scripts/import-maintenance-invoice.ts"
+    "maintenance:invoice": "tsx scripts/import-maintenance-invoice.ts",
+    "vehicle-thumbnails:build": "tsx scripts/build-vehicle-thumbnail-assets.ts",
+    "vehicle-thumbnails:preview": "tsx scripts/generate-vehicle-thumbnail-preview.ts"
   },
   "engines": {
     "node": ">=20"
@@ -29,6 +31,7 @@
     "react-leaflet": "^5.0.0",
     "read-excel-file": "^9.3.2",
     "server-only": "^0.0.1",
+    "sharp": "^0.35.3",
     "unpdf": "^1.6.2"
   },
   "devDependencies": {
