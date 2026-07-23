@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import sharp, { type Sharp } from "sharp";
-import { VEHICLE_THUMBNAIL_ARTWORK_CONFIGS, type VehicleArtworkConfig } from "./vehicle-thumbnail-asset-config";
+import { hueMatchesRanges, VEHICLE_THUMBNAIL_ARTWORK_CONFIGS, type VehicleArtworkConfig } from "./vehicle-thumbnail-asset-config";
 
 interface RawImage {
   data: Buffer;
@@ -51,7 +51,7 @@ async function buildAsset(config: VehicleArtworkConfig) {
   const raw = await toRawImage(source);
   if (raw.data.length === 0) throw new Error(`${config.key} source pixel data is empty`);
 
-  const hardMask = createBluePaintMask(raw, config);
+  const hardMask = createPaintMask(raw, config);
   const softMask = await softenMask(hardMask, raw.width, raw.height, config);
   const coverage = averageMask(softMask) / 255;
   if (coverage < config.minCoverage || coverage > config.maxCoverage) {
@@ -77,9 +77,8 @@ async function toRawImage(source: Sharp): Promise<RawImage> {
   };
 }
 
-function createBluePaintMask(raw: RawImage, config: VehicleArtworkConfig): Buffer {
+function createPaintMask(raw: RawImage, config: VehicleArtworkConfig): Buffer {
   const mask = Buffer.alloc(raw.width * raw.height);
-  const [hueMin, hueMax] = config.hueRange;
 
   for (let index = 0; index < raw.width * raw.height; index += 1) {
     const offset = index * raw.channels;
@@ -90,8 +89,7 @@ function createBluePaintMask(raw: RawImage, config: VehicleArtworkConfig): Buffe
     const hsv = rgbToHsv(r, g, b);
     const selected =
       alpha > 16
-      && hsv.h >= hueMin
-      && hsv.h <= hueMax
+      && hueMatchesRanges(hsv.h, config.hueRanges)
       && hsv.s >= config.minimumSaturation
       && hsv.v >= config.minimumValue
       && !isExcluded(index, raw.width, raw.height, config);

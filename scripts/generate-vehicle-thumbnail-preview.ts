@@ -3,10 +3,20 @@ import path from "node:path";
 import { VEHICLE_PHOTO_ASSETS } from "../lib/vehicle-thumbnail-assets";
 import { getVehicleThumbnailColors } from "../lib/vehicle-thumbnail";
 
-const colors = ["white", "black", "blue", "red", "yellow", "silver", "dark blue", "green"];
+const colors = [
+  { label: "original red", value: "#b91c2b" },
+  { label: "white", value: "white" },
+  { label: "black", value: "black" },
+  { label: "blue", value: "blue" },
+  { label: "yellow", value: "yellow" },
+  { label: "silver", value: "silver" },
+  { label: "dark blue", value: "dark blue" },
+  { label: "green", value: "green" },
+];
 const sizes = [
-  { label: "100 x 62", width: 100, height: 62 },
-  { label: "180 x 112", width: 180, height: 112 },
+  { label: "list 96 x 60", width: 96, height: 60 },
+  { label: "edit preview 150 x 95", width: 150, height: 95 },
+  { label: "maintenance detail 220 x 138", width: 220, height: 138 },
 ];
 
 async function main() {
@@ -40,17 +50,17 @@ async function main() {
   ${sizes.map((size) => `
     <h2>${size.label}</h2>
     <table>
-      <thead><tr><th>Vehicle</th>${colors.map((color) => `<th>${color}</th>`).join("")}</tr></thead>
+      <thead><tr><th>Vehicle</th>${colors.map((color) => `<th>${color.label}</th>`).join("")}</tr></thead>
       <tbody>
         ${rows.map(({ variant, asset }) => `
           <tr>
             <th>${variant}</th>
             ${colors.map((color) => {
-              const resolved = getVehicleThumbnailColors(color).bodyColor;
+              const resolved = getVehicleThumbnailColors(color.value).bodyColor;
               return `<td><div class="thumb" style="width:${size.width}px;height:${size.height}px">
                 <img src="..${asset.baseSrc}" alt="" />
                 <div class="paint" style="background:${resolved};-webkit-mask-image:url('..${asset.maskSrc}');mask-image:url('..${asset.maskSrc}')"></div>
-                <div class="tone" style="background:${resolved};opacity:${color === "black" ? "0.25" : color === "white" ? "0.22" : "0.12"};mix-blend-mode:${color === "white" ? "screen" : "multiply"};-webkit-mask-image:url('..${asset.maskSrc}');mask-image:url('..${asset.maskSrc}')"></div>
+                <div class="tone" style="background:${resolved};opacity:${color.value === "black" ? "0.25" : color.value === "white" ? "0.22" : "0.12"};mix-blend-mode:${color.value === "white" ? "screen" : "multiply"};-webkit-mask-image:url('..${asset.maskSrc}');mask-image:url('..${asset.maskSrc}')"></div>
               </div></td>`;
             }).join("")}
           </tr>

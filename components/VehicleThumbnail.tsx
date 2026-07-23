@@ -179,6 +179,8 @@ function fallbackSvgVariant(variant: VehicleThumbnailVariant): VehicleSvgVariant
   switch (variant) {
     case "box_truck_photo":
       return "generic_box_svg";
+    case "kenworth_photo":
+      return "kenworth_svg";
     case "kenworth_svg":
     case "international_svg":
     case "generic_box_svg":

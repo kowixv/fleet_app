@@ -16,7 +16,7 @@ export interface MaskExclusionRect {
 }
 
 export interface VehicleArtworkConfig {
-  key: "peterbilt" | "freightliner" | "box-truck";
+  key: "peterbilt" | "freightliner" | "kenworth" | "box-truck";
   sourcePath: string;
   outputBasePath: string;
   outputMaskPath: string;
@@ -26,7 +26,7 @@ export interface VehicleArtworkConfig {
   minHeight: number;
   maxWidth: number;
   maxHeight: number;
-  hueRange: [number, number];
+  hueRanges: Array<[number, number]>;
   minimumSaturation: number;
   minimumValue: number;
   maskBlurRadius: number;
@@ -53,7 +53,7 @@ export const VEHICLE_THUMBNAIL_ARTWORK_CONFIGS: VehicleArtworkConfig[] = [
     minHeight: 900,
     maxWidth: 2400,
     maxHeight: 2400,
-    hueRange: [185, 252],
+    hueRanges: [[185, 252]],
     minimumSaturation: 0.18,
     minimumValue: 0.08,
     maskBlurRadius: 0.8,
@@ -80,7 +80,7 @@ export const VEHICLE_THUMBNAIL_ARTWORK_CONFIGS: VehicleArtworkConfig[] = [
     minHeight: 700,
     maxWidth: 2600,
     maxHeight: 2200,
-    hueRange: [185, 252],
+    hueRanges: [[185, 252]],
     minimumSaturation: 0.17,
     minimumValue: 0.07,
     maskBlurRadius: 0.75,
@@ -98,6 +98,41 @@ export const VEHICLE_THUMBNAIL_ARTWORK_CONFIGS: VehicleArtworkConfig[] = [
     ],
   },
   {
+    key: "kenworth",
+    sourcePath: path.join(sourceRoot, "kenworth.png"),
+    outputBasePath: path.join(generatedRoot, "kenworth-base.webp"),
+    outputMaskPath: path.join(generatedRoot, "kenworth-paint-mask.png"),
+    outputPreviewPath: path.join(generatedRoot, "kenworth-preview.webp"),
+    resizeWidth: 820,
+    minWidth: 1000,
+    minHeight: 600,
+    maxWidth: 2600,
+    maxHeight: 2200,
+    hueRanges: [
+      [340, 360],
+      [0, 22],
+    ],
+    minimumSaturation: 0.18,
+    minimumValue: 0.07,
+    maskBlurRadius: 0.8,
+    maskExpandPixels: 1,
+    minCoverage: 0.15,
+    maxCoverage: 0.62,
+    excludeRects: [
+      { label: "front chrome grille", leftRatio: 0.035, topRatio: 0.53, widthRatio: 0.12, heightRatio: 0.25 },
+      { label: "vertical Kenworth grille badge", leftRatio: 0.075, topRatio: 0.48, widthRatio: 0.025, heightRatio: 0.1 },
+      { label: "hood side intake", leftRatio: 0.31, topRatio: 0.39, widthRatio: 0.1, heightRatio: 0.12 },
+      { label: "hood side badge and T680 text", leftRatio: 0.36, topRatio: 0.59, widthRatio: 0.08, heightRatio: 0.06 },
+    ],
+    protectedSamples: [
+      { label: "white background", xRatio: 0.92, yRatio: 0.08, maxMaskValue: 8 },
+      { label: "front chrome grille", xRatio: 0.09, yRatio: 0.63, maxMaskValue: 24 },
+      { label: "front tire", xRatio: 0.35, yRatio: 0.82, maxMaskValue: 24 },
+      { label: "rear tire", xRatio: 0.87, yRatio: 0.80, maxMaskValue: 24 },
+      { label: "windshield", xRatio: 0.38, yRatio: 0.34, maxMaskValue: 24 },
+    ],
+  },
+  {
     key: "box-truck",
     sourcePath: path.join(sourceRoot, "box-truck.png"),
     outputBasePath: path.join(generatedRoot, "box-truck-base.webp"),
@@ -108,7 +143,7 @@ export const VEHICLE_THUMBNAIL_ARTWORK_CONFIGS: VehicleArtworkConfig[] = [
     minHeight: 700,
     maxWidth: 2600,
     maxHeight: 2200,
-    hueRange: [185, 255],
+    hueRanges: [[185, 255]],
     minimumSaturation: 0.18,
     minimumValue: 0.08,
     maskBlurRadius: 0.8,
@@ -121,4 +156,11 @@ export const VEHICLE_THUMBNAIL_ARTWORK_CONFIGS: VehicleArtworkConfig[] = [
       { label: "rear tire", xRatio: 0.82, yRatio: 0.80, maxMaskValue: 24 },
     ],
   },
-] as const;
+];
+
+export function hueMatchesRanges(hue: number, hueRanges: Array<[number, number]>): boolean {
+  return hueRanges.some(([start, end]) => {
+    if (start <= end) return hue >= start && hue <= end;
+    return hue >= start || hue <= end;
+  });
+}

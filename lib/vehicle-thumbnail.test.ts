@@ -2,7 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { describe, expect, it } from "vitest";
-import { VEHICLE_THUMBNAIL_ARTWORK_CONFIGS } from "../scripts/vehicle-thumbnail-asset-config";
+import { hueMatchesRanges, VEHICLE_THUMBNAIL_ARTWORK_CONFIGS } from "../scripts/vehicle-thumbnail-asset-config";
 import {
   GENERATED_VEHICLE_THUMBNAIL_ASSETS,
   VEHICLE_PHOTO_ASSETS,
@@ -38,9 +38,20 @@ describe("vehicle thumbnail selection", () => {
     expect(getVehicleThumbnailVariant({ make: "Unknown", model: "Custom", vehicle_type: "box_truck" })).toBe("box_truck_photo");
   });
 
-  it("keeps Kenworth and non-box International vehicles out of Peterbilt/Freightliner photos", () => {
-    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "truck" })).toBe("kenworth_svg");
-    expect(getVehicleThumbnailVariant({ make: null, model: "T880", vehicle_type: "truck" })).toBe("kenworth_svg");
+  it("maps Kenworth highway tractors to the Kenworth photo", () => {
+    const variant = getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "truck" });
+    expect(variant).toBe("kenworth_photo");
+    expect(variant).not.toBe("peterbilt_photo");
+    expect(variant).not.toBe("freightliner_photo");
+    expect(getVehicleThumbnailVariant({ make: "KENWORTH", model: "T680", vehicle_type: "truck" })).toBe("kenworth_photo");
+    expect(getVehicleThumbnailVariant({ make: null, model: "T680", vehicle_type: "truck" })).toBe("kenworth_photo");
+    expect(getVehicleThumbnailVariant({ make: "  KENWORTH  ", model: " Model T680 ", vehicle_type: "truck" })).toBe("kenworth_photo");
+    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "T880", vehicle_type: "truck" })).toBe("kenworth_photo");
+    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "W900", vehicle_type: "truck" })).toBe("kenworth_photo");
+  });
+
+  it("keeps box-truck type authoritative and non-box International vehicles distinct", () => {
+    expect(getVehicleThumbnailVariant({ make: "Kenworth", model: "T680", vehicle_type: "box_truck" })).toBe("box_truck_photo");
     expect(getVehicleThumbnailVariant({ make: "International", model: null, vehicle_type: "truck" })).toBe("international_svg");
     expect(getVehicleThumbnailVariant({ make: "International", model: "LT", vehicle_type: "truck" })).toBe("international_svg");
   });
@@ -81,10 +92,27 @@ describe("vehicle thumbnail color normalization", () => {
       colors: { bodyColor: "#dc2626" },
       photoAsset: VEHICLE_PHOTO_ASSETS.peterbilt_photo,
     });
+    expect(resolveVehicleThumbnail({ make: "Kenworth", model: "T680", truck_color: "blue" })).toMatchObject({
+      variant: "kenworth_photo",
+      colors: { bodyColor: "#2563eb" },
+      photoAsset: VEHICLE_PHOTO_ASSETS.kenworth_photo,
+    });
   });
 });
 
 describe("vehicle thumbnail asset manifest", () => {
+  it("contains the Kenworth photo manifest entry with local static paths", () => {
+    expect(VEHICLE_PHOTO_ASSETS.kenworth_photo.baseSrc).toBe("/vehicle-thumbnails/generated/kenworth-base.webp");
+    expect(VEHICLE_PHOTO_ASSETS.kenworth_photo.maskSrc).toBe("/vehicle-thumbnails/generated/kenworth-paint-mask.png");
+    expect(VEHICLE_PHOTO_ASSETS.kenworth_photo.previewSrc).toBe("/vehicle-thumbnails/generated/kenworth-preview.webp");
+    for (const assetPath of Object.values(VEHICLE_PHOTO_ASSETS.kenworth_photo).filter((value): value is string => typeof value === "string")) {
+      if (!assetPath.startsWith("/")) continue;
+      expect(assetPath).not.toMatch(/^https?:\/\//i);
+      expect(assetPath).not.toContain("kenworth t680");
+      expect(assetPath).not.toContain("..");
+    }
+  });
+
   it("uses only local static manifest paths", () => {
     for (const assetPath of GENERATED_VEHICLE_THUMBNAIL_ASSETS) {
       expect(assetPath.startsWith("/vehicle-thumbnails/generated/")).toBe(true);
@@ -98,6 +126,24 @@ describe("vehicle thumbnail asset manifest", () => {
       expect(existsSync(config.sourcePath)).toBe(true);
       expect(statSync(config.sourcePath).size).toBeGreaterThan(100_000);
     }
+    expect(existsSync(path.join(repoRoot, "public", "vehicle-thumbnails", "source", "kenworth.svg"))).toBe(true);
+  });
+});
+
+describe("vehicle thumbnail paint hue matching", () => {
+  it("matches red wraparound hues for Kenworth and excludes non-red hues", () => {
+    const kenworth = VEHICLE_THUMBNAIL_ARTWORK_CONFIGS.find((config) => config.key === "kenworth");
+    expect(kenworth).toBeTruthy();
+    expect(hueMatchesRanges(350, kenworth!.hueRanges)).toBe(true);
+    expect(hueMatchesRanges(5, kenworth!.hueRanges)).toBe(true);
+    expect(hueMatchesRanges(180, kenworth!.hueRanges)).toBe(false);
+  });
+
+  it("keeps existing blue asset hue detection intact", () => {
+    const peterbilt = VEHICLE_THUMBNAIL_ARTWORK_CONFIGS.find((config) => config.key === "peterbilt");
+    expect(peterbilt).toBeTruthy();
+    expect(hueMatchesRanges(212, peterbilt!.hueRanges)).toBe(true);
+    expect(hueMatchesRanges(5, peterbilt!.hueRanges)).toBe(false);
   });
 });
 
@@ -161,8 +207,8 @@ describe("generated vehicle thumbnail assets", () => {
         if ((data[index * info.channels + 3] ?? 0) > 16) active += 1;
       }
       const coverage = active / (info.width * info.height);
-      expect(coverage, `${config.key} mask coverage`).toBeGreaterThan(0.03);
-      expect(coverage, `${config.key} mask coverage`).toBeLessThan(0.65);
+      expect(coverage, `${config.key} mask coverage`).toBeGreaterThan(config.minCoverage * 0.9);
+      expect(coverage, `${config.key} mask coverage`).toBeLessThan(config.maxCoverage);
 
       for (const sample of config.protectedSamples) {
         const x = Math.min(info.width - 1, Math.max(0, Math.round(sample.xRatio * info.width)));
