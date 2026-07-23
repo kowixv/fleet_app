@@ -1,4 +1,4 @@
-export type VehiclePhotoVariant = "peterbilt_photo" | "freightliner_photo" | "box_truck_photo";
+export type VehiclePhotoVariant = "peterbilt_photo" | "freightliner_photo" | "kenworth_photo" | "box_truck_photo";
 
 export interface VehiclePhotoAsset {
   baseSrc: string;
@@ -31,6 +31,16 @@ export const VEHICLE_PHOTO_ASSETS: Record<VehiclePhotoVariant, VehiclePhotoAsset
     alt: "Freightliner semi truck",
     width: 820,
     height: 615,
+  },
+  kenworth_photo: {
+    baseSrc: "/vehicle-thumbnails/generated/kenworth-base.webp",
+    maskSrc: "/vehicle-thumbnails/generated/kenworth-paint-mask.png",
+    previewSrc: "/vehicle-thumbnails/generated/kenworth-preview.webp",
+    aspectRatio: 1170 / 675,
+    objectPosition: "center",
+    alt: "Kenworth T680 semi truck",
+    width: 820,
+    height: 473,
   },
   box_truck_photo: {
     baseSrc: "/vehicle-thumbnails/generated/box-truck-base.webp",

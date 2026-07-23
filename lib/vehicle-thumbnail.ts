@@ -85,7 +85,7 @@ export function getVehicleThumbnailVariant(vehicle: VehicleThumbnailVehicle): Ve
 
   if (isPeterbilt(make, model, identity)) return "peterbilt_photo";
   if (isFreightliner(make, model, identity)) return "freightliner_photo";
-  if (isKenworth(make, model, identity)) return "kenworth_svg";
+  if (isKenworth(make, model, identity)) return "kenworth_photo";
   if (hasToken(identity, "international")) return "international_svg";
 
   return isGenericBoxType(type) ? "generic_box_svg" : "generic_semi_svg";
@@ -103,7 +103,10 @@ export function getVehicleThumbnailColors(truckColor: unknown): VehicleThumbnail
 }
 
 export function isPhotoVariant(variant: VehicleThumbnailVariant): variant is VehiclePhotoVariant {
-  return variant === "peterbilt_photo" || variant === "freightliner_photo" || variant === "box_truck_photo";
+  return variant === "peterbilt_photo"
+    || variant === "freightliner_photo"
+    || variant === "kenworth_photo"
+    || variant === "box_truck_photo";
 }
 
 export function thumbnailLabel(variant: VehicleThumbnailVariant): string {
@@ -112,6 +115,8 @@ export function thumbnailLabel(variant: VehicleThumbnailVariant): string {
       return "Peterbilt semi truck thumbnail";
     case "freightliner_photo":
       return "Freightliner semi truck thumbnail";
+    case "kenworth_photo":
+      return "Kenworth T680 semi truck thumbnail";
     case "box_truck_photo":
       return "Box truck thumbnail";
     case "kenworth_svg":
