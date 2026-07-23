@@ -44,6 +44,8 @@ interface Pagination {
   total: number;
 }
 
+type ThumbnailPreviewVehicle = Pick<VehicleFormRow, "make" | "model" | "truck_color" | "vehicle_type">;
+
 function vehicleTypeLabel(value: string | null) {
   return VEHICLE_TYPE_OPTIONS.find((option) => option.value === value)?.label ?? value ?? "-";
 }
@@ -69,6 +71,15 @@ function vehicleDisplayName(row: VehicleFormRow) {
   return parts.length > 0 ? parts.join(" ") : vehicleTypeLabel(row.vehicle_type);
 }
 
+function previewFromRow(row: VehicleFormRow | null): ThumbnailPreviewVehicle {
+  return {
+    make: row?.make ?? null,
+    model: row?.model ?? null,
+    truck_color: row?.truck_color ?? null,
+    vehicle_type: row?.vehicle_type ?? "truck",
+  };
+}
+
 export default function VehicleResourceManager({
   rows,
   drivers,
@@ -86,6 +97,7 @@ export default function VehicleResourceManager({
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<VehicleFormRow | null>(null);
+  const [previewVehicle, setPreviewVehicle] = useState<ThumbnailPreviewVehicle>(() => previewFromRow(null));
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
   const [isPending, startTransition] = useTransition();
@@ -96,14 +108,20 @@ export default function VehicleResourceManager({
 
   function startAdd() {
     setEditing(null);
+    setPreviewVehicle(previewFromRow(null));
     setError("");
     setOpen(true);
   }
 
   function startEdit(row: VehicleFormRow) {
     setEditing(row);
+    setPreviewVehicle(previewFromRow(row));
     setError("");
     setOpen(true);
+  }
+
+  function updatePreviewField(field: keyof ThumbnailPreviewVehicle, value: string) {
+    setPreviewVehicle((current) => ({ ...current, [field]: value || null }));
   }
 
   function onSubmit(formData: FormData) {
@@ -162,7 +180,12 @@ export default function VehicleResourceManager({
                 <tr key={row.id} className="hover:bg-slate-50">
                   <td className="td">
                     <div className="flex min-w-[190px] items-center gap-3">
-                      <VehicleThumbnail vehicle={row} />
+                      <VehicleThumbnail
+                        make={row.make}
+                        model={row.model}
+                        color={row.truck_color}
+                        vehicleType={row.vehicle_type}
+                      />
                       <div className="min-w-0">
                         <div className="font-semibold text-slate-900">{row.unit_number}</div>
                         <div className="max-w-[150px] truncate text-xs text-slate-500" title={vehicleDisplayName(row)}>
@@ -221,12 +244,16 @@ export default function VehicleResourceManager({
           <div className="card my-8 w-full max-w-4xl">
             <div className="mb-4 flex items-center justify-between">
               <div className="flex items-center gap-3">
-                {editing && (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-slate-500">Preview</p>
                   <VehicleThumbnail
-                    vehicle={editing}
+                    make={previewVehicle.make}
+                    model={previewVehicle.model}
+                    color={previewVehicle.truck_color}
+                    vehicleType={previewVehicle.vehicle_type}
                     size="preview"
                   />
-                )}
+                </div>
                 <h2 className="font-semibold">{editing ? "Düzenle" : "Araç"}</h2>
               </div>
               <button onClick={() => setOpen(false)} className="text-slate-400">
@@ -250,7 +277,13 @@ export default function VehicleResourceManager({
                   </div>
                   <div>
                     <label className="label">Tip</label>
-                    <select name="vehicle_type" className="input" required defaultValue={editing?.vehicle_type ?? "truck"}>
+                    <select
+                      name="vehicle_type"
+                      className="input"
+                      required
+                      defaultValue={editing?.vehicle_type ?? "truck"}
+                      onChange={(event) => updatePreviewField("vehicle_type", event.target.value)}
+                    >
                       {VEHICLE_TYPE_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
@@ -270,11 +303,21 @@ export default function VehicleResourceManager({
                   </div>
                   <div>
                     <label className="label">Make</label>
-                    <input name="make" className="input" defaultValue={editing?.make ?? ""} />
+                    <input
+                      name="make"
+                      className="input"
+                      defaultValue={editing?.make ?? ""}
+                      onChange={(event) => updatePreviewField("make", event.target.value)}
+                    />
                   </div>
                   <div>
                     <label className="label">Model</label>
-                    <input name="model" className="input" defaultValue={editing?.model ?? ""} />
+                    <input
+                      name="model"
+                      className="input"
+                      defaultValue={editing?.model ?? ""}
+                      onChange={(event) => updatePreviewField("model", event.target.value)}
+                    />
                   </div>
                 </div>
                 <div className="grid gap-3 md:grid-cols-2">
@@ -284,7 +327,13 @@ export default function VehicleResourceManager({
                   </div>
                   <div>
                     <label className="label">Truck Color</label>
-                    <input name="truck_color" list="truck-color-suggestions" className="input" defaultValue={editing?.truck_color ?? ""} />
+                    <input
+                      name="truck_color"
+                      list="truck-color-suggestions"
+                      className="input"
+                      defaultValue={editing?.truck_color ?? ""}
+                      onChange={(event) => updatePreviewField("truck_color", event.target.value)}
+                    />
                     <datalist id="truck-color-suggestions">
                       {TRUCK_COLOR_SUGGESTIONS.map((color) => <option key={color} value={color} />)}
                     </datalist>

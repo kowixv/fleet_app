@@ -321,7 +321,13 @@ export default async function MaintenanceUnitDetailPage({
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">
             <div className="flex items-center gap-3">
-              <VehicleThumbnail vehicle={vehicle} />
+              <VehicleThumbnail
+                make={vehicle.make}
+                model={vehicle.model}
+                color={vehicle.truck_color}
+                vehicleType={vehicle.vehicle_type}
+                size="detail"
+              />
               <div>
                 <p className="text-sm text-slate-500">Unit</p>
                 <h1 className="text-2xl font-bold">{vehicle.unit_number}</h1>
