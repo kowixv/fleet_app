@@ -20,9 +20,15 @@ const mileageRule = {
 };
 
 describe("computePM - mileage", () => {
-  it("returns neutral without a baseline", () => {
+  it("requires setup without a mileage baseline", () => {
     const pm = computePM({ ...mileageRule, last_done_mileage: null }, 150_000, thresholds);
-    expect(pm).toMatchObject({ status: "ok", nextDue: null, remaining: null, label: "-" });
+    expect(pm).toMatchObject({
+      status: "setup_required",
+      needsSetup: true,
+      missingDimensions: ["miles"],
+      nextDue: null,
+      remaining: null,
+    });
   });
 
   it("uses the configured 2,000-mile due-soon threshold", () => {
@@ -110,6 +116,20 @@ describe("computePM - combined intervals", () => {
     expect(exact.status).toBe("due_now");
     expect(exact.triggeredBy).toBe("engine_hours");
     expect(computePM(combinedRule, 100_000, thresholds, "2026-07-02", 10_501).status).toBe("overdue");
+  });
+
+  it("keeps overdue as primary while reporting another missing baseline", () => {
+    const pm = computePM(
+      { ...combinedRule, last_done_engine_hours: null },
+      120_000,
+      thresholds,
+      "2026-07-02",
+      null,
+    );
+    expect(pm.status).toBe("overdue");
+    expect(pm.triggeredBy).toBe("miles");
+    expect(pm.needsSetup).toBe(true);
+    expect(pm.missingDimensions).toEqual(["engine_hours"]);
   });
 });
 

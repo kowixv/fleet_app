@@ -12,6 +12,7 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { todayISO, weekRange } from "@/lib/tz";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 
 export const dynamic = "force-dynamic";
 
@@ -105,6 +106,9 @@ export default async function Dashboard() {
   const expenses = (expRes.data ?? []).reduce((sum, expense) => sum + Number(expense.amount || 0), 0);
   const pendingImported = importedRes.count ?? 0;
   const activeVehicleRows = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "active");
+  const maintenanceVehicleRows = (vehiclesRes.data ?? []).filter((vehicle) =>
+    maintenanceVisibleVehicleStatuses().includes(String(vehicle.status)),
+  );
   const activeVehicles = activeVehicleRows.length;
   const inRepair = (vehiclesRes.data ?? []).filter((vehicle) => vehicle.status === "in_repair").length;
   const pendingSettlements = (settleRes.data ?? []).filter(
@@ -128,7 +132,7 @@ export default async function Dashboard() {
 
   const pmAlerts: PMAlert[] = (expandEffectiveMaintenanceRules(
     (rulesRes.data ?? []) as any[],
-    activeVehicleRows as any[],
+    maintenanceVehicleRows as any[],
     (statesRes.data ?? []) as any[],
   ) as unknown as DashboardRule[])
     .map((rule) => ({
@@ -146,6 +150,7 @@ export default async function Dashboard() {
   const datePMAlerts = pmAlerts.filter(({ pm }) => pm.unit === "days");
   const mileagePMAlerts = pmAlerts.filter(({ pm }) => pm.unit === "miles");
   const engineHourPMAlerts = pmAlerts.filter(({ pm }) => pm.unit === "engine_hours");
+  const setupRequiredCount = pmAlerts.filter(({ pm }) => pm.needsSetup).length;
 
   const repairWarningAmount = Number(settingsRes.data?.repair_warning_amount ?? 5_000);
   const expensiveMaintenance = ((maintenanceCostRes.data ?? []) as unknown as Array<{
@@ -164,7 +169,7 @@ export default async function Dashboard() {
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Dashboard</h1>
 
-      <div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
         <Stat label="Bu Hafta Gross" value={usd(gross)} big />
         <Stat label="Bu Hafta Masraf" value={usd(expenses)} />
         <Stat label="Bu Hafta Net" value={usd(gross - expenses)} />
@@ -176,6 +181,7 @@ export default async function Dashboard() {
         <MiniLink href="/settlements" label="Bekleyen Settlement" value={pendingSettlements} />
         <MiniLink href="/vehicles" label="Aktif Arac" value={activeVehicles} />
         <MiniLink href="/vehicles" label="Tamirde" value={inRepair} highlight={inRepair > 0} />
+        <MiniLink href="/maintenance/reminders?tab=setup" label="Kurulum Gerekli" value={setupRequiredCount} highlight={setupRequiredCount > 0} />
       </div>
 
       <div className="card">
