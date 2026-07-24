@@ -1,5 +1,6 @@
 import MaintenanceInspectionWorkflow from "@/components/MaintenanceInspectionWorkflow";
 import MaintenanceNav from "@/components/MaintenanceNav";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -15,7 +16,7 @@ export default async function MaintenanceInspectionsPage() {
     rulesResult,
     completedResult,
   ] = await Promise.all([
-    supabase.from("vehicles").select("id, unit_number").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("inspection_templates")
       .select(`
@@ -43,7 +44,7 @@ export default async function MaintenanceInspectionsPage() {
       .order("name"),
     supabase
       .from("vehicle_inspections")
-      .select("id, vehicle_id, template_id, inspection_type, inspection_date, inspector, shop, notes, maintenance_rule_id")
+      .select("id, vehicle_id, template_id, inspection_type, inspection_date, inspector, shop, notes, maintenance_rule_id, mark_rule_serviced, updated_at")
       .eq("status", "draft")
       .order("updated_at", { ascending: false })
       .limit(25),

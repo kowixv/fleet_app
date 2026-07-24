@@ -5,6 +5,7 @@ import { createServiceClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
+import { assertVehicleDispatchable } from "@/lib/dispatch-holds";
 
 const EDITABLE = [
   "load_number", "broker_name", "driver_name", "pickup_date", "pickup_location",
@@ -57,6 +58,16 @@ export async function approveImported(id: string) {
   if (imp.telegram_group_id) {
     const r = await supabase.from("telegram_groups").select("*").eq("id", imp.telegram_group_id).single();
     group = r.data;
+  }
+  const dispatchable = await assertVehicleDispatchable(
+    supabase,
+    profile.organization_id,
+    group?.vehicle_id ?? null,
+  );
+  if (!dispatchable.ok) {
+    await supabase.from("imported_loads").update({ status: "pending" }).eq("id", id);
+    revalidatePath("/imported");
+    return { error: dispatchable.error };
   }
 
   const { data: load, error } = await supabase

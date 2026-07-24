@@ -4,6 +4,7 @@ import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
 import { revalidatePath } from "next/cache";
 import { clean, isAllowedTable } from "@/lib/crud-allowlist";
+import { assertVehicleDispatchable } from "@/lib/dispatch-holds";
 import { geocodeAndActivateTracking } from "@/lib/tracking/activate";
 import { mileageRpcErrorMessage, validateOptionalInitialMileage } from "@/lib/vehicle-mileage";
 
@@ -46,6 +47,12 @@ export async function createRow(
     row.status ??= "active";
   }
   if (table === "loads") {
+    const dispatchable = await assertVehicleDispatchable(
+      supabase,
+      profile.organization_id,
+      typeof row.vehicle_id === "string" ? row.vehicle_id : null,
+    );
+    if (!dispatchable.ok) return { error: dispatchable.error };
     const { data, error } = await supabase
       .from(table)
       .insert(row)
@@ -83,9 +90,23 @@ export async function updateRow(
   const profile = await requireWriteRole();
   const supabase = await createClient();
   if (table === "loads") {
+    const patch = clean(table, values);
+    if (Object.prototype.hasOwnProperty.call(patch, "vehicle_id")) {
+      const { data: existing, error: existingError } = await supabase
+        .from("loads")
+        .select("vehicle_id")
+        .eq("id", id)
+        .maybeSingle();
+      if (existingError) return { error: existingError.message };
+      const nextVehicleId = typeof patch.vehicle_id === "string" ? patch.vehicle_id : null;
+      if (nextVehicleId && nextVehicleId !== existing?.vehicle_id) {
+        const dispatchable = await assertVehicleDispatchable(supabase, profile.organization_id, nextVehicleId);
+        if (!dispatchable.ok) return { error: dispatchable.error };
+      }
+    }
     const { data, error } = await supabase
       .from(table)
-      .update(clean(table, values))
+      .update(patch)
       .eq("id", id)
       .select("id, status, vehicle_id")
       .maybeSingle();

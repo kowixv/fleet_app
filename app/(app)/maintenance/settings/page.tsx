@@ -5,6 +5,7 @@ import MileageSnapshotControls from "@/components/MileageSnapshotControls";
 import { updateSettings } from "@/app/(app)/settings/actions";
 import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
 import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -13,7 +14,7 @@ export default async function MaintenanceSettingsPage() {
   const supabase = await createClient();
   const [settingsRes, vehiclesRes, inspectionTemplatesRes] = await Promise.all([
     supabase.from("settings").select("*").single(),
-    supabase.from("vehicles").select("id, unit_number").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("inspection_templates")
       .select(`
@@ -82,6 +83,16 @@ export default async function MaintenanceSettingsPage() {
             <label className="label">Invoice tutar toleransı ($)</label>
             <input name="maintenance_invoice_allocation_tolerance" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_invoice_allocation_tolerance ?? 1} className="input" />
           </div>
+          <label className="col-span-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+            <input name="dispatch_hold_on_critical_present" type="hidden" value="1" />
+            <input
+              name="dispatch_hold_on_critical"
+              type="checkbox"
+              defaultChecked={Boolean(settings?.dispatch_hold_on_critical)}
+              className="mt-0.5 h-4 w-4 accent-brand"
+            />
+            <span>Kritik inspection bulgularında da dispatch hold aç. “Aracı Çıkartma” bulguları bu ayardan bağımsız olarak her zaman hold açar.</span>
+          </label>
           <div className="col-span-2">
             <button type="submit" className="btn-primary">Kaydet</button>
           </div>
