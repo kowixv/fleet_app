@@ -2,6 +2,7 @@
 
 import {
   colorLabel,
+  getVehicleThumbnailTone,
   isPhotoVariant,
   resolveVehicleThumbnail,
   type VehicleSvgVariant,
@@ -122,8 +123,7 @@ function PhotoThumbnail({
     WebkitMaskPosition: asset.objectPosition,
     maskPosition: asset.objectPosition,
   };
-  const toneBlendMode = luminance > 0.72 ? "screen" : "multiply";
-  const toneOpacity = luminance > 0.72 ? 0.26 : luminance < 0.18 ? 0.3 : 0.12;
+  const tone = getVehicleThumbnailTone(luminance);
 
   return (
     <>
@@ -153,8 +153,8 @@ function PhotoThumbnail({
         style={{
           ...maskStyle,
           backgroundColor: bodyColor,
-          mixBlendMode: toneBlendMode,
-          opacity: toneOpacity,
+          mixBlendMode: tone.blendMode,
+          opacity: tone.opacity,
         }}
       />
     </>
@@ -163,6 +163,8 @@ function PhotoThumbnail({
 
 function renderSilhouette(variant: VehicleSvgVariant, props: SvgProps) {
   switch (variant) {
+    case "peterbilt_svg":
+      return <PeterbiltSemi {...props} />;
     case "kenworth_svg":
       return <KenworthSemi {...props} />;
     case "international_svg":
@@ -182,15 +184,37 @@ function fallbackSvgVariant(variant: VehicleThumbnailVariant): VehicleSvgVariant
     case "kenworth_photo":
       return "kenworth_svg";
     case "kenworth_svg":
+    case "peterbilt_svg":
     case "international_svg":
     case "generic_box_svg":
     case "generic_semi_svg":
       return variant;
     case "peterbilt_photo":
+      return "peterbilt_svg";
     case "freightliner_photo":
     default:
       return "generic_semi_svg";
   }
+}
+
+function PeterbiltSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {
+  return (
+    <svg viewBox="0 0 120 64" aria-hidden="true" className="h-full w-full">
+      <path d="M12 48h96l5 5H8z" fill={accentColor} />
+      <path d="M18 45V25c0-8 6-14 14-15h18c9 0 15 6 17 15l3 14 36 2 4 4H18z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.5" strokeLinejoin="round" />
+      <path d="M26 17h18v23H20V25c0-4 2-7 6-8z" fill={bodyColor} stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />
+      <path d="M48 18h10c5 4 8 9 9 16H48z" fill="#c7d7e8" stroke={outlineColor} strokeWidth="1" strokeLinejoin="round" />
+      <path d="M70 29h33l5 12H73z" fill={bodyColor} stroke={outlineColor} strokeWidth="1.1" strokeLinejoin="round" />
+      <path d="M99 31h10v14H99z" fill={accentColor} stroke={outlineColor} strokeWidth="1" />
+      <path d="M101 39h8v4h-8z" fill="#fde68a" />
+      <path d="M61 39h39" stroke={outlineColor} strokeWidth="1.2" strokeLinecap="round" />
+      <path d="M31 12h16" stroke={accentColor} strokeWidth="2" strokeLinecap="round" />
+      <path d="M21 42h18" stroke="#94a3b8" strokeWidth="1.2" strokeLinecap="round" />
+      <Wheel cx={31} cy={50} />
+      <Wheel cx={84} cy={50} />
+      <Wheel cx={99} cy={50} />
+    </svg>
+  );
 }
 
 function KenworthSemi({ bodyColor, accentColor, outlineColor }: SvgProps) {

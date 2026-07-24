@@ -9,6 +9,7 @@ import {
 } from "./vehicle-thumbnail-assets";
 import {
   getVehicleThumbnailColors,
+  getVehicleThumbnailTone,
   getVehicleThumbnailVariant,
   resolveVehicleThumbnail,
 } from "./vehicle-thumbnail";
@@ -66,8 +67,8 @@ describe("vehicle thumbnail color normalization", () => {
   it("supports named, multiword, and hex colors", () => {
     expect(getVehicleThumbnailColors("blue")).toMatchObject({ bodyColor: "#2563eb" });
     expect(getVehicleThumbnailColors("red")).toMatchObject({ bodyColor: "#dc2626" });
-    expect(getVehicleThumbnailColors("yellow")).toMatchObject({ bodyColor: "#eab308" });
-    expect(getVehicleThumbnailColors("white")).toMatchObject({ bodyColor: "#f8fafc", needsOutline: true });
+    expect(getVehicleThumbnailColors("yellow")).toMatchObject({ bodyColor: "#facc15" });
+    expect(getVehicleThumbnailColors("white")).toMatchObject({ bodyColor: "#ffffff", needsOutline: true });
     expect(getVehicleThumbnailColors("black")).toMatchObject({ bodyColor: "#111827" });
     expect(getVehicleThumbnailColors("silver")).toMatchObject({ bodyColor: "#a8b0ba" });
     expect(getVehicleThumbnailColors("dark-blue")).toMatchObject({ bodyColor: "#1e3a8a" });
@@ -84,6 +85,12 @@ describe("vehicle thumbnail color normalization", () => {
     expect(getVehicleThumbnailColors("transparent")).toMatchObject({ bodyColor: "#64748b" });
     expect(getVehicleThumbnailColors("currentColor")).toMatchObject({ bodyColor: "#64748b" });
     expect(getVehicleThumbnailColors("expression(alert(1))")).toMatchObject({ bodyColor: "#64748b" });
+  });
+
+  it("keeps bright colors vivid in photo thumbnail tone layers", () => {
+    expect(getVehicleThumbnailTone(getVehicleThumbnailColors("white").luminance)).toEqual({ blendMode: "screen", opacity: 0.72 });
+    expect(getVehicleThumbnailTone(getVehicleThumbnailColors("yellow").luminance)).toEqual({ blendMode: "screen", opacity: 0.42 });
+    expect(getVehicleThumbnailTone(getVehicleThumbnailColors("black").luminance)).toEqual({ blendMode: "multiply", opacity: 0.34 });
   });
 
   it("includes the resolved color and asset descriptor", () => {
@@ -167,6 +174,13 @@ describe("vehicle thumbnail UI integration", () => {
     expect(source).toContain("color={vehicle.truck_color}");
     expect(source).toContain("vehicleType={vehicle.vehicle_type}");
     expect(source).toContain("make, model, truck_color");
+  });
+
+  it("keeps a Peterbilt-specific SVG fallback for failed Peterbilt photo assets", () => {
+    const source = readFileSync(path.join(repoRoot, "components", "VehicleThumbnail.tsx"), "utf8");
+    expect(source).toContain("case \"peterbilt_photo\":");
+    expect(source).toContain("return \"peterbilt_svg\"");
+    expect(source).toContain("function PeterbiltSemi");
   });
 });
 
