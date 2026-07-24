@@ -1,7 +1,7 @@
 /**
  * GET /api/tracking/dashboard
  * Returns all active unit locations, load tracking states, and recent alerts.
- * Auth: session (admin/manager/owner)
+ * Auth: session (viewer/admin/manager/owner)
  */
 
 import { createClient } from "@/lib/supabase/server";
@@ -20,13 +20,13 @@ export async function GET() {
     .eq("id", user.id)
     .maybeSingle();
 
-  if (!profile || !["owner", "admin", "manager"].includes(profile.role)) {
+  if (!profile || !["owner", "admin", "manager", "viewer"].includes(profile.role)) {
     return new Response("Forbidden", { status: 403 });
   }
   const orgId = profile.organization_id;
 
   // Run all queries in parallel
-  const [unitsRes, activeLoadsRes, eventsRes] = await Promise.all([
+  const [unitsRes, activeLoadsRes, eventsRes, locationsRes] = await Promise.all([
     // Unit locations with vehicle info.
     // NOTE: no `people` embed here — `vehicles` has two FKs to `people`
     // (owner_id + assigned_driver_id), which makes a nested people embed
@@ -78,6 +78,21 @@ export async function GET() {
       .eq("organization_id", orgId)
       .order("created_at", { ascending: false })
       .limit(100),
+
+    // Saved support locations for map markers and nearby support lookup.
+    // Internal notes are intentionally omitted from dashboard payloads.
+    supabase
+      .from("fleet_locations")
+      .select(`
+        id, name, location_type, address_line, city, state, postal_code,
+        latitude, longitude, phone, business_hours, is_24_hour,
+        mobile_service, heavy_duty_capable, preferred_vendor,
+        services, internal_rating
+      `)
+      .eq("organization_id", orgId)
+      .eq("active", true)
+      .order("preferred_vendor", { ascending: false })
+      .order("name", { ascending: true }),
   ]);
 
   // Surface query errors instead of silently returning empty arrays —
@@ -85,10 +100,12 @@ export async function GET() {
   if (unitsRes.error) console.error("tracking/dashboard: units query failed", unitsRes.error);
   if (activeLoadsRes.error) console.error("tracking/dashboard: activeLoads query failed", activeLoadsRes.error);
   if (eventsRes.error) console.error("tracking/dashboard: events query failed", eventsRes.error);
+  if (locationsRes.error) console.error("tracking/dashboard: locations query failed", locationsRes.error);
 
   return Response.json({
     units: unitsRes.data ?? [],
     activeLoads: activeLoadsRes.data ?? [],
     events: eventsRes.data ?? [],
+    locations: locationsRes.data ?? [],
   });
 }

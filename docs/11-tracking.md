@@ -68,3 +68,53 @@ istiyorsan key ekle (bkz. `.env.example`).
   `alert-manager`, `eta`, `distance`, `geocode`, `activate`, `tablet-auth`, `types`)
 - UI: `components/tracking/*` (`TrackingDashboard`, `TrackingMap`, `LeafletMapInner`, `TrackingTable`,
   `AlertPanel`, `Badges`)
+
+## Saved Places / Nearby Support
+
+Tracking map supports organization-specific saved support locations. Migration:
+`supabase/migrations/20260723010000_tracking_fleet_locations.sql`.
+
+Supported categories: Yard, Mechanic, Mobile Mechanic, Tire, Dealer, Towing, Truck Parking, Truck Wash,
+Parts Store, Fuel Stop, Warehouse, Other.
+
+Workflow:
+
+1. Open `/tracking` and click **Manage Locations**.
+2. Add or edit a saved place. **Geocode Address** resolves coordinates once on demand and shows them
+   before save. Latitude/longitude can also be entered manually.
+3. **Click map to place location** enables map-click coordinate placement; the user still confirms with
+   **Save Place**.
+4. Saved-place filters can show/hide locations by category, Preferred only, 24/7 only, and Mobile Service only.
+5. Selecting a unit marker or tracking table row opens **Nearby Support**, sorted by **Approx. Distance**.
+   Default support types are mechanic, mobile mechanic, tire, dealer, towing, and yard. Radius options are
+   25, 50, 100, 250 miles, or All.
+
+Distance behavior:
+
+- **Approx. Distance** is local Haversine straight-line distance and does not call Google.
+- **Driving ETA** is calculated only when clicked through `/api/tracking/support-eta`, uses Google Routes,
+  caches briefly, and never overwrites the load delivery ETA.
+- If Google Routes is unavailable, Approx. Distance remains visible and the tracking page does not crash.
+
+Actions:
+
+- **Call** uses a sanitized `tel:` link.
+- **Directions** opens Google Maps with destination coordinates and, when a unit is selected, unit coordinates
+  as origin.
+- **Copy Address** and **Copy Driver Message** write only to clipboard. No SMS, WhatsApp, Telegram, or email is
+  sent automatically.
+- **Create Maintenance Case** navigates to maintenance with query-string prefill for vehicle, shop, location,
+  and a tracking-origin note. It does not create an expense or mark the vehicle in repair automatically.
+
+Security:
+
+- `fleet_locations` is scoped by `organization_id` and RLS uses `current_org_id()`.
+- `owner`, `admin`, `manager`, and `viewer` can read. Only `owner`, `admin`, and `manager` can create, edit,
+  or soft-delete locations.
+- API writes resolve `organization_id` from the authenticated profile and never trust browser-provided org IDs.
+- Dashboard map payload excludes internal notes. Leaflet marker HTML uses only trusted marker constants; user
+  fields render through React popups.
+
+Scale note: the first version sends active saved places with the dashboard payload, suitable for roughly
+20-100 units and 20-500 locations. Larger fleets should add bounding-box queries, PostGIS, marker clustering,
+and separate static-location caching.
