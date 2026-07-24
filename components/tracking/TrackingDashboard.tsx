@@ -1,10 +1,14 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import TrackingMap, { type MapUnit } from "@/components/tracking/TrackingMap";
+import TrackingMap, { type MapFleetLocation, type MapUnit } from "@/components/tracking/TrackingMap";
 import TrackingTable, { type TrackingRow } from "@/components/tracking/TrackingTable";
 import AlertPanel, { type AlertItem } from "@/components/tracking/AlertPanel";
+import FleetLocationsManager from "@/components/tracking/FleetLocationsManager";
+import NearbySupportPanel from "@/components/tracking/NearbySupportPanel";
 import type { TrackingMode, GeofenceStatus, RiskScore, AppointmentStatus } from "@/lib/tracking/types";
+import type { FleetLocationType } from "@/lib/tracking/location-types";
+import { FLEET_LOCATION_LABELS, FLEET_LOCATION_TYPES } from "@/lib/tracking/location-types";
 
 interface DashboardUnit {
   unit_id: string;
@@ -57,17 +61,40 @@ interface DashboardEvent {
   loads: { load_number: string | null } | null;
 }
 
+interface DashboardLocation extends MapFleetLocation {}
+
 const POLL_INTERVAL_MS = 10_000;
+
+const LOCATION_FILTERS: Array<{ label: string; types: FleetLocationType[] }> = [
+  { label: "Yard", types: ["yard"] },
+  { label: "Mechanic", types: ["mechanic_shop", "mobile_mechanic"] },
+  { label: "Tire", types: ["tire_shop"] },
+  { label: "Dealer", types: ["dealer"] },
+  { label: "Towing", types: ["towing"] },
+  { label: "Parking", types: ["truck_parking"] },
+  { label: "Fuel", types: ["fuel_stop"] },
+  { label: "Other", types: ["other"] },
+];
 
 export default function TrackingDashboard() {
   const [units, setUnits] = useState<DashboardUnit[]>([]);
   const [activeLoads, setActiveLoads] = useState<DashboardLoad[]>([]);
   const [events, setEvents] = useState<DashboardEvent[]>([]);
+  const [locations, setLocations] = useState<DashboardLocation[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [selectedLocationId, setSelectedLocationId] = useState<string | null>(null);
   const [activeFilter, setActiveFilter] = useState<string>("all");
   const [loadingETA, setLoadingETA] = useState<string | null>(null);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [showLocations, setShowLocations] = useState(true);
+  const [visibleLocationTypes, setVisibleLocationTypes] = useState<FleetLocationType[]>([...FLEET_LOCATION_TYPES]);
+  const [preferredOnly, setPreferredOnly] = useState(false);
+  const [open24Only, setOpen24Only] = useState(false);
+  const [mobileOnly, setMobileOnly] = useState(false);
+  const [placementActive, setPlacementActive] = useState(false);
+  const [placementPreview, setPlacementPreview] = useState<{ latitude: number; longitude: number } | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const fetchDashboard = useCallback(async () => {
@@ -78,6 +105,7 @@ export default function TrackingDashboard() {
       setUnits(data.units ?? []);
       setActiveLoads(data.activeLoads ?? []);
       setEvents(data.events ?? []);
+      setLocations(data.locations ?? []);
       setLastRefresh(new Date());
     } catch {
       // Silent fail — keep showing last known state
@@ -150,6 +178,14 @@ export default function TrackingDashboard() {
     };
   });
 
+  const selectedUnit = mapUnits.find((unit) => unit.unit_id === selectedUnitId) ?? null;
+
+  const mapLocations: MapFleetLocation[] = locations.filter((location) =>
+    (!preferredOnly || location.preferred_vendor) &&
+    (!open24Only || location.is_24_hour) &&
+    (!mobileOnly || location.mobile_service),
+  );
+
   // Build table rows
   const tableRows: TrackingRow[] = activeLoads.map((lt) => {
     const unitId = lt.loads?.vehicle_id ?? null;
@@ -189,6 +225,15 @@ export default function TrackingDashboard() {
 
   const unackCount = events.filter((e) => !e.acknowledged).length;
 
+  function toggleLocationTypes(types: FleetLocationType[]) {
+    setVisibleLocationTypes((prev) => {
+      const allActive = types.every((type) => prev.includes(type));
+      return allActive
+        ? prev.filter((type) => !types.includes(type))
+        : Array.from(new Set([...prev, ...types]));
+    });
+  }
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -210,6 +255,12 @@ export default function TrackingDashboard() {
             </span>
           )}
           <button
+            onClick={() => setManagerOpen((open) => !open)}
+            className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
+          >
+            Manage Locations
+          </button>
+          <button
             onClick={fetchDashboard}
             className="px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-sm text-gray-600 hover:bg-gray-50 transition-colors"
           >
@@ -224,11 +275,83 @@ export default function TrackingDashboard() {
         </div>
       ) : (
         <>
+          <FleetLocationsManager
+            open={managerOpen}
+            mapDraft={placementPreview}
+            placementActive={placementActive}
+            onStartPlacement={() => setPlacementActive(true)}
+            onStopPlacement={() => setPlacementActive(false)}
+            onChanged={fetchDashboard}
+            onClose={() => {
+              setManagerOpen(false);
+              setPlacementActive(false);
+            }}
+          />
+
+          {/* Saved-place map controls */}
+          <div className="space-y-3 rounded-xl border border-gray-200 bg-white p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowLocations((value) => !value)}
+                className={`rounded-full px-3 py-1 text-xs font-medium ${showLocations ? "bg-blue-600 text-white" : "bg-gray-100 text-gray-600"}`}
+              >
+                {showLocations ? "Hide Locations" : "Show Locations"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleLocationTypes([...FLEET_LOCATION_TYPES])}
+                className="rounded-full bg-gray-100 px-3 py-1 text-xs font-medium text-gray-600 hover:bg-gray-200"
+              >
+                All
+              </button>
+              {LOCATION_FILTERS.map((filter) => {
+                const active = filter.types.every((type) => visibleLocationTypes.includes(type));
+                return (
+                  <button
+                    key={filter.label}
+                    type="button"
+                    onClick={() => toggleLocationTypes(filter.types)}
+                    className={`rounded-full px-3 py-1 text-xs font-medium ${active ? "bg-slate-800 text-white" : "bg-gray-100 text-gray-600 hover:bg-gray-200"}`}
+                    title={filter.types.map((type) => FLEET_LOCATION_LABELS[type]).join(", ")}
+                  >
+                    {filter.label}
+                  </button>
+                );
+              })}
+              <label className="flex items-center gap-1.5 rounded-full bg-gray-50 px-3 py-1 text-xs text-gray-600">
+                <input type="checkbox" checked={preferredOnly} onChange={(e) => setPreferredOnly(e.target.checked)} />
+                Preferred only
+              </label>
+              <label className="flex items-center gap-1.5 rounded-full bg-gray-50 px-3 py-1 text-xs text-gray-600">
+                <input type="checkbox" checked={open24Only} onChange={(e) => setOpen24Only(e.target.checked)} />
+                24/7 only
+              </label>
+              <label className="flex items-center gap-1.5 rounded-full bg-gray-50 px-3 py-1 text-xs text-gray-600">
+                <input type="checkbox" checked={mobileOnly} onChange={(e) => setMobileOnly(e.target.checked)} />
+                Mobile service only
+              </label>
+            </div>
+          </div>
+
           {/* Map */}
           <TrackingMap
             units={mapUnits}
+            locations={mapLocations}
+            showLocations={showLocations}
+            visibleLocationTypes={visibleLocationTypes}
+            selectedLocationId={selectedLocationId}
             selectedUnitId={selectedUnitId}
             onSelectUnit={(id) => setSelectedUnitId(id === selectedUnitId ? null : id)}
+            onSelectLocation={setSelectedLocationId}
+            onMapClick={placementActive ? (point) => setPlacementPreview(point) : undefined}
+            placementPreview={placementPreview}
+          />
+
+          <NearbySupportPanel
+            unit={selectedUnit}
+            locations={locations}
+            onSelectLocation={setSelectedLocationId}
           />
 
           {/* Main content: table + alerts */}
