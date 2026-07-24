@@ -1,6 +1,6 @@
 import { VEHICLE_PHOTO_ASSETS, type VehiclePhotoAsset, type VehiclePhotoVariant } from "./vehicle-thumbnail-assets";
 
-export type VehicleSvgVariant = "kenworth_svg" | "international_svg" | "generic_semi_svg" | "generic_box_svg";
+export type VehicleSvgVariant = "peterbilt_svg" | "kenworth_svg" | "international_svg" | "generic_semi_svg" | "generic_box_svg";
 
 export type VehicleThumbnailVariant = VehiclePhotoVariant | VehicleSvgVariant;
 
@@ -27,14 +27,19 @@ export interface VehicleThumbnailDescriptor {
   label: string;
 }
 
+export interface VehicleThumbnailTone {
+  blendMode: "multiply" | "screen";
+  opacity: number;
+}
+
 const NAMED_COLORS: Record<string, string> = {
-  white: "#f8fafc",
+  white: "#ffffff",
   black: "#111827",
   blue: "#2563eb",
   "dark blue": "#1e3a8a",
   navy: "#1e3a8a",
   "light blue": "#60a5fa",
-  yellow: "#eab308",
+  yellow: "#facc15",
   red: "#dc2626",
   silver: "#a8b0ba",
   "metallic silver": "#a8b0ba",
@@ -102,6 +107,15 @@ export function getVehicleThumbnailColors(truckColor: unknown): VehicleThumbnail
   };
 }
 
+export function getVehicleThumbnailTone(luminance: number): VehicleThumbnailTone {
+  if (luminance > 0.85) return { blendMode: "screen", opacity: 0.72 };
+  if (luminance > 0.55) return { blendMode: "screen", opacity: 0.42 };
+  if (luminance > 0.34) return { blendMode: "screen", opacity: 0.24 };
+  if (luminance < 0.08) return { blendMode: "multiply", opacity: 0.34 };
+  if (luminance < 0.2) return { blendMode: "multiply", opacity: 0.18 };
+  return { blendMode: "multiply", opacity: 0.08 };
+}
+
 export function isPhotoVariant(variant: VehicleThumbnailVariant): variant is VehiclePhotoVariant {
   return variant === "peterbilt_photo"
     || variant === "freightliner_photo"
@@ -119,6 +133,8 @@ export function thumbnailLabel(variant: VehicleThumbnailVariant): string {
       return "Kenworth T680 semi truck thumbnail";
     case "box_truck_photo":
       return "Box truck thumbnail";
+    case "peterbilt_svg":
+      return "Peterbilt 579-style semi truck thumbnail";
     case "kenworth_svg":
       return "Kenworth-style semi truck thumbnail";
     case "international_svg":
@@ -197,7 +213,7 @@ function hasToken(value: string, token: string): boolean {
 }
 
 function accentForBodyColor(bodyColor: string, luminance: number): string {
-  if (bodyColor === "#f8fafc" || luminance > 0.72) return "#94a3b8";
+  if (bodyColor === "#ffffff" || luminance > 0.72) return "#94a3b8";
   if (luminance < 0.2) return "#cbd5e1";
   return "#334155";
 }
