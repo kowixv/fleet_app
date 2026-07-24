@@ -4,6 +4,7 @@ import {
   cloneInspectionTemplate,
   completeVehicleInspection,
   createInspectionWorkOrderDraft,
+  loadVehicleInspectionDraft,
   saveVehicleInspectionDraft,
   startVehicleInspection,
 } from "@/app/(app)/maintenance/inspection-actions";
@@ -19,7 +20,14 @@ import {
   type InspectionResultInput,
   type InspectionTemplateItem,
 } from "@/lib/inspection";
-import { useEffect, useMemo, useState, useTransition, type Dispatch, type SetStateAction } from "react";
+import {
+  emptyInspectionResult,
+  isLatestInspectionSave,
+  mergeInspectionDraftResults,
+} from "@/lib/inspection-draft";
+import { useRouter } from "next/navigation";
+import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
+import { useEffect, useMemo, useRef, useState, useTransition, type Dispatch, type SetStateAction } from "react";
 
 interface OptionRow { id: string; unit_number: string }
 interface RuleOption { id: string; vehicle_id: string; service_type: string }
@@ -47,6 +55,7 @@ interface DraftInspection {
   shop: string | null;
   notes: string | null;
   maintenance_rule_id: string | null;
+  updated_at?: string | null;
 }
 interface FindingRow {
   id: string;
@@ -82,10 +91,6 @@ const TRACKED_TRENDS = [
   "Battery CCA",
 ];
 
-function emptyResult(item: TemplateItem): InspectionResultInput {
-  return { template_item_id: item.id, passed: item.input_type === "pass_fail" ? true : null };
-}
-
 function resultValue(result: InspectionResultInput, item: TemplateItem): string | boolean {
   if (item.input_type === "pass_fail") return result.passed ?? true;
   if (item.input_type === "checkbox") return result.value_bool ?? false;
@@ -112,6 +117,7 @@ export default function MaintenanceInspectionWorkflow({
   showTemplateManagement?: boolean;
   revalidatePath?: string;
 }) {
+  const router = useRouter();
   const [vehicleId, setVehicleId] = useState(vehicles[0]?.id ?? "");
   const [templateId, setTemplateId] = useState(templates[0]?.id ?? "");
   const [ruleId, setRuleId] = useState("");
@@ -126,6 +132,12 @@ export default function MaintenanceInspectionWorkflow({
   const [cloneName, setCloneName] = useState("");
   const [workOrderNotes, setWorkOrderNotes] = useState<Record<string, string>>({});
   const [pending, startTransition] = useTransition();
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "failed">("idle");
+  const [lastSavedAt, setLastSavedAt] = useState<string | null>(null);
+  const draftUpdatedAtRef = useRef<string | null>(null);
+  const skipTemplateResetRef = useRef(false);
+  const skipAutosaveRef = useRef(false);
+  const saveSeqRef = useRef(0);
 
   const visibleTemplates = useMemo(() => {
     const byType = new Map<string, TemplateRow>();
@@ -141,26 +153,45 @@ export default function MaintenanceInspectionWorkflow({
     () => selectedTemplate?.items.filter((item) => item.active).sort((a, b) => a.sort_order - b.sort_order) ?? [],
     [selectedTemplate],
   );
-  const selectedDraft = drafts.find((draft) => draft.id === inspectionId) ?? null;
   const openCritical = hasDoNotDispatchFinding(findings);
   const visibleRules = rules.filter((rule) => rule.vehicle_id === vehicleId);
   const editorTemplate = templates.find((template) => template.id === templateEditorId) ?? null;
 
   useEffect(() => {
-    setResults(Object.fromEntries(selectedTemplateItems.map((item) => [item.id, emptyResult(item)])));
+    if (skipTemplateResetRef.current) {
+      skipTemplateResetRef.current = false;
+      return;
+    }
+    setResults(Object.fromEntries(selectedTemplateItems.map((item) => [item.id, emptyInspectionResult(item)])));
   }, [selectedTemplateItems]);
 
   useEffect(() => {
     if (!inspectionId) return;
+    if (skipAutosaveRef.current) {
+      skipAutosaveRef.current = false;
+      return;
+    }
+    const seq = saveSeqRef.current + 1;
+    saveSeqRef.current = seq;
+    setSaveState("saving");
     const timer = window.setTimeout(() => {
       saveVehicleInspectionDraft(inspectionId, {
         inspector,
         shop,
         notes,
         mark_rule_serviced: markRuleServiced,
+        expected_updated_at: draftUpdatedAtRef.current,
         results: Object.values(results),
       }).then((result) => {
-        if (!result.ok) setMessage({ type: "error", text: result.error });
+        if (!isLatestInspectionSave(seq, saveSeqRef.current)) return;
+        if (!result.ok) {
+          setSaveState("failed");
+          setMessage({ type: "error", text: result.error });
+          return;
+        }
+        draftUpdatedAtRef.current = result.updatedAt ?? null;
+        setLastSavedAt(new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
+        setSaveState("saved");
       });
     }, 900);
     return () => window.clearTimeout(timer);
@@ -169,8 +200,36 @@ export default function MaintenanceInspectionWorkflow({
   function updateResult(item: TemplateItem, patch: Partial<InspectionResultInput>) {
     setResults((current) => ({
       ...current,
-      [item.id]: { ...(current[item.id] ?? emptyResult(item)), template_item_id: item.id, ...patch },
+      [item.id]: { ...(current[item.id] ?? emptyInspectionResult(item)), template_item_id: item.id, ...patch },
     }));
+  }
+
+  async function hydrateDraft(draftId: string) {
+    const loaded = await loadVehicleInspectionDraft(draftId);
+    if (!loaded.ok) {
+      setMessage({ type: "error", text: loaded.error });
+      return false;
+    }
+    const nextTemplateId = loaded.draft.template_id ?? templates[0]?.id ?? "";
+    const templateItems = (templates.find((template) => template.id === nextTemplateId)?.items ?? [])
+      .filter((item) => item.active)
+      .sort((a, b) => a.sort_order - b.sort_order);
+    skipTemplateResetRef.current = true;
+    skipAutosaveRef.current = true;
+    setVehicleId(loaded.draft.vehicle_id);
+    setTemplateId(nextTemplateId);
+    setInspectionId(loaded.draft.id);
+    setInspector(loaded.draft.inspector ?? "");
+    setShop(loaded.draft.shop ?? "");
+    setNotes(loaded.draft.notes ?? "");
+    setRuleId(loaded.draft.maintenance_rule_id ?? "");
+    setMarkRuleServiced(Boolean(loaded.draft.mark_rule_serviced));
+    draftUpdatedAtRef.current = loaded.draft.updated_at ?? null;
+    setResults(mergeInspectionDraftResults(templateItems, loaded.results));
+    setSaveState("saved");
+    setLastSavedAt(loaded.draft.updated_at ? new Date(loaded.draft.updated_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }) : null);
+    setMessage({ type: "ok", text: "Taslak açıldı." });
+    return true;
   }
 
   function startOrResume() {
@@ -184,20 +243,46 @@ export default function MaintenanceInspectionWorkflow({
         setMessage({ type: "error", text: result.error });
         return;
       }
-      setInspectionId(result.inspectionId);
-      setMessage({ type: "ok", text: "Inspection taslağı hazır. Autosave aktif." });
+      if (await hydrateDraft(result.inspectionId)) {
+        setMessage({ type: "ok", text: "Inspection taslağı hazır. Autosave aktif." });
+      }
     });
   }
 
   function resumeDraft(draft: DraftInspection) {
-    setVehicleId(draft.vehicle_id);
-    setTemplateId(draft.template_id ?? templates[0]?.id ?? "");
-    setInspectionId(draft.id);
-    setInspector(draft.inspector ?? "");
-    setShop(draft.shop ?? "");
-    setNotes(draft.notes ?? "");
-    setRuleId(draft.maintenance_rule_id ?? "");
-    setMessage({ type: "ok", text: "Taslak açıldı." });
+    startTransition(async () => {
+      await hydrateDraft(draft.id);
+    });
+  }
+
+  function manualSaveDraft(closeAfter = false) {
+    if (!inspectionId) return;
+    startTransition(async () => {
+      const seq = saveSeqRef.current + 1;
+      saveSeqRef.current = seq;
+      setSaveState("saving");
+      const result = await saveVehicleInspectionDraft(inspectionId, {
+        inspector,
+        shop,
+        notes,
+        mark_rule_serviced: markRuleServiced,
+        expected_updated_at: draftUpdatedAtRef.current,
+        results: Object.values(results),
+      });
+      if (!isLatestInspectionSave(seq, saveSeqRef.current)) return;
+      if (!result.ok) {
+        setSaveState("failed");
+        setMessage({ type: "error", text: result.error });
+        return;
+      }
+      draftUpdatedAtRef.current = result.updatedAt ?? null;
+      setLastSavedAt(new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }));
+      setSaveState("saved");
+      if (closeAfter) {
+        setInspectionId("");
+        setMessage({ type: "ok", text: "Taslak kaydedildi ve kapatıldı." });
+      }
+    });
   }
 
   function complete() {
@@ -213,10 +298,14 @@ export default function MaintenanceInspectionWorkflow({
         shop,
         notes,
         mark_rule_serviced: markRuleServiced,
+        expected_updated_at: draftUpdatedAtRef.current,
         results: Object.values(results),
       });
       setMessage(result.ok ? { type: "ok", text: "Inspection tamamlandı." } : { type: "error", text: result.error });
-      if (result.ok) window.location.reload();
+      if (result.ok) {
+        setInspectionId("");
+        router.refresh();
+      }
     });
   }
 
@@ -227,7 +316,7 @@ export default function MaintenanceInspectionWorkflow({
     startTransition(async () => {
       const result = await cloneInspectionTemplate(editorTemplate.id, name);
       setMessage(result.ok ? { type: "ok", text: "Checklist kopyalandı." } : { type: "error", text: result.error });
-      if (result.ok) window.location.reload();
+      if (result.ok) router.refresh();
     });
   }
 
@@ -250,7 +339,7 @@ export default function MaintenanceInspectionWorkflow({
     if (!selectedTemplate) return [];
     return selectedTemplateItems
       .map((item) => {
-        const finding = classifyInspectionResult(item, results[item.id] ?? emptyResult(item));
+        const finding = classifyInspectionResult(item, results[item.id] ?? emptyInspectionResult(item));
         return finding ? { item, finding } : null;
       })
       .filter(Boolean) as Array<{ item: TemplateItem; finding: { severity: FindingSeverity; recommended_action: string } }>;
@@ -261,7 +350,7 @@ export default function MaintenanceInspectionWorkflow({
       {message && <p className={`rounded-lg border px-3 py-2 text-sm ${message.type === "ok" ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-red-200 bg-red-50 text-red-700"}`}>{message.text}</p>}
       {openCritical && (
         <div className="rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-800">
-          <b>SEVKE ÇIKMASIN</b> - Kritik açık inspection bulguları yetkili inceleme gerektirir. Araç durumu otomatik değiştirilmez.
+          <b>{MAINTENANCE_TERMS.doNotDispatch}</b> - Kritik açık inspection bulguları yetkili inceleme gerektirir. Araç durumu otomatik değiştirilmez.
         </div>
       )}
 
@@ -332,7 +421,7 @@ export default function MaintenanceInspectionWorkflow({
                 </thead>
                 <tbody className="divide-y divide-slate-100">
                   {selectedTemplateItems.map((item) => {
-                    const result = results[item.id] ?? emptyResult(item);
+                    const result = results[item.id] ?? emptyInspectionResult(item);
                     const finding = classifyInspectionResult(item, result);
                     return (
                       <tr key={item.id}>
@@ -358,8 +447,17 @@ export default function MaintenanceInspectionWorkflow({
               </table>
             </div>
             {localFindings.length > 0 && <p className="text-sm text-amber-700">Tamamlandığında {localFindings.length} bulgu oluşturulacak.</p>}
-            <div className="flex justify-end">
-              <button type="button" className="btn-primary" disabled={pending} onClick={complete}>Inspection Tamamla</button>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm" aria-live="polite">
+                {saveState === "saving" && <span className="text-slate-600">{MAINTENANCE_TERMS.savingDraft}</span>}
+                {saveState === "saved" && <span className="text-emerald-700">{MAINTENANCE_TERMS.draftSaved}{lastSavedAt ? ` · ${lastSavedAt}` : ""}</span>}
+                {saveState === "failed" && <span className="text-red-700">{MAINTENANCE_TERMS.draftSaveFailed}</span>}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className="btn-ghost" disabled={pending || saveState === "saving"} onClick={() => manualSaveDraft(false)}>{MAINTENANCE_TERMS.saveDraft}</button>
+                <button type="button" className="btn-ghost" disabled={pending || saveState === "saving"} onClick={() => manualSaveDraft(true)}>{MAINTENANCE_TERMS.saveAndCloseDraft}</button>
+                <button type="button" className="btn-primary" disabled={pending} onClick={complete}>Inspection Tamamla</button>
+              </div>
             </div>
           </div>
         )}
