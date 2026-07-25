@@ -131,6 +131,10 @@ export interface MaintenanceCostSummary {
   roadCallsPer100k: number | null;
   repeatRepairRate30Days: number;
   totalBreakdownImpact: number;
+  directMaintenanceCost: number;
+  travelHotelImpact: number;
+  estimatedLostContribution: number;
+  totalEstimatedOperationalImpact: number;
   byCategory: Array<{ category: MaintenanceCostCategory; totalCost: number }>;
   byShop: Array<{ shop: string; totalCost: number }>;
   unitRanking: UnitCostSummary[];
@@ -259,6 +263,10 @@ export function calculateTotalBreakdownImpact(cost: MaintenanceCostBreakdown): n
   return calculateMaintenanceCpmCost(cost) + money(cost.hotel_travel_cost);
 }
 
+export function calculateDirectMaintenanceCost(cost: MaintenanceCostBreakdown): number {
+  return calculateMaintenanceCpmCost(cost) - money(cost.towing_cost) - money(cost.road_service_cost);
+}
+
 export function calculateCpm(cost: number, milesDriven: number | null | undefined): number | null {
   const miles = Number(milesDriven ?? 0);
   if (!Number.isFinite(miles) || miles <= 0) return null;
@@ -352,6 +360,7 @@ function countRepeatRepairs(rows: MaintenanceCostRow[], withinDays = 30): number
 export function summarizeMaintenanceCosts(
   rows: MaintenanceCostRow[],
   snapshots: MileagePeriodSnapshot[],
+  averageDailyContribution = 0,
 ): MaintenanceCostSummary {
   const miles = mileageByVehicle(snapshots);
   const byVehicle = new Map<string, MaintenanceCostRow[]>();
@@ -360,6 +369,8 @@ export function summarizeMaintenanceCosts(
   let totalCost = 0;
   let cpmCost = 0;
   let totalBreakdownImpact = 0;
+  let directMaintenanceCost = 0;
+  let travelHotelImpact = 0;
   let plannedCost = 0;
   let unscheduledCost = 0;
   let warrantyRecovery = 0;
@@ -375,6 +386,8 @@ export function summarizeMaintenanceCosts(
     totalCost += total;
     cpmCost += cpm;
     totalBreakdownImpact += calculateTotalBreakdownImpact(row);
+    directMaintenanceCost += calculateDirectMaintenanceCost(row);
+    travelHotelImpact += money(row.hotel_travel_cost);
     if (row.planned) plannedCost += total;
     else unscheduledCost += total;
     warrantyRecovery += Math.abs(money(row.warranty_recovery));
@@ -417,6 +430,7 @@ export function summarizeMaintenanceCosts(
 
   const totalMiles = [...miles.values()].reduce((sum, value) => sum + value, 0);
   const fleetCpm = calculateCpm(cpmCost, totalMiles);
+  const estimatedLostContribution = downtimeDays * Math.max(0, averageDailyContribution);
   const aboveFleetAverage = fleetCpm == null
     ? []
     : unitRanking.filter((unit) => unit.cpm != null && unit.cpm > fleetCpm * 1.25);
@@ -425,6 +439,11 @@ export function summarizeMaintenanceCosts(
     totalCost,
     cpmCost,
     totalBreakdownImpact,
+    directMaintenanceCost,
+    travelHotelImpact,
+    estimatedLostContribution,
+    totalEstimatedOperationalImpact:
+      directMaintenanceCost + travelHotelImpact + towingRoadServiceCost + estimatedLostContribution,
     fleetCpm,
     insufficientMileage: totalMiles <= 0,
     plannedCost,
