@@ -66,6 +66,7 @@ interface FindingRow {
   notes: string | null;
   recommended_action: string | null;
   work_order_status: string | null;
+  work_order_id: string | null;
   vehicles: { unit_number: string } | null;
 }
 interface TrendRow {
@@ -331,7 +332,12 @@ export default function MaintenanceInspectionWorkflow({
     const woNotes = workOrderNotes[finding.id] ?? finding.recommended_action ?? "";
     startTransition(async () => {
       const result = await createInspectionWorkOrderDraft(finding.id, woNotes);
-      setMessage(result.ok ? { type: "ok", text: "Work-order taslağı oluşturuldu." } : { type: "error", text: result.error });
+      if (result.ok) {
+        setMessage({ type: "ok", text: "Work order oluşturuldu." });
+        router.push(`/maintenance/work-orders/${result.workOrderId}`);
+      } else {
+        setMessage({ type: "error", text: result.error });
+      }
     });
   }
 
@@ -583,10 +589,10 @@ function FindingsTable({
               <td className="td">{finding.label ?? "-"}</td>
               <td className="td">{finding.recommended_action ?? finding.notes ?? "-"}</td>
               <td className="td text-right">
-                {finding.work_order_status === "draft" ? (
-                  <span className="text-xs text-slate-500">Taslak oluşturuldu</span>
+                {finding.work_order_id ? (
+                  <a className="text-xs text-brand hover:underline" href={`/maintenance/work-orders/${finding.work_order_id}`}>Work order aç</a>
                 ) : (
-                  <div className="flex flex-col items-end gap-2"><input className="input w-56 text-xs" value={workOrderNotes[finding.id] ?? ""} placeholder={finding.recommended_action ?? "Work-order notu"} onChange={(event) => setWorkOrderNotes((current) => ({ ...current, [finding.id]: event.target.value }))} /><button type="button" className="text-xs text-brand hover:underline" onClick={() => onWorkOrder(finding)}>Taslak olustur</button></div>
+                  <div className="flex flex-col items-end gap-2"><input className="input w-56 text-xs" value={workOrderNotes[finding.id] ?? ""} placeholder={finding.recommended_action ?? "Work-order notu"} onChange={(event) => setWorkOrderNotes((current) => ({ ...current, [finding.id]: event.target.value }))} /><button type="button" className="text-xs text-brand hover:underline" onClick={() => onWorkOrder(finding)}>Work order oluştur</button></div>
                 )}
               </td>
             </tr>
