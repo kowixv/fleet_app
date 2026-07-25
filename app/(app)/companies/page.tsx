@@ -89,7 +89,7 @@ export default async function CompaniesPage({
         fields={isCarrier ? carrierFields : companyFields}
         rows={paged.rows}
         pagination={{ page: paged.page, pageSize: paged.pageSize, total: paged.total }}
-        paginationHref={(nextPage) => `/companies?type=${view}&page=${nextPage}`}
+        paginationParams={{ type: view }}
       />
     </div>
   );

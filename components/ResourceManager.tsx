@@ -41,7 +41,7 @@ interface Props {
   rows: Record<string, any>[];
   addLabel?: string;
   pagination?: Pagination;
-  paginationHref?: (page: number) => string;
+  paginationParams?: Record<string, string>;
   renderActions?: (row: Record<string, any>, actions: { startEdit: (row: Record<string, any>) => void }) => React.ReactNode;
 }
 
@@ -68,7 +68,7 @@ export default function ResourceManager({
   rows,
   addLabel = "Ekle",
   pagination,
-  paginationHref,
+  paginationParams,
   renderActions,
 }: Props) {
   const Heading = headingLevel;
@@ -121,6 +121,12 @@ export default function ResourceManager({
       return opt?.label ?? v;
     }
     return String(v);
+  }
+
+  function paginationHref(page: number) {
+    const params = new URLSearchParams(paginationParams);
+    params.set("page", String(page));
+    return `${basePath}?${params.toString()}`;
   }
 
   return (
@@ -195,14 +201,14 @@ export default function ResourceManager({
           </span>
           <span className="flex gap-2">
             {pagination.page > 1 ? (
-              <a href={paginationHref ? paginationHref(pagination.page - 1) : `${basePath}?page=${pagination.page - 1}`} className="btn-ghost">
+              <a href={paginationHref(pagination.page - 1)} className="btn-ghost">
                 ← Önceki
               </a>
             ) : (
               <span className="btn-ghost opacity-40">← Önceki</span>
             )}
             {pagination.page * pagination.pageSize < pagination.total ? (
-              <a href={paginationHref ? paginationHref(pagination.page + 1) : `${basePath}?page=${pagination.page + 1}`} className="btn-ghost">
+              <a href={paginationHref(pagination.page + 1)} className="btn-ghost">
                 Sonraki →
               </a>
             ) : (
