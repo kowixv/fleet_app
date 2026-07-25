@@ -10,7 +10,7 @@ import {
 import {
   MAINTENANCE_VISIBLE_VEHICLE_STATUSES,
   isMaintenanceVisibleVehicleStatus,
-} from "./maintenance-vehicles";
+} from "./maintenance-vehicle-status";
 
 const navSource = readFileSync("components/MaintenanceNav.tsx", "utf8");
 const overviewSource = readFileSync("app/(app)/maintenance/page.tsx", "utf8");
@@ -39,8 +39,10 @@ function unit(
     overdueCount: 0,
     dueNowCount: 0,
     dueSoonCount: 0,
+    setupRequiredCount: 0,
     criticalFindingCount: 0,
     doNotDispatchCount: 0,
+    dispatchHoldCount: 0,
     hasActivePlan: true,
     lastServiceDate: "2026-07-01",
     lastServiceType: "Wet PM",
@@ -119,6 +121,26 @@ describe("maintenance unit directory UX", () => {
     expect(sortMaintenanceUnits([overdue, critical])[0].id).toBe("critical");
   });
 
+  it("sorts dispatch holds above other maintenance attention", () => {
+    const critical = unit({ id: "critical", criticalFindingCount: 1 });
+    const held = unit({ id: "held", dispatchHoldCount: 1 });
+    expect(sortMaintenanceUnits([critical, held])[0].id).toBe("held");
+  });
+
+  it("filters units that require maintenance setup", () => {
+    const setup = unit({
+      id: "setup",
+      maintenanceStatus: "setup_required",
+      setupRequiredCount: 1,
+    });
+    const healthy = unit({ id: "healthy" });
+    expect(
+      filterMaintenanceUnits([healthy, setup], {
+        attentionStatus: "setup_required",
+      }).map((row) => row.id),
+    ).toEqual(["setup"]);
+  });
+
   it("builds the existing unit-detail destination", () => {
     expect(maintenanceUnitHref("vehicle-1")).toBe("/maintenance/units/vehicle-1");
   });
@@ -162,7 +184,8 @@ describe("maintenance unit directory UX", () => {
   it("loads directory data in one batched query group without an N+1 loop", () => {
     expect(dataSource).toContain("await Promise.all([");
     expect(dataSource).not.toMatch(/\.map\s*\(\s*async/);
-    expect(dataSource.match(/\.from\("/g)).toHaveLength(7);
+    expect(dataSource.match(/\.from\("/g)).toHaveLength(8);
+    expect(dataSource).toContain('.from("vehicle_dispatch_holds")');
   });
 
   it("preserves all existing overview sections below the directory", () => {

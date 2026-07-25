@@ -18,6 +18,13 @@ export const MAINTENANCE_TERMS = {
   firstDueLimit: "İlk Dolan Sınır",
   plannedUnplanned: "Planlı / Plansız",
   insufficientMileage: "Mileage Verisi Yetersiz",
+  setupRequired: "Kurulum Gerekli",
+  doNotDispatch: "SEVKE ÇIKMASIN",
+  savingDraft: "Kaydediliyor…",
+  draftSaved: "Kaydedildi",
+  draftSaveFailed: "Kaydetme başarısız",
+  saveDraft: "Taslağı Kaydet",
+  saveAndCloseDraft: "Kaydet ve Kapat",
 };
 
 export function formatMaintenanceCategory(category: string): string {

@@ -5,6 +5,7 @@ import UnitMaintenancePlans from "@/components/UnitMaintenancePlans";
 import UnitMileageInline from "@/components/UnitMileageInline";
 import VehicleMaintenanceCostPanel from "@/components/VehicleMaintenanceCostPanel";
 import VehicleThumbnail from "@/components/VehicleThumbnail";
+import DispatchHoldClearForm from "@/components/DispatchHoldClearForm";
 import {
   computePM,
   formatPMRemaining,
@@ -23,13 +24,23 @@ import {
 import { usd } from "@/lib/format";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import { findingSeverityLabel } from "@/lib/inspection";
-import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicles";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
 export const dynamic = "force-dynamic";
 
 type Tab = "summary" | "plans" | "history" | "inspections" | "costs" | "mileage";
+
+interface OpenDispatchHold {
+  id: string;
+  reason: string;
+  severity: "critical" | "do_not_dispatch";
+  source_type: string;
+  source_id: string;
+  created_at: string;
+  clearance_notes: string | null;
+}
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "summary", label: "Özet" },
@@ -57,12 +68,12 @@ function daysAgo(days: number): string {
 }
 
 function statusPriority(status: PMStatus) {
-  return status === "overdue" ? 0 : status === "due_now" ? 1 : status === "due_soon" ? 2 : status === "warning" ? 3 : 4;
+  return status === "overdue" ? 0 : status === "due_now" ? 1 : status === "due_soon" ? 2 : status === "warning" ? 3 : status === "setup_required" ? 4 : 5;
 }
 
 function overallStatus(results: PMResult[]) {
   const status = [...results].sort((a, b) => statusPriority(a.status) - statusPriority(b.status))[0]?.status ?? "ok";
-  return { status, label: status === "ok" ? "Tamam" : status === "warning" ? "Yaklaşıyor" : status === "due_soon" ? "Yakında" : status === "due_now" ? "Bugün" : "Gecikmiş" };
+  return { status, label: status === "ok" ? "Tamam" : status === "warning" ? "Yaklaşıyor" : status === "due_soon" ? "Yakında" : status === "due_now" ? "Bugün" : status === "setup_required" ? "Kurulum Gerekli" : "Gecikmiş" };
 }
 
 function triggerText(pm: PMResult) {
@@ -97,6 +108,7 @@ export default async function MaintenanceUnitDetailPage({
     profileRes,
     criticalFindingsRes,
     directoryVehiclesRes,
+    holdsRes,
   ] = await Promise.all([
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, truck_color, status").eq("id", vehicleId).single(),
     supabase
@@ -117,6 +129,12 @@ export default async function MaintenanceUnitDetailPage({
       .select("id, unit_number")
       .in("status", maintenanceVisibleVehicleStatuses())
       .order("unit_number"),
+    supabase
+      .from("vehicle_dispatch_holds")
+      .select("id, reason, severity, source_type, source_id, created_at, clearance_notes")
+      .eq("vehicle_id", vehicleId)
+      .eq("status", "open")
+      .order("created_at", { ascending: false }),
   ]);
   const baseError =
     vehicleRes.error ??
@@ -124,7 +142,8 @@ export default async function MaintenanceUnitDetailPage({
     settingsRes.error ??
     profileRes.error ??
     criticalFindingsRes.error ??
-    directoryVehiclesRes.error;
+    directoryVehiclesRes.error ??
+    holdsRes.error;
   if (baseError) throw new Error(`Araç detayı yüklenemedi: ${baseError.message}`);
   if (!vehicleRes.data) throw new Error("Araç bulunamadı.");
 
@@ -140,7 +159,7 @@ export default async function MaintenanceUnitDetailPage({
     .from("maintenance_rule_vehicle_states")
     .select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours")
     .eq("vehicle_id", vehicleId);
-  if (statesRes.error) throw new Error(`AraÃ§ hatÄ±rlatÄ±cÄ± state yÃ¼klenemedi: ${statesRes.error.message}`);
+  if (statesRes.error) throw new Error(`Araç hatırlatıcı state yüklenemedi: ${statesRes.error.message}`);
   const rules = expandEffectiveMaintenanceRules(
     ((rulesRes.data ?? []) as any[]).filter((rule) => rule.vehicle_id === vehicleId || (rule.vehicle_id == null && rule.vehicle_type === vehicle.vehicle_type)),
     [vehicle],
@@ -163,6 +182,7 @@ export default async function MaintenanceUnitDetailPage({
     currentUnitIndex >= 0 && currentUnitIndex < directoryVehicles.length - 1
       ? directoryVehicles[currentUnitIndex + 1]
       : null;
+  const dispatchHolds: OpenDispatchHold[] = holdsRes.data ?? [];
 
   let content: React.ReactNode;
   if (tab === "plans") {
@@ -406,6 +426,21 @@ export default async function MaintenanceUnitDetailPage({
             <Stat label="Açık Kritik Bulgu" value={String(criticalFindings.length)} badgeClass={criticalFindings.length > 0 ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"} />
           </div>
         </div>
+        {dispatchHolds.length > 0 && (
+          <div className="mt-4 rounded-lg border border-red-300 bg-red-50 px-4 py-3 text-red-800">
+            <p className="text-lg font-bold">SEVKE ÇIKMASIN</p>
+            <p className="mt-1 text-sm">Bu unit için açık dispatch hold var. Hold temizlenmeden yeni yük atanamaz.</p>
+            <div className="mt-3 space-y-3">
+              {dispatchHolds.map((hold) => (
+                <div key={hold.id} className="rounded-md border border-red-200 bg-white/70 p-3">
+                  <p className="text-sm font-semibold">{hold.reason}</p>
+                  <p className="mt-1 text-xs">Önem: {findingSeverityLabel(hold.severity)} · {new Date(hold.created_at).toLocaleString("en-US")}</p>
+                  <DispatchHoldClearForm holdId={hold.id} />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
           <Link className="btn-primary" href={`/maintenance?add=1&vehicleId=${vehicleId}`}>{MAINTENANCE_TERMS.addMaintenance}</Link>
           <Link className="btn-ghost" href={tabHref(vehicleId, "mileage")}>{MAINTENANCE_TERMS.updateMileage}</Link>

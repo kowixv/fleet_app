@@ -231,13 +231,16 @@ describe("manual maintenance daily UX contract", () => {
 
   it("derives manual maintenance category on the server from service_type", () => {
     const actions = readFileSync("app/(app)/maintenance/actions.ts", "utf8");
+    const schema = readFileSync("lib/maintenance-record-schema.ts", "utf8");
     const saveBlock = actions.slice(
       actions.indexOf("export async function saveManualMaintenance"),
       actions.indexOf("export async function quickCreateMaintenanceVehicle"),
     );
-    expect(saveBlock).toContain("normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceName), serviceName)");
+    expect(saveBlock).toContain("parseMaintenanceRecordForm(formData)");
     expect(saveBlock).not.toContain('formData.get("category")');
-    expect(saveBlock).toContain("validateManualServiceName(serviceType)");
+    expect(schema).toContain("normalizeMaintenanceCostCategory(categorySource, serviceName)");
+    expect(schema).toContain("manualMaintenanceCategory(kind, serviceName)");
+    expect(schema).toContain("validateManualServiceName");
     expect(saveBlock).not.toContain("manualServiceOption(kind, serviceType)");
   });
 

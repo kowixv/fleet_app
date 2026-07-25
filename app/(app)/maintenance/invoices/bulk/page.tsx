@@ -2,6 +2,7 @@ import BulkMaintenanceInvoiceReview from "@/components/BulkMaintenanceInvoiceRev
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { groupBulkInvoices, serviceKey, type BaselineEvent, type BulkInvoiceDraft, type ExistingVehicleForBulk } from "@/lib/maintenance-bulk-import";
 import { createClient } from "@/lib/supabase/server";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ export default async function BulkMaintenanceInvoiceReviewPage({
     supabase
       .from("vehicles")
       .select("id, unit_number, vin, current_mileage")
-      .eq("status", "active")
+      .in("status", maintenanceVisibleVehicleStatuses())
       .order("unit_number"),
     supabase
       .from("maintenance_records")

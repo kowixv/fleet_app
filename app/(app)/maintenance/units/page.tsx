@@ -20,6 +20,7 @@ const ATTENTION_FILTERS = new Set<UnitAttentionFilter>([
   "overdue",
   "due_now",
   "due_soon",
+  "setup_required",
   "critical",
   "ok",
 ]);

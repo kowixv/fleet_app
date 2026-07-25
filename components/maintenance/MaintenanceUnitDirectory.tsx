@@ -32,6 +32,7 @@ const ATTENTION_FILTERS: Array<{
   { value: "overdue", label: "Gecikmiş" },
   { value: "due_now", label: "Bugün" },
   { value: "due_soon", label: "Yakında" },
+  { value: "setup_required", label: "Kurulum Gerekli" },
   { value: "critical", label: "Kritik Bulgu" },
   { value: "ok", label: "Sorun Yok" },
 ];
@@ -252,7 +253,7 @@ function MaintenanceUnitCard({
   unit: MaintenanceUnitSummary;
   detailTab?: "inspections" | "mileage";
 }) {
-  const severe = unit.doNotDispatchCount > 0;
+  const severe = unit.dispatchHoldCount > 0 || unit.doNotDispatchCount > 0;
   const critical = unit.criticalFindingCount > 0;
   const border = severe
     ? "border-red-500 ring-1 ring-red-200"
@@ -334,7 +335,11 @@ function MaintenanceUnitCard({
         <Count label="Bugün / Yakında" value={unit.dueNowCount + unit.dueSoonCount} tone="amber" />
         <Count
           label="Kritik"
-          value={unit.criticalFindingCount + unit.doNotDispatchCount}
+          value={
+            unit.criticalFindingCount +
+            unit.doNotDispatchCount +
+            unit.dispatchHoldCount
+          }
           tone="red"
         />
       </div>
@@ -366,6 +371,7 @@ function MaintenanceBadge({ status }: { status: MaintenanceUnitSummary["maintena
   const config = {
     overdue: { label: "Gecikmiş", className: "bg-red-100 text-red-700" },
     due_now: { label: "Bugün", className: "bg-orange-100 text-orange-700" },
+    setup_required: { label: "Kurulum Gerekli", className: "bg-slate-100 text-slate-700" },
     due_soon: { label: "Yakında", className: "bg-amber-100 text-amber-700" },
     ok: { label: "Sorun Yok", className: "bg-green-100 text-green-700" },
     no_plan: { label: "Hatırlatıcı Yok", className: "bg-slate-100 text-slate-600" },

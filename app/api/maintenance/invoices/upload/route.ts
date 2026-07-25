@@ -6,23 +6,26 @@ import {
   type VehicleOption,
 } from "@/lib/maintenance-invoice-review";
 import { maintenanceInvoiceHash, parseMaintenanceInvoice } from "@/lib/maintenance-invoice";
+import {
+  hasPdfMagicBytes,
+  maintenanceInvoiceMaxBytes,
+  validateMaintenanceInvoiceFileMeta,
+} from "@/lib/maintenance-invoice-upload";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 
 export const runtime = "nodejs";
+const MAX_MAINTENANCE_INVOICE_BYTES = maintenanceInvoiceMaxBytes(process.env.MAINTENANCE_INVOICE_MAX_BYTES);
 
 export async function POST(request: Request) {
   const profile = await requireWriteRole();
   const form = await request.formData();
   const file = form.get("file");
   if (!(file instanceof File)) return Response.json({ ok: false, error: "PDF dosyası gerekli." }, { status: 400 });
-  if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-    return Response.json({ ok: false, error: "Sadece PDF kabul edilir." }, { status: 400 });
-  }
+  const fileError = validateMaintenanceInvoiceFileMeta(file, MAX_MAINTENANCE_INVOICE_BYTES);
+  if (fileError) return Response.json({ ok: false, error: fileError }, { status: 400 });
 
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (bytes.byteLength === 0) return Response.json({ ok: false, error: "PDF boş." }, { status: 400 });
-  if (bytes.byteLength > 20 * 1024 * 1024) {
-    return Response.json({ ok: false, error: "PDF 20 MB'dan büyük olamaz." }, { status: 400 });
-  }
+  if (!hasPdfMagicBytes(bytes)) return Response.json({ ok: false, error: "PDF imzası geçersiz." }, { status: 400 });
 
   const hash = maintenanceInvoiceHash(bytes);
   const supabase = await createClient();
@@ -57,7 +60,7 @@ export async function POST(request: Request) {
       supabase
         .from("vehicles")
         .select("id, unit_number, current_mileage")
-        .eq("status", "active")
+        .in("status", maintenanceVisibleVehicleStatuses())
         .order("unit_number"),
       supabase
         .from("maintenance_service_defaults")

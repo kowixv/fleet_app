@@ -58,7 +58,8 @@ const STATUS_ORDER: Record<PMStatus, number> = {
   due_now: 1,
   due_soon: 2,
   warning: 3,
-  ok: 4,
+  setup_required: 4,
+  ok: 5,
 };
 
 function formatIntervals(row: ReminderRow) {
@@ -104,6 +105,7 @@ function groupSummary(rows: ReminderRow[], thresholds: PMThresholds, vehicleMap:
     status,
     overdue: results.filter((pm) => pm.status === "overdue" || pm.status === "due_now").length,
     soon: results.filter((pm) => pm.status === "due_soon" || pm.status === "warning").length,
+    setup: results.filter((pm) => pm.needsSetup).length,
     ok: results.filter((pm) => pm.status === "ok").length,
   };
 }
@@ -224,12 +226,12 @@ export default function MaintenanceReminderManager({
                       {isType ? vehicleTypeLabel(rule.vehicle_type) : `Unit ${rule.vehicles?.unit_number ?? "-"}`} · {rule.service_type}
                     </h2>
                     <span className={`badge ${rule.active ? PM_BADGE[summary.status] : "bg-slate-100 text-slate-600"}`}>
-                      {rule.active ? (summary.overdue > 0 ? "Gecikmiş" : summary.soon > 0 ? "Yaklaşan" : "Tamam") : "Pasif"}
+                      {rule.active ? (summary.overdue > 0 ? "Gecikmiş" : summary.setup > 0 ? "Kurulum Gerekli" : summary.soon > 0 ? "Yaklaşan" : "Tamam") : "Pasif"}
                     </span>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">
                     {isType
-                      ? `${groupRows.length} unit · ${summary.overdue} gecikmiş · ${summary.soon} yaklaşıyor`
+                      ? `${groupRows.length} unit · ${summary.overdue} gecikmiş · ${summary.setup} kurulum gerekli · ${summary.soon} yaklaşıyor`
                       : `${formatLastDone(rule)} son yapılan`}
                   </p>
                   <p className="mt-1 text-sm text-slate-500">Tekrar: {formatIntervals(rule)}</p>

@@ -3,13 +3,14 @@ import "server-only";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import {
   buildMaintenanceUnitSummaries,
+  type MaintenanceDispatchHoldSummarySource,
   type MaintenanceEffectiveRuleSource,
   type MaintenanceFindingSummarySource,
   type MaintenanceProfileSummarySource,
   type MaintenanceRecordSummarySource,
   type MaintenanceVehicleSummarySource,
 } from "@/lib/maintenance-unit-summary";
-import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicles";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -32,6 +33,7 @@ export async function loadMaintenanceUnitDirectory(includeArchived = false) {
     settingsResult,
     profilesResult,
     findingsResult,
+    holdsResult,
     recordsResult,
   ] = await Promise.all([
     vehiclesQuery,
@@ -62,6 +64,10 @@ export async function loadMaintenanceUnitDirectory(includeArchived = false) {
       .in("severity", ["critical", "do_not_dispatch"])
       .order("created_at", { ascending: false }),
     supabase
+      .from("vehicle_dispatch_holds")
+      .select("vehicle_id")
+      .eq("status", "open"),
+    supabase
       .from("maintenance_records")
       .select(
         "id, vehicle_id, service_type, performed_date, mileage, cost, total_cost, shop_name, invoice_number, planned, status",
@@ -80,6 +86,7 @@ export async function loadMaintenanceUnitDirectory(includeArchived = false) {
     settingsResult.error ??
     profilesResult.error ??
     findingsResult.error ??
+    holdsResult.error ??
     recordsResult.error;
   if (error) throw new Error(`Unit bakım görünümü yüklenemedi: ${error.message}`);
 
@@ -104,6 +111,7 @@ export async function loadMaintenanceUnitDirectory(includeArchived = false) {
       recommended_action: string | null;
     }
   >;
+  const dispatchHolds = (holdsResult.data ?? []) as MaintenanceDispatchHoldSummarySource[];
   const records = (recordsResult.data ?? []) as Array<
     MaintenanceRecordSummarySource & {
       id: string;
@@ -119,6 +127,7 @@ export async function loadMaintenanceUnitDirectory(includeArchived = false) {
     effectiveRules,
     profiles,
     findings,
+    dispatchHolds,
     records,
     thresholds,
     today: todayISO(),

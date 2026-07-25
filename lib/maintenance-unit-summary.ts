@@ -1,9 +1,10 @@
 import { computePM, type PMResult, type PMThresholds } from "@/lib/maintenance";
-import { isMaintenanceVisibleVehicleStatus } from "@/lib/maintenance-vehicles";
+import { isMaintenanceVisibleVehicleStatus } from "@/lib/maintenance-vehicle-status";
 
 export type UnitMaintenanceStatus =
   | "overdue"
   | "due_now"
+  | "setup_required"
   | "due_soon"
   | "ok"
   | "no_plan";
@@ -19,6 +20,7 @@ export type UnitAttentionFilter =
   | "all"
   | "overdue"
   | "due_now"
+  | "setup_required"
   | "due_soon"
   | "critical"
   | "ok";
@@ -59,6 +61,10 @@ export interface MaintenanceFindingSummarySource {
   severity: string;
 }
 
+export interface MaintenanceDispatchHoldSummarySource {
+  vehicle_id: string;
+}
+
 export interface MaintenanceRecordSummarySource {
   vehicle_id: string;
   performed_date: string | null;
@@ -83,8 +89,10 @@ export interface MaintenanceUnitSummary {
   overdueCount: number;
   dueNowCount: number;
   dueSoonCount: number;
+  setupRequiredCount: number;
   criticalFindingCount: number;
   doNotDispatchCount: number;
+  dispatchHoldCount: number;
   hasActivePlan: boolean;
   lastServiceDate: string | null;
   lastServiceType: string | null;
@@ -96,6 +104,7 @@ export interface BuildMaintenanceUnitSummariesInput {
   effectiveRules: MaintenanceEffectiveRuleSource[];
   profiles: MaintenanceProfileSummarySource[];
   findings: MaintenanceFindingSummarySource[];
+  dispatchHolds: MaintenanceDispatchHoldSummarySource[];
   records: MaintenanceRecordSummarySource[];
   thresholds: PMThresholds;
   today: string;
@@ -105,6 +114,7 @@ function classifyMaintenance(results: PMResult[]): UnitMaintenanceStatus {
   if (results.length === 0) return "no_plan";
   if (results.some((result) => result.status === "overdue")) return "overdue";
   if (results.some((result) => result.status === "due_now")) return "due_now";
+  if (results.some((result) => result.needsSetup)) return "setup_required";
   if (results.some((result) => result.status === "due_soon" || result.status === "warning")) {
     return "due_soon";
   }
@@ -136,6 +146,13 @@ export function buildMaintenanceUnitSummaries(
     if (finding.severity === "do_not_dispatch") counts.doNotDispatch += 1;
     else if (finding.severity === "critical") counts.critical += 1;
     findingsByVehicle.set(finding.vehicle_id, counts);
+  }
+  const dispatchHoldsByVehicle = new Map<string, number>();
+  for (const hold of input.dispatchHolds) {
+    dispatchHoldsByVehicle.set(
+      hold.vehicle_id,
+      (dispatchHoldsByVehicle.get(hold.vehicle_id) ?? 0) + 1,
+    );
   }
   const lastRecordByVehicle = new Map<string, MaintenanceRecordSummarySource>();
   for (const record of input.records) {
@@ -182,8 +199,10 @@ export function buildMaintenanceUnitSummaries(
       dueSoonCount: pmResults.filter(
         (result) => result.status === "due_soon" || result.status === "warning",
       ).length,
+      setupRequiredCount: pmResults.filter((result) => result.needsSetup).length,
       criticalFindingCount: findingCounts.critical,
       doNotDispatchCount: findingCounts.doNotDispatch,
+      dispatchHoldCount: dispatchHoldsByVehicle.get(vehicle.id) ?? 0,
       hasActivePlan: pmResults.length > 0,
       lastServiceDate: lastRecord?.performed_date ?? null,
       lastServiceType: lastRecord?.service_type ?? null,
@@ -209,14 +228,15 @@ export function maintenanceUnitMatchesSearch(
 }
 
 export function maintenanceUnitPriority(unit: MaintenanceUnitSummary): number {
-  if (unit.doNotDispatchCount > 0) return 0;
+  if (unit.dispatchHoldCount > 0 || unit.doNotDispatchCount > 0) return 0;
   if (unit.criticalFindingCount > 0) return 1;
   if (unit.maintenanceStatus === "overdue") return 2;
   if (unit.maintenanceStatus === "due_now") return 3;
-  if (unit.maintenanceStatus === "due_soon") return 4;
-  if (unit.operationalStatus === "in_repair") return 5;
-  if (unit.operationalStatus === "yard_hometime") return 6;
-  return 7;
+  if (unit.maintenanceStatus === "setup_required") return 4;
+  if (unit.maintenanceStatus === "due_soon") return 5;
+  if (unit.operationalStatus === "in_repair") return 6;
+  if (unit.operationalStatus === "yard_hometime") return 7;
+  return 8;
 }
 
 export function sortMaintenanceUnits(
@@ -259,10 +279,16 @@ export function filterMaintenanceUnits(
       }
       if (attentionStatus === "overdue" && unit.maintenanceStatus !== "overdue") return false;
       if (attentionStatus === "due_now" && unit.maintenanceStatus !== "due_now") return false;
+      if (
+        attentionStatus === "setup_required" &&
+        unit.maintenanceStatus !== "setup_required"
+      ) {
+        return false;
+      }
       if (attentionStatus === "due_soon" && unit.maintenanceStatus !== "due_soon") return false;
       if (
         attentionStatus === "critical" &&
-        unit.criticalFindingCount + unit.doNotDispatchCount === 0
+        unit.criticalFindingCount + unit.doNotDispatchCount + unit.dispatchHoldCount === 0
       ) {
         return false;
       }
