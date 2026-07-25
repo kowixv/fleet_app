@@ -50,7 +50,7 @@ export default async function MaintenanceInspectionsPage() {
       .limit(25),
     supabase
       .from("inspection_findings")
-      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
+      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
       .eq("status", "open")
       .order("created_at", { ascending: false })
       .limit(50),

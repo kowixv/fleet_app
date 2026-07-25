@@ -1,6 +1,7 @@
 "use client";
 
 import { saveMaintenanceReminder, setMaintenanceReminderActive } from "@/app/(app)/maintenance/actions";
+import { createMaintenanceWorkOrderInline } from "@/app/(app)/maintenance/work-orders/actions";
 import MaintenanceProgramInstaller, { type MaintenanceProgramVehicle } from "@/components/MaintenanceProgramInstaller";
 import { computePM, formatPMRemaining, PM_BADGE, type PMStatus, type PMThresholds } from "@/lib/maintenance";
 import type { MaintenanceProgramExistingRule } from "@/lib/maintenance-program-presets";
@@ -196,6 +197,23 @@ export default function MaintenanceReminderManager({
     });
   }
 
+  function createReminderWorkOrder(row: ReminderRow) {
+    const formData = new FormData();
+    formData.set("vehicle_id", row.effective_vehicle_id);
+    formData.set("source_type", "maintenance_reminder");
+    formData.set("source_id", row.id);
+    formData.set("title", `${row.service_type} bakım work order`);
+    formData.set("priority", "normal");
+    startTransition(async () => {
+      const result = await createMaintenanceWorkOrderInline(formData);
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      window.location.assign(`/maintenance/work-orders/${result.workOrderId}`);
+    });
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -276,9 +294,10 @@ export default function MaintenanceReminderManager({
                             </td>
                             <td className="td text-right">
                               {row.effective_vehicle_id ? (
-                                <Link className="text-brand hover:underline" href={`/maintenance?add=1&vehicleId=${row.effective_vehicle_id}&type=periodic&service=${encodeURIComponent(row.service_type)}`}>
-                                  Yapıldı Olarak Kaydet
-                                </Link>
+                                <span className="flex justify-end gap-3">
+                                  <button type="button" className="text-brand hover:underline" disabled={isPending} onClick={() => createReminderWorkOrder(row)}>Work order</button>
+                                  <Link className="text-brand hover:underline" href={`/maintenance?add=1&vehicleId=${row.effective_vehicle_id}&type=periodic&service=${encodeURIComponent(row.service_type)}`}>Yapıldı Olarak Kaydet</Link>
+                                </span>
                               ) : "-"}
                             </td>
                           </tr>

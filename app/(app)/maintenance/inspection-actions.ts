@@ -134,7 +134,8 @@ export async function createInspectionWorkOrderDraft(findingId: string, notes: s
   });
   if (error) return { ok: false as const, error: error.message };
   revalidateInspectionPaths();
-  return { ok: true as const, findingId: data as string };
+  revalidatePath("/maintenance/work-orders");
+  return { ok: true as const, workOrderId: data as string };
 }
 
 export async function signedInspectionFileUrl(resultId: string) {
