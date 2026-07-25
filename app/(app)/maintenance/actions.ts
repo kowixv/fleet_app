@@ -1,7 +1,6 @@
 "use server";
 
 import { requireWriteRole } from "@/lib/auth";
-import { normalizeMaintenanceCostCategory } from "@/lib/maintenance-cost";
 import {
   engineModelMatchesRequirement,
   findExistingProgramReminder,
@@ -16,10 +15,12 @@ import {
   type MaintenanceProgramVehicleType,
 } from "@/lib/maintenance-program-presets";
 import { isVehicleType } from "@/lib/maintenance-reminders";
-import { manualMaintenanceCategory, normalizeUnitNumber, shouldUpdateMaintenancePlan, validateManualServiceName, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
+import { normalizeUnitNumber, shouldUpdateMaintenancePlan, validateManualServiceName } from "@/lib/manual-maintenance";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 import { mileageRpcErrorMessage, validateMileageInput } from "@/lib/vehicle-mileage";
+import { parseMaintenanceRecordForm } from "@/lib/maintenance-record-schema";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { revalidatePath } from "next/cache";
 
 function maintenanceRevalidate() {
@@ -59,29 +60,6 @@ export interface ServiceDetails {
 function text(value: FormDataEntryValue | null): string | null {
   const raw = typeof value === "string" ? value.trim() : "";
   return raw || null;
-}
-
-function money(value: FormDataEntryValue | null): number | null {
-  const raw = typeof value === "string" ? value.trim().replace(/,/g, "") : "";
-  if (!raw) return null;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0) throw new Error("Maliyet negatif olamaz.");
-  return Math.round(parsed * 100) / 100;
-}
-
-function dateOnly(value: FormDataEntryValue | null, label: string): string {
-  const raw = text(value);
-  if (!raw || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) throw new Error(`${label} gerekli.`);
-  return raw;
-}
-
-function partsFromForm(formData: FormData): string[] {
-  return formData
-    .getAll("parts_used")
-    .flatMap((value) => (typeof value === "string" ? value.split(",") : []))
-    .map((value) => value.trim())
-    .filter(Boolean)
-    .slice(0, 25);
 }
 
 interface RuleDueSummary {
@@ -222,7 +200,7 @@ export async function installMaintenanceProgram(input: MaintenanceProgramInstall
         .select("id, unit_number, vehicle_type, status")
         .eq("organization_id", profile.organization_id)
         .eq("vehicle_type", input.selectedVehicleType)
-        .eq("status", "active"),
+        .in("status", maintenanceVisibleVehicleStatuses()),
       supabase
         .from("maintenance_rules")
         .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, active")
@@ -377,75 +355,16 @@ export async function saveManualMaintenance(formData: FormData) {
   await requireWriteRole();
   try {
     const vehicleId = text(formData.get("vehicle_id"));
-    const kind = text(formData.get("entry_kind")) as ManualMaintenanceKind | null;
-    const serviceType = text(formData.get("service_type"));
-    const performedDate = dateOnly(formData.get("performed_date"), "Yapılma tarihi");
-    const mileage = validateMileageInput(text(formData.get("mileage")));
-    const totalCost = money(formData.get("cost"));
-    const laborCost = money(formData.get("labor_cost"));
-    const partsCost = money(formData.get("parts_cost"));
-    const shopFees = money(formData.get("shop_fees"));
-    const taxCost = money(formData.get("tax_cost"));
-    const towingCost = money(formData.get("towing_cost"));
-    const roadServiceCost = money(formData.get("road_service_cost"));
-    const hotelTravelCost = money(formData.get("hotel_travel_cost"));
-    const diagnosticCost = money(formData.get("diagnostic_cost"));
-    const freightShippingCost = money(formData.get("freight_shipping_cost"));
-    const coreChargeCost = money(formData.get("core_charge_cost"));
-    const environmentalFeeCost = money(formData.get("environmental_fee_cost"));
-    const machineShopCost = money(formData.get("machine_shop_cost"));
-    const subletCost = money(formData.get("sublet_cost"));
-    const otherCost = money(formData.get("other_cost"));
-    const warrantyRecovery = money(formData.get("warranty_recovery"));
-    const refundCredit = money(formData.get("refund_credit"));
-
     if (!vehicleId) throw new Error("Unit gerekli.");
-    if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    const serviceValidation = validateManualServiceName(serviceType);
-    if (!serviceValidation.ok) throw new Error(serviceValidation.error ?? "Bakım / tamir çeşidi gerekli.");
-    if (!mileage.ok) throw new Error(mileage.error);
-
-    const serviceName = serviceValidation.value;
+    const record = parseMaintenanceRecordForm(formData);
+    const kind = record.entry_kind;
+    const serviceName = record.service_type;
     const updatePlan = shouldUpdateMaintenancePlan(kind, serviceName, formData.get("update_plan") === "on");
     const submissionKey = text(formData.get("submission_key")) ?? crypto.randomUUID();
-    const category = normalizeMaintenanceCostCategory(manualMaintenanceCategory(kind, serviceName), serviceName);
-    const plannedValue = text(formData.get("planned"));
     const payload = {
+      ...record,
       submission_key: submissionKey,
       vehicle_id: vehicleId,
-      entry_kind: kind,
-      service_type: serviceName,
-      performed_date: performedDate,
-      mileage: mileage.mileage,
-      total_cost: totalCost,
-      cost: totalCost,
-      shop_name: text(formData.get("shop_name")),
-      vendor: text(formData.get("shop_name")),
-      parts_used: partsFromForm(formData),
-      invoice_number: text(formData.get("invoice_number")),
-      notes: text(formData.get("notes")),
-      labor_cost: laborCost,
-      parts_cost: partsCost,
-      shop_fees: shopFees,
-      tax_cost: taxCost,
-      towing_cost: towingCost,
-      road_service_cost: roadServiceCost,
-      hotel_travel_cost: hotelTravelCost,
-      diagnostic_cost: diagnosticCost,
-      freight_shipping_cost: freightShippingCost,
-      core_charge_cost: coreChargeCost,
-      environmental_fee_cost: environmentalFeeCost,
-      machine_shop_cost: machineShopCost,
-      sublet_cost: subletCost,
-      other_cost: otherCost,
-      warranty_recovery: warrantyRecovery,
-      refund_credit: refundCredit,
-      downtime_start: text(formData.get("downtime_start")),
-      downtime_end: text(formData.get("downtime_end")),
-      category,
-      cause: text(formData.get("cause")),
-      breakdown_occurred: formData.get("breakdown_occurred") === "on",
-      planned: plannedValue == null ? kind === "periodic" : plannedValue === "planned",
       update_plan: updatePlan,
       create_missing_rule: false,
     };
@@ -458,7 +377,7 @@ export async function saveManualMaintenance(formData: FormData) {
       .maybeSingle();
     if (beforeVehicleRes.error) return { ok: false as const, error: beforeVehicleRes.error.message };
 
-    const { data, error } = await supabase.rpc("save_manual_maintenance", { p_payload: payload });
+    const { data, error } = await supabase.rpc("save_manual_maintenance_v2", { p_payload: payload });
     if (error) return { ok: false as const, error: mileageRpcErrorMessage(error.message) };
     const rpcResult = data as {
       record_id?: string;
@@ -496,12 +415,12 @@ export async function saveManualMaintenance(formData: FormData) {
     const summary = {
       recordCreated: true,
       idempotent: Boolean(rpcResult?.idempotent),
-      title: kind === "repair" ? "Tamir kaydedildi" : mileage.mileage < Number(previousMileage ?? 0) ? "Geçmiş bakım kaydedildi" : "Bakım kaydedildi",
+      title: kind === "repair" ? "Tamir kaydedildi" : record.mileage < Number(previousMileage ?? 0) ? "Geçmiş bakım kaydedildi" : "Bakım kaydedildi",
       unitNumber: afterVehicleRes.data?.unit_number ?? beforeVehicleRes.data?.unit_number ?? null,
       serviceType: serviceName,
       kind,
-      mileage: mileage.mileage,
-      cost: totalCost,
+      mileage: record.mileage,
+      cost: record.total_cost,
       previousCurrentMileage: previousMileage,
       currentMileage,
       currentMileageChanged: previousMileage == null ? currentMileage != null : currentMileage !== previousMileage,
@@ -609,30 +528,13 @@ export async function editManualMaintenanceRecord(formData: FormData) {
   await requireWriteRole();
   try {
     const recordId = text(formData.get("record_id"));
-    const kind = text(formData.get("entry_kind")) as ManualMaintenanceKind | null;
-    const serviceType = text(formData.get("service_type"));
-    const performedDate = dateOnly(formData.get("performed_date"), "Yapılma tarihi");
-    const mileage = validateMileageInput(text(formData.get("mileage")));
-    const cost = money(formData.get("cost"));
     if (!recordId) throw new Error("Bakım kaydı gerekli.");
-    if (!mileage.ok) throw new Error(mileage.error);
-    if (kind !== "periodic" && kind !== "repair") throw new Error("İşlem türü gerekli.");
-    const serviceValidation = validateManualServiceName(serviceType);
-    if (!serviceValidation.ok) throw new Error(serviceValidation.error ?? "Bakım / tamir çeşidi gerekli.");
-    const serviceName = serviceValidation.value;
-    const category = normalizeMaintenanceCostCategory(text(formData.get("category")) ?? manualMaintenanceCategory(kind, serviceName), serviceName);
+    const record = parseMaintenanceRecordForm(formData, { allowCategoryFromForm: true });
+    const kind = record.entry_kind;
+    const serviceName = record.service_type;
     const payload = {
+      ...record,
       record_id: recordId,
-      entry_kind: kind,
-      service_type: serviceName,
-      category,
-      performed_date: performedDate,
-      mileage: mileage.mileage,
-      cost,
-      shop_name: text(formData.get("shop_name")),
-      invoice_number: text(formData.get("invoice_number")),
-      notes: text(formData.get("notes")),
-      parts_used: partsFromForm(formData),
     };
     const supabase = await createClient();
     const beforeRes = await supabase
@@ -670,8 +572,8 @@ export async function editManualMaintenanceRecord(formData: FormData) {
         previousServiceType: (beforeRes.data as any)?.service_type ?? null,
         serviceType: serviceName,
         kind,
-        mileage: mileage.mileage,
-        cost,
+        mileage: record.mileage,
+        cost: record.total_cost,
         currentMileagePreservedOrAdvanced: true,
         planRecalculated: Boolean(rpcResult?.old_rule_recalculated || rpcResult?.new_rule_recalculated || rpcResult?.rule_recalculated),
         rule: buildRuleDueSummary(ruleRes.data),

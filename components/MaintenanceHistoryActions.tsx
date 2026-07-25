@@ -2,6 +2,8 @@
 
 import { deleteManualMaintenanceRecord, editManualMaintenanceRecord } from "@/app/(app)/maintenance/actions";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
+import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
+import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
 import { PERIODIC_SERVICE_OPTIONS, REPAIR_SERVICE_OPTIONS, type ManualMaintenanceKind } from "@/lib/manual-maintenance";
 import { useRouter } from "next/navigation";
 import { useEffect, useState, useTransition } from "react";
@@ -19,7 +21,62 @@ interface EditableRecord {
   invoice_number: string | null;
   notes: string | null;
   parts_used: string[] | null;
+  labor_cost: number | null;
+  parts_cost: number | null;
+  diagnostic_cost: number | null;
+  shop_fees: number | null;
+  tax_cost: number | null;
+  towing_cost: number | null;
+  road_service_cost: number | null;
+  hotel_travel_cost: number | null;
+  freight_shipping_cost: number | null;
+  core_charge_cost: number | null;
+  environmental_fee_cost: number | null;
+  machine_shop_cost: number | null;
+  sublet_cost: number | null;
+  other_cost: number | null;
+  warranty_recovery: number | null;
+  refund_credit: number | null;
+  downtime_start: string | null;
+  downtime_end: string | null;
+  category: string | null;
+  cause: string | null;
+  breakdown_occurred: boolean | null;
   vehicles?: { unit_number: string | null } | null;
+}
+
+const MONEY_FIELDS = [
+  ["parts_cost", "Parts"],
+  ["labor_cost", "Labor"],
+  ["diagnostic_cost", "Diagnostic"],
+  ["shop_fees", "Shop fees"],
+  ["tax_cost", "Tax"],
+  ["towing_cost", "Towing"],
+  ["road_service_cost", "Road service"],
+  ["hotel_travel_cost", "Hotel / travel"],
+  ["freight_shipping_cost", "Freight / shipping"],
+  ["core_charge_cost", "Core charge"],
+  ["environmental_fee_cost", "Environmental fee"],
+  ["machine_shop_cost", "Machine shop"],
+  ["sublet_cost", "Sublet"],
+  ["other_cost", "Other"],
+  ["warranty_recovery", "Warranty recovery"],
+  ["refund_credit", "Refund / credit"],
+] as const;
+
+const CAUSE_OPTIONS = [
+  ["", "Belirtilmedi"],
+  ["normal_wear", "Normal aşınma"],
+  ["component_failure", "Parça arızası"],
+  ["road_hazard", "Yol hasarı"],
+  ["driver_damage", "Sürücü hasarı"],
+  ["accident_collision", "Kaza / çarpışma"],
+  ["previous_repair_failure", "Önceki onarım hatası"],
+  ["unknown", "Bilinmiyor"],
+] as const;
+
+function dateTimeLocal(value: string | null | undefined): string {
+  return value ? value.slice(0, 16) : "";
 }
 
 function formatMiles(value: number | null | undefined) {
@@ -147,6 +204,13 @@ export default function MaintenanceHistoryActions({ row }: { row: EditableRecord
             <input className="input" name="cost" type="number" min="0" step="0.01" defaultValue={row.total_cost ?? row.cost ?? ""} />
           </div>
           <div>
+            <label className="label">Plan durumu</label>
+            <select className="input" name="planned" defaultValue={row.planned === false ? "unplanned" : "planned"}>
+              <option value="planned">Planlı</option>
+              <option value="unplanned">Plansız</option>
+            </select>
+          </div>
+          <div>
             <label className="label">Shop</label>
             <input className="input" name="shop_name" defaultValue={row.shop_name ?? ""} />
           </div>
@@ -158,6 +222,38 @@ export default function MaintenanceHistoryActions({ row }: { row: EditableRecord
             <label className="label">Parts</label>
             <input className="input" name="parts_used" defaultValue={row.parts_used?.join(", ") ?? ""} />
           </div>
+          {MONEY_FIELDS.map(([name, label]) => (
+            <div key={name}>
+              <label className="label">{label}</label>
+              <input className="input" name={name} type="number" min="0" step="0.01" defaultValue={row[name] ?? ""} />
+            </div>
+          ))}
+          <div>
+            <label className="label">Downtime başlangıç</label>
+            <input className="input" name="downtime_start" type="datetime-local" defaultValue={dateTimeLocal(row.downtime_start)} />
+          </div>
+          <div>
+            <label className="label">Downtime bitiş</label>
+            <input className="input" name="downtime_end" type="datetime-local" defaultValue={dateTimeLocal(row.downtime_end)} />
+          </div>
+          <div>
+            <label className="label">Kategori</label>
+            <select className="input" name="category" defaultValue={row.category ?? "other"}>
+              {MAINTENANCE_COST_CATEGORIES.map((category) => (
+                <option key={category} value={category}>{formatMaintenanceCategory(category)}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label">Neden</label>
+            <select className="input" name="cause" defaultValue={row.cause ?? ""}>
+              {CAUSE_OPTIONS.map(([value, label]) => <option key={value || "none"} value={value}>{label}</option>)}
+            </select>
+          </div>
+          <label className="md:col-span-2 flex items-center gap-2 text-sm">
+            <input type="checkbox" name="breakdown_occurred" defaultChecked={Boolean(row.breakdown_occurred)} className="h-4 w-4 accent-brand" />
+            Breakdown oluştu
+          </label>
           <div className="md:col-span-2">
             <label className="label">Notes</label>
             <textarea className="input min-h-20" name="notes" defaultValue={row.notes ?? ""} />
