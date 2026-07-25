@@ -23,6 +23,7 @@ import {
 import { usd } from "@/lib/format";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import { findingSeverityLabel } from "@/lib/inspection";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicles";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -89,7 +90,14 @@ export default async function MaintenanceUnitDetailPage({
   const query = await searchParams;
   const tab = selectedTab(query.tab);
   const supabase = await createClient();
-  const [vehicleRes, rulesRes, settingsRes, profileRes, criticalFindingsRes] = await Promise.all([
+  const [
+    vehicleRes,
+    rulesRes,
+    settingsRes,
+    profileRes,
+    criticalFindingsRes,
+    directoryVehiclesRes,
+  ] = await Promise.all([
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, truck_color, status").eq("id", vehicleId).single(),
     supabase
       .from("maintenance_rules")
@@ -104,8 +112,19 @@ export default async function MaintenanceUnitDetailPage({
       .eq("status", "open")
       .in("severity", ["critical", "do_not_dispatch"])
       .order("created_at", { ascending: false }),
+    supabase
+      .from("vehicles")
+      .select("id, unit_number")
+      .in("status", maintenanceVisibleVehicleStatuses())
+      .order("unit_number"),
   ]);
-  const baseError = vehicleRes.error ?? rulesRes.error ?? settingsRes.error ?? profileRes.error ?? criticalFindingsRes.error;
+  const baseError =
+    vehicleRes.error ??
+    rulesRes.error ??
+    settingsRes.error ??
+    profileRes.error ??
+    criticalFindingsRes.error ??
+    directoryVehiclesRes.error;
   if (baseError) throw new Error(`Araç detayı yüklenemedi: ${baseError.message}`);
   if (!vehicleRes.data) throw new Error("Araç bulunamadı.");
 
@@ -134,6 +153,16 @@ export default async function MaintenanceUnitDetailPage({
   }));
   const status = overallStatus(rulesWithPm.map(({ pm }) => pm));
   const criticalFindings = (criticalFindingsRes.data ?? []) as any[];
+  const directoryVehicles = (directoryVehiclesRes.data ?? []) as Array<{
+    id: string;
+    unit_number: string;
+  }>;
+  const currentUnitIndex = directoryVehicles.findIndex((unit) => unit.id === vehicleId);
+  const previousUnit = currentUnitIndex > 0 ? directoryVehicles[currentUnitIndex - 1] : null;
+  const nextUnit =
+    currentUnitIndex >= 0 && currentUnitIndex < directoryVehicles.length - 1
+      ? directoryVehicles[currentUnitIndex + 1]
+      : null;
 
   let content: React.ReactNode;
   if (tab === "plans") {
@@ -317,6 +346,40 @@ export default async function MaintenanceUnitDetailPage({
   return (
     <div className="space-y-5">
       <MaintenanceNav title="Bakım Merkezi" />
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+        <nav aria-label="Breadcrumb" className="flex flex-wrap items-center gap-2 text-sm text-slate-500">
+          <Link className="hover:text-brand hover:underline" href="/maintenance">
+            Bakım Merkezi
+          </Link>
+          <span aria-hidden="true">→</span>
+          <Link className="hover:text-brand hover:underline" href="/maintenance/units">
+            Unitler
+          </Link>
+          <span aria-hidden="true">→</span>
+          <span aria-current="page" className="font-medium text-slate-800">
+            Unit {vehicle.unit_number}
+          </span>
+        </nav>
+        <div className="flex flex-wrap gap-2 text-sm">
+          {previousUnit ? (
+            <Link className="btn-ghost" href={`/maintenance/units/${previousUnit.id}`}>
+              ← Önceki Unit
+            </Link>
+          ) : (
+            <span className="btn-ghost cursor-not-allowed opacity-40">← Önceki Unit</span>
+          )}
+          {nextUnit ? (
+            <Link className="btn-ghost" href={`/maintenance/units/${nextUnit.id}`}>
+              Sonraki Unit →
+            </Link>
+          ) : (
+            <span className="btn-ghost cursor-not-allowed opacity-40">Sonraki Unit →</span>
+          )}
+          <Link className="btn-primary" href="/maintenance/units">
+            Unit Değiştir
+          </Link>
+        </div>
+      </div>
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="space-y-3">

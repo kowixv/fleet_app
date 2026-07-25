@@ -5,6 +5,7 @@ import { usePathname, useSearchParams } from "next/navigation";
 
 const ITEMS = [
   { href: "/maintenance", label: "Özet", exact: true },
+  { href: "/maintenance/units", label: "Unitler" },
   { href: "/maintenance/reminders", label: "Hatırlatıcılar" },
   { href: "/maintenance?add=1", label: "Bakım Ekle", queryActive: "add" },
   { href: "/maintenance/history", label: "Geçmiş" },

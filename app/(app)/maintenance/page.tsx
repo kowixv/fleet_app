@@ -1,11 +1,17 @@
 import Link from "next/link";
 import ManualMaintenanceEntry from "@/components/ManualMaintenanceEntry";
 import MaintenanceNav from "@/components/MaintenanceNav";
+import MaintenanceUnitDirectory from "@/components/maintenance/MaintenanceUnitDirectory";
 import { usd } from "@/lib/format";
 import { computePM, type PMResult, type PMStatus, type PMThresholds } from "@/lib/maintenance";
-import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
-import { createClient } from "@/lib/supabase/server";
+import { loadMaintenanceUnitDirectory } from "@/lib/maintenance-unit-data";
+import {
+  maintenanceUnitHref,
+  type UnitAttentionFilter,
+  type UnitOperationalFilter,
+} from "@/lib/maintenance-unit-summary";
+import { isMaintenanceVisibleVehicleStatus } from "@/lib/maintenance-vehicles";
 import { todayISO } from "@/lib/tz";
 
 export const dynamic = "force-dynamic";
@@ -27,10 +33,10 @@ interface RuleRow {
 
 interface FindingRow {
   id: string;
+  vehicle_id: string;
   severity: string;
   label: string | null;
   recommended_action: string | null;
-  vehicles: { unit_number: string } | null;
 }
 
 interface ActionItem {
@@ -40,6 +46,7 @@ interface ActionItem {
   issue: string;
   detail: string;
   href: string;
+  detailHref: string;
   action: string;
   badge: { label: string; className: string };
 }
@@ -51,6 +58,22 @@ const STATUS_BADGE: Record<PMStatus, { label: string; className: string }> = {
   due_now: { label: "Bugün", className: "bg-orange-100 text-orange-700" },
   overdue: { label: "Gecikmiş", className: "bg-red-100 text-red-700" },
 };
+
+const OVERVIEW_OPERATIONAL_FILTERS = new Set<UnitOperationalFilter>([
+  "all",
+  "active",
+  "in_repair",
+  "yard_hometime",
+  "archived",
+]);
+const OVERVIEW_ATTENTION_FILTERS = new Set<UnitAttentionFilter>([
+  "all",
+  "overdue",
+  "due_now",
+  "due_soon",
+  "critical",
+  "ok",
+]);
 
 function formatNumber(value: number) {
   return Math.abs(value).toLocaleString("en-US");
@@ -96,6 +119,10 @@ function buildPMActions(
       issue: rule.service_type,
       detail: formatAttentionAmount(pm),
       href: `/maintenance?add=1&vehicleId=${rule.effective_vehicle_id ?? rule.vehicle_id}&type=periodic&service=${encodeURIComponent(rule.service_type)}`,
+      detailHref: maintenanceUnitHref(
+        String(rule.effective_vehicle_id ?? rule.vehicle_id),
+        "plans",
+      ),
       action: "Bakım Ekle",
       badge: STATUS_BADGE[pm.status],
     }));
@@ -151,7 +178,9 @@ function ActionRow({ item }: { item: ActionItem }) {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-semibold">Unit {item.unit}</span>
+            <Link className="font-semibold text-brand hover:underline" href={item.detailHref}>
+              Unit {item.unit}
+            </Link>
             <span className={`badge ${item.badge.className}`}>{item.badge.label}</span>
           </div>
           <p className="mt-1 font-medium text-slate-800">{item.issue}</p>
@@ -170,7 +199,16 @@ function HighCostRepair({ row }: { row: any }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4 text-sm">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="font-semibold">Unit {row.vehicles?.unit_number ?? "-"}</span>
+        {row.vehicle_id ? (
+          <Link
+            className="font-semibold text-brand hover:underline"
+            href={maintenanceUnitHref(row.vehicle_id, "costs")}
+          >
+            Unit {row.unit_number ?? "-"}
+          </Link>
+        ) : (
+          <span className="font-semibold">Unit {row.unit_number ?? "-"}</span>
+        )}
         <span className="font-semibold text-red-700">{usd(Number(cost))}</span>
       </div>
       <p className="mt-1 font-medium text-slate-800">{row.service_type ?? "Tamir"}</p>
@@ -185,7 +223,16 @@ function RecentRecord({ row }: { row: any }) {
   return (
     <details className="rounded-lg border border-slate-200 bg-white p-4">
       <summary className="cursor-pointer">
-        <span className="font-medium">Unit {row.vehicles?.unit_number ?? "-"}</span>
+        {row.vehicle_id ? (
+          <Link
+            className="font-medium text-brand hover:underline"
+            href={maintenanceUnitHref(row.vehicle_id, "history")}
+          >
+            Unit {row.unit_number ?? "-"}
+          </Link>
+        ) : (
+          <span className="font-medium">Unit {row.unit_number ?? "-"}</span>
+        )}
         <span className="ml-3 text-sm text-slate-500">{row.performed_date ?? "-"} · {row.service_type ?? "-"}</span>
       </summary>
       <div className="mt-3 grid gap-2 text-sm text-slate-600 sm:grid-cols-2">
@@ -204,76 +251,33 @@ export default async function MaintenanceOverviewPage({
 }) {
   const params = await searchParams;
   const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
-  const supabase = await createClient();
-  const [rulesResult, statesResult, settingsResult, profilesResult, findingsResult, vehiclesResult, recentResult, highCostResult] = await Promise.all([
-    supabase
-      .from("maintenance_rules")
-      .select("id, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, vehicle_id, vehicle_type, active")
-      .eq("active", true),
-    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
-    supabase
-      .from("settings")
-      .select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount")
-      .single(),
-    supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
-    supabase
-      .from("inspection_findings")
-      .select("id, severity, label, recommended_action, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
-      .eq("status", "open")
-      .in("severity", ["critical", "do_not_dispatch"])
-      .order("created_at", { ascending: false })
-      .limit(12),
-    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").eq("status", "active").order("unit_number"),
-    supabase
-      .from("maintenance_records")
-      .select("id, service_type, performed_date, mileage, cost, total_cost, shop_name, source, vehicles!maintenance_records_vehicle_id_fkey(unit_number)")
-      .is("deleted_at", null)
-      .order("performed_date", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(5),
-    supabase
-      .from("maintenance_records")
-      .select("id, service_type, performed_date, mileage, cost, total_cost, shop_name, invoice_number, planned, vehicles!maintenance_records_vehicle_id_fkey(unit_number)")
-      .is("deleted_at", null)
-      .eq("planned", false)
-      .order("performed_date", { ascending: false })
-      .order("created_at", { ascending: false })
-      .limit(20),
-  ]);
-
-  const firstError =
-    rulesResult.error ??
-    statesResult.error ??
-    settingsResult.error ??
-    profilesResult.error ??
-    findingsResult.error ??
-    vehiclesResult.error ??
-    recentResult.error ??
-    highCostResult.error;
-  if (firstError) throw new Error(`Bakım merkezi yüklenemedi: ${firstError.message}`);
-
-  const settings = settingsResult.data;
-  const thresholds = {
-    dueSoonMiles: Number(settings?.pm_due_soon_miles ?? 2_000),
-    dueSoonDays: Number(settings?.pm_due_soon_days ?? 7),
-    dueSoonEngineHours: Number(settings?.pm_due_soon_engine_hours ?? 100),
-  };
+  const requestedOperational = first(params.unitsStatus) as UnitOperationalFilter;
+  const requestedAttention = first(params.unitsAttention) as UnitAttentionFilter;
+  const includeArchived =
+    first(params.unitsArchive) === "1" || requestedOperational === "archived";
+  const initialOperationalStatus = OVERVIEW_OPERATIONAL_FILTERS.has(requestedOperational)
+    ? requestedOperational
+    : "all";
+  const initialAttentionStatus = OVERVIEW_ATTENTION_FILTERS.has(requestedAttention)
+    ? requestedAttention
+    : "all";
+  const directory = await loadMaintenanceUnitDirectory(includeArchived);
+  const thresholds = directory.thresholds;
   const engineHoursByVehicle = Object.fromEntries(
-    ((profilesResult.data ?? []) as Array<{ vehicle_id: string; engine_hours: number | null }>).map((profile) => [
+    directory.profiles.map((profile) => [
       profile.vehicle_id,
       profile.engine_hours == null ? null : Number(profile.engine_hours),
     ]),
   );
-  const ruleRows = expandEffectiveMaintenanceRules(
-    (rulesResult.data ?? []) as any[],
-    (vehiclesResult.data ?? []) as any[],
-    (statesResult.data ?? []) as any[],
-  ) as unknown as RuleRow[];
+  const ruleRows = directory.effectiveRules as unknown as RuleRow[];
   const pmActions = buildPMActions(ruleRows, thresholds, engineHoursByVehicle);
   const overdueCount = pmActions.filter((item) => item.badge.label === "Gecikmiş" || item.badge.label === "Bugün").length;
   const dueSoonCount = pmActions.filter((item) => item.badge.label === "Yakında").length;
-  const findings = (findingsResult.data ?? []) as unknown as FindingRow[];
-  const vehicles = (vehiclesResult.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null }>;
+  const findings = directory.findings.slice(0, 12) as FindingRow[];
+  const vehicleById = new Map(directory.vehicles.map((vehicle) => [vehicle.id, vehicle]));
+  const vehicles = directory.vehicles.filter((vehicle) =>
+    isMaintenanceVisibleVehicleStatus(vehicle.status),
+  );
   const activeRules = ruleRows.map((rule) => ({
     vehicle_id: rule.effective_vehicle_id ?? rule.vehicle_id ?? "",
     vehicle_type: rule.vehicle_type ?? rule.vehicles?.vehicle_type ?? null,
@@ -283,10 +287,11 @@ export default async function MaintenanceOverviewPage({
   const findingActions: ActionItem[] = findings.map((finding) => ({
     kind: "finding",
     priority: finding.severity === "do_not_dispatch" ? 0 : 10,
-    unit: finding.vehicles?.unit_number ?? "-",
+    unit: vehicleById.get(finding.vehicle_id)?.unit_number ?? "-",
     issue: finding.label ?? "Kritik inspection bulgusu",
     detail: finding.recommended_action ?? "Açık kritik bulgu var",
-    href: "/maintenance/inspections",
+    href: maintenanceUnitHref(finding.vehicle_id, "inspections"),
+    detailHref: maintenanceUnitHref(finding.vehicle_id, "inspections"),
     action: "Bulguyu Aç",
     badge: {
       label: finding.severity === "do_not_dispatch" ? "Sevke Çıkmasın" : "Kritik",
@@ -296,9 +301,14 @@ export default async function MaintenanceOverviewPage({
   const actions = [...findingActions, ...pmActions]
     .sort((a, b) => a.priority - b.priority || a.unit.localeCompare(b.unit))
     .slice(0, 16);
-  const recent = recentResult.data ?? [];
-  const repairWarningAmount = Number(settings?.repair_warning_amount ?? 0);
-  const highCostRepairs = (highCostResult.data ?? [])
+  const displayRecords = directory.records.map((record) => ({
+    ...record,
+    unit_number: vehicleById.get(record.vehicle_id)?.unit_number ?? "-",
+  }));
+  const recent = displayRecords.slice(0, 5);
+  const repairWarningAmount = directory.repairWarningAmount;
+  const highCostRepairs = displayRecords
+    .filter((row) => !row.planned)
     .filter((row: any) => Number(row.total_cost ?? row.cost ?? 0) >= repairWarningAmount && Number(row.total_cost ?? row.cost ?? 0) > 0)
     .slice(0, 5);
 
@@ -309,6 +319,32 @@ export default async function MaintenanceOverviewPage({
       <header>
         <p className="text-sm text-slate-500">Bugün ilgilenmeniz gereken araçlar ve bakım işlemleri.</p>
       </header>
+
+      <section className="space-y-4" aria-labelledby="unit-maintenance-directory-title">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+          <div>
+            <h2 id="unit-maintenance-directory-title" className="text-lg font-semibold">
+              Unit Bakım Görünümü
+            </h2>
+            <p className="mt-1 max-w-3xl text-sm text-slate-500">
+              Bir unit seçerek bakım özeti, hatırlatıcılar, geçmiş, inspection, maliyet ve mileage
+              bilgilerini görüntüleyin.
+            </p>
+          </div>
+          <Link className="text-sm font-semibold text-brand hover:underline" href="/maintenance/units">
+            Tüm Unitleri Aç
+          </Link>
+        </div>
+        <MaintenanceUnitDirectory
+          units={directory.units}
+          variant="overview"
+          includeArchived={includeArchived}
+          initialQuery={first(params.unitsQ) ?? ""}
+          initialOperationalStatus={initialOperationalStatus}
+          initialAttentionStatus={initialAttentionStatus}
+          limit={10}
+        />
+      </section>
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Hızlı işlemler">
         <ManualMaintenanceEntry
@@ -321,14 +357,18 @@ export default async function MaintenanceOverviewPage({
           buttonLabel={MAINTENANCE_TERMS.addMaintenance}
           buttonClassName="flex min-h-24 items-center justify-between rounded-lg border border-brand bg-brand p-4 text-left font-semibold text-white shadow-sm transition hover:bg-brand/90"
         />
-        <QuickAction href="/vehicles" label={MAINTENANCE_TERMS.updateMileage} />
-        <QuickAction href="/maintenance/inspections" label={MAINTENANCE_TERMS.startInspection} />
+        <QuickAction href="/maintenance/units?action=mileage" label={MAINTENANCE_TERMS.updateMileage} />
+        <QuickAction href="/maintenance/units?action=inspections" label={MAINTENANCE_TERMS.startInspection} />
         <OtherActionsMenu />
       </section>
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Dikkat özeti">
         <SummaryCard label="Gecikmiş" value={overdueCount} tone={overdueCount > 0 ? "red" : "slate"} />
-        <SummaryCard label="7 gün / 2.000 mil içinde" value={dueSoonCount} tone={dueSoonCount > 0 ? "amber" : "slate"} />
+        <SummaryCard
+          label={`${thresholds.dueSoonDays} gün / ${thresholds.dueSoonMiles.toLocaleString("en-US")} mil içinde`}
+          value={dueSoonCount}
+          tone={dueSoonCount > 0 ? "amber" : "slate"}
+        />
         <SummaryCard label="Açık kritik bulgu" value={findings.length} tone={findings.length > 0 ? "red" : "slate"} />
       </section>
 
