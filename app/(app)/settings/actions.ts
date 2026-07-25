@@ -20,10 +20,12 @@ export async function updateSettings(formData: FormData): Promise<void> {
   const dueSoonEngineHours = num("pm_due_soon_engine_hours");
   const repairWarning = num("repair_warning_amount");
   const allocationTolerance = num("maintenance_invoice_allocation_tolerance");
+  const approvalThreshold = num("maintenance_work_order_approval_threshold");
   const fuelPct = num("fuel_warning_pct");
   const updatesDispatchHoldPolicy = formData.get("dispatch_hold_on_critical_present") === "1";
   const dispatchHoldOnCritical = formData.getAll("dispatch_hold_on_critical").includes("on");
-  const values = [defaultCommission, dueSoonMiles, dueSoonDays, dueSoonEngineHours, repairWarning, allocationTolerance, fuelPct];
+  const updatesApprovalThreshold = formData.get("maintenance_work_order_approval_threshold_present") === "1";
+  const values = [defaultCommission, dueSoonMiles, dueSoonDays, dueSoonEngineHours, repairWarning, allocationTolerance, fuelPct, approvalThreshold];
   if (values.some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
     throw new Error("Invalid settings value.");
   }
@@ -51,6 +53,7 @@ export async function updateSettings(formData: FormData): Promise<void> {
     maintenance_invoice_allocation_tolerance: allocationTolerance,
     fuel_warning_pct: fuelPct != null ? fuelPct / 100 : null,
     ...(updatesDispatchHoldPolicy ? { dispatch_hold_on_critical: dispatchHoldOnCritical } : {}),
+    ...(updatesApprovalThreshold ? { maintenance_work_order_approval_threshold: approvalThreshold } : {}),
     updated_at: new Date().toISOString(),
   };
 

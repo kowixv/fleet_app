@@ -83,6 +83,11 @@ export default async function MaintenanceSettingsPage() {
             <label className="label">Invoice tutar toleransı ($)</label>
             <input name="maintenance_invoice_allocation_tolerance" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_invoice_allocation_tolerance ?? 1} className="input" />
           </div>
+          <div>
+            <input name="maintenance_work_order_approval_threshold_present" type="hidden" value="1" />
+            <label className="label">Work order onay eşiği ($)</label>
+            <input name="maintenance_work_order_approval_threshold" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_work_order_approval_threshold ?? 2500} className="input" />
+          </div>
           <label className="col-span-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             <input name="dispatch_hold_on_critical_present" type="hidden" value="1" />
             <input

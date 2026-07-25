@@ -4,6 +4,7 @@ import MaintenanceNav from "@/components/MaintenanceNav";
 import { serviceKey, type ReviewDraftData, type VehicleOption } from "@/lib/maintenance-invoice-review";
 import { createClient } from "@/lib/supabase/server";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
+import { createMaintenanceWorkOrder } from "@/app/(app)/maintenance/work-orders/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -26,7 +27,7 @@ export default async function MaintenanceInvoiceReviewPage({ params }: { params:
   const [invoiceRes, vehiclesRes, rulesRes, settingsRes] = await Promise.all([
     supabase
       .from("maintenance_invoices")
-      .select("id, status, file_hash, file_name, parsed_data")
+      .select("id, vehicle_id, status, file_hash, file_name, parsed_data")
       .eq("id", id)
       .single(),
     supabase
@@ -69,9 +70,23 @@ export default async function MaintenanceInvoiceReviewPage({ params }: { params:
         </div>
       </div>
 
+      <details className="rounded-lg border border-slate-200 bg-white">
+        <summary className="cursor-pointer px-4 py-3 font-semibold">Invoice review’den work order oluştur</summary>
+        <form action={createMaintenanceWorkOrder} className="grid gap-3 border-t border-slate-100 p-4 md:grid-cols-3">
+          <input type="hidden" name="source_type" value="invoice_review" />
+          <input type="hidden" name="source_id" value={id} />
+          <input type="hidden" name="priority" value="normal" />
+          <input type="hidden" name="title" value={`${invoiceRes.data.file_name} invoice review`} />
+          <label className="text-sm"><span className="label">Unit</span><select className="input" name="vehicle_id" defaultValue={invoiceRes.data.vehicle_id ?? ""} required><option value="">Seçin</option>{(vehiclesRes.data ?? []).map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.unit_number}</option>)}</select></label>
+          <label className="text-sm md:col-span-2"><span className="label">Açıklama</span><input className="input" name="complaint" defaultValue={`Invoice incelemesi: ${invoiceRes.data.file_name}`} /></label>
+          <div className="md:col-span-3"><button className="btn-primary">Work order oluştur</button></div>
+        </form>
+      </details>
+
       <MaintenanceInvoiceReview
         invoice={invoiceRes.data as {
           id: string;
+          vehicle_id: string | null;
           status: string;
           file_hash: string;
           file_name: string;

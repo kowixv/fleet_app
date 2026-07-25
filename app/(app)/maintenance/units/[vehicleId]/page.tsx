@@ -110,7 +110,7 @@ export default async function MaintenanceUnitDetailPage({
     supabase.from("vehicle_maintenance_profiles").select("*").eq("vehicle_id", vehicleId).maybeSingle(),
     supabase
       .from("inspection_findings")
-      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
+      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
       .eq("vehicle_id", vehicleId)
       .eq("status", "open")
       .in("severity", ["critical", "do_not_dispatch"])
@@ -219,7 +219,7 @@ export default async function MaintenanceUnitDetailPage({
       supabase.from("maintenance_rules").select("id, vehicle_id, service_type").eq("vehicle_id", vehicleId).eq("active", true),
       supabase
         .from("inspection_findings")
-        .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
+        .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
         .eq("vehicle_id", vehicleId)
         .eq("status", "open")
         .order("created_at", { ascending: false })
