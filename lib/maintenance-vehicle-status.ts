@@ -13,4 +13,3 @@ export function isMaintenanceVisibleVehicleStatus(status: string | null | undefi
 export function maintenanceVisibleVehicleStatuses(): string[] {
   return [...MAINTENANCE_VISIBLE_VEHICLE_STATUSES];
 }
-
