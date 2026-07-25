@@ -34,7 +34,7 @@ export default async function MaintenanceCostsPage({
 
   const supabase = await createClient();
   const [settingsResult, vehiclesResult, costRowsResult, mileageSnapshotsResult] = await Promise.all([
-    supabase.from("settings").select("repair_warning_amount").single(),
+    supabase.from("settings").select("repair_warning_amount, maintenance_average_daily_contribution").single(),
     supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("maintenance_cost_fact_v")
@@ -61,6 +61,7 @@ export default async function MaintenanceCostsPage({
         vehicles={(vehiclesResult.data ?? []) as any}
         filters={{ ...costFilters, start: costStart, end: costEnd }}
         repairWarningAmount={Number(settingsResult.data?.repair_warning_amount ?? 5_000)}
+        averageDailyContribution={Number(settingsResult.data?.maintenance_average_daily_contribution ?? 600)}
         exportHref={`/api/maintenance/costs/export?${exportParams.toString()}`}
       />
     </div>

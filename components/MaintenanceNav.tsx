@@ -12,6 +12,9 @@ const ITEMS = [
   { href: "/maintenance/history", label: "Geçmiş" },
   { href: "/maintenance/inspections", label: "Inspection" },
   { href: "/maintenance/costs", label: "Maliyetler" },
+  { href: "/maintenance/budgets", label: "Bütçeler" },
+  { href: "/maintenance/warranties", label: "Warranty" },
+  { href: "/maintenance/analytics", label: "Karar Destek" },
   { href: "/maintenance/settings", label: "Ayarlar" },
 ];
 
