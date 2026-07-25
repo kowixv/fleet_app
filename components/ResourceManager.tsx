@@ -34,6 +34,7 @@ export interface Pagination {
 
 interface Props {
   title: string;
+  headingLevel?: "h1" | "h2";
   table: string;
   basePath: string; // for revalidation + pagination links
   fields: Field[];
@@ -60,6 +61,7 @@ function fromFormValue(field: Field, v: FormDataEntryValue | null): any {
 
 export default function ResourceManager({
   title,
+  headingLevel = "h1",
   table,
   basePath,
   fields,
@@ -69,6 +71,7 @@ export default function ResourceManager({
   paginationHref,
   renderActions,
 }: Props) {
+  const Heading = headingLevel;
   const [editing, setEditing] = useState<Record<string, any> | null>(null);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
@@ -123,7 +126,7 @@ export default function ResourceManager({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-bold">{title}</h1>
+        <Heading className="text-xl font-bold">{title}</Heading>
         <button onClick={startAdd} className="btn-primary">
           + {addLabel}
         </button>

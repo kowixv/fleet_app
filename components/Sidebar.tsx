@@ -14,8 +14,7 @@ const NAV: { href: string; label: string; group?: string }[] = [
   { href: "/settlements/settings", label: "Settlement Settings" },
   { href: "/vehicles", label: "Vehicles / Units", group: "Kayıtlar" },
   { href: "/people", label: "Drivers / Owners" },
-  { href: "/companies", label: "Companies" },
-  { href: "/carriers", label: "External Carriers" },
+  { href: "/companies", label: "Companies / Carriers" },
   { href: "/maintenance", label: "Maintenance", group: "Bakım" },
   { href: "/settings", label: "Settings", group: "Sistem" },
 ];
