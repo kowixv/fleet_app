@@ -556,7 +556,12 @@ export function maintenanceCostRowsToCsv(rows: MaintenanceCostRow[]): string {
     "invoice_id",
   ];
   const escape = (value: unknown) => {
-    const text = value == null ? "" : String(value);
+    const raw = value == null ? "" : String(value);
+    const text = /^[-+]?(\d+|\d*\.\d+)$/.test(raw.trim())
+      ? raw
+      : /^[=+\-@]/.test(raw)
+        ? `'${raw}`
+        : raw;
     return /[",\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return [
