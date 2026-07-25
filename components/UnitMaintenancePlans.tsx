@@ -74,6 +74,7 @@ export default function UnitMaintenancePlans({
                     <div className="mt-1 space-y-1">
                       <p>Sonraki: {nextDueText(pm)}</p>
                       {pm.dimensions.map((dimension) => <p key={dimension.unit}>{formatPMDimension(dimension)}</p>)}
+                      {pm.missingDimensions.length > 0 && <p>Eksik baseline: {pm.missingDimensions.join(", ")}</p>}
                     </div>
                   </details>
                 </div>

@@ -5,6 +5,7 @@ import { usd } from "@/lib/format";
 import { computePM, type PMResult, type PMStatus, type PMThresholds } from "@/lib/maintenance";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -45,6 +46,7 @@ interface ActionItem {
 }
 
 const STATUS_BADGE: Record<PMStatus, { label: string; className: string }> = {
+  setup_required: { label: MAINTENANCE_TERMS.setupRequired, className: "bg-slate-100 text-slate-700" },
   ok: { label: "Tamam", className: "bg-green-100 text-green-700" },
   warning: { label: "Yaklaşıyor", className: "bg-yellow-100 text-yellow-700" },
   due_soon: { label: "Yakında", className: "bg-amber-100 text-amber-700" },
@@ -63,6 +65,7 @@ function unitLabel(unit: PMResult["unit"]) {
 }
 
 function formatAttentionAmount(pm: PMResult): string {
+  if (pm.needsSetup && pm.dimensions.length === 0) return "Baseline bilgisi eksik";
   if (pm.remaining == null || pm.triggeredBy == null) return "Kontrol gerekli";
   const amount = formatNumber(pm.remaining);
   const unit = unitLabel(pm.triggeredBy);
@@ -76,7 +79,7 @@ function buildPMActions(
   thresholds: PMThresholds,
   engineHoursByVehicle: Record<string, number | null>,
 ): ActionItem[] {
-  const priority: Record<PMStatus, number> = { overdue: 20, due_now: 21, due_soon: 30, warning: 35, ok: 99 };
+  const priority: Record<PMStatus, number> = { overdue: 20, due_now: 21, setup_required: 25, due_soon: 30, warning: 35, ok: 99 };
   return rules
     .map((rule) => ({
       rule,
@@ -88,7 +91,7 @@ function buildPMActions(
         engineHoursByVehicle[rule.effective_vehicle_id ?? rule.vehicle_id ?? ""] ?? null,
       ),
     }))
-    .filter(({ pm }) => pm.status === "overdue" || pm.status === "due_now" || pm.status === "due_soon")
+    .filter(({ pm }) => pm.status === "overdue" || pm.status === "due_now" || pm.status === "due_soon" || pm.status === "setup_required")
     .map(({ rule, pm }) => ({
       kind: "maintenance",
       priority: priority[pm.status],
@@ -223,7 +226,7 @@ export default async function MaintenanceOverviewPage({
       .in("severity", ["critical", "do_not_dispatch"])
       .order("created_at", { ascending: false })
       .limit(12),
-    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("maintenance_records")
       .select("id, service_type, performed_date, mileage, cost, total_cost, shop_name, source, vehicles!maintenance_records_vehicle_id_fkey(unit_number)")
@@ -272,6 +275,15 @@ export default async function MaintenanceOverviewPage({
   const pmActions = buildPMActions(ruleRows, thresholds, engineHoursByVehicle);
   const overdueCount = pmActions.filter((item) => item.badge.label === "Gecikmiş" || item.badge.label === "Bugün").length;
   const dueSoonCount = pmActions.filter((item) => item.badge.label === "Yakında").length;
+  const setupRequiredCount = ruleRows
+    .map((rule) => computePM(
+      rule,
+      Number(rule.vehicles?.current_mileage ?? 0),
+      thresholds,
+      todayISO(),
+      engineHoursByVehicle[rule.effective_vehicle_id ?? rule.vehicle_id ?? ""] ?? null,
+    ))
+    .filter((pm) => pm.needsSetup).length;
   const findings = (findingsResult.data ?? []) as unknown as FindingRow[];
   const vehicles = (vehiclesResult.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null }>;
   const activeRules = ruleRows.map((rule) => ({
@@ -328,7 +340,8 @@ export default async function MaintenanceOverviewPage({
 
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4" aria-label="Dikkat özeti">
         <SummaryCard label="Gecikmiş" value={overdueCount} tone={overdueCount > 0 ? "red" : "slate"} />
-        <SummaryCard label="7 gün / 2.000 mil içinde" value={dueSoonCount} tone={dueSoonCount > 0 ? "amber" : "slate"} />
+        <SummaryCard label={`${thresholds.dueSoonDays} gün / ${thresholds.dueSoonMiles.toLocaleString("en-US")} mil içinde`} value={dueSoonCount} tone={dueSoonCount > 0 ? "amber" : "slate"} />
+        <SummaryCard label={MAINTENANCE_TERMS.setupRequired} value={setupRequiredCount} tone={setupRequiredCount > 0 ? "amber" : "slate"} />
         <SummaryCard label="Açık kritik bulgu" value={findings.length} tone={findings.length > 0 ? "red" : "slate"} />
       </section>
 

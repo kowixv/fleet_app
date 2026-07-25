@@ -2,6 +2,7 @@ import Link from "next/link";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { PM_BADGE, computePM, type PMResult, type PMThresholds } from "@/lib/maintenance";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -29,10 +30,11 @@ interface RuleRow {
   last_done_engine_hours: number | null;
 }
 
-type UnitStatus = "ok" | "due_soon" | "overdue";
+type UnitStatus = "ok" | "setup_required" | "due_soon" | "overdue";
 
 function classify(results: PMResult[]): UnitStatus {
   if (results.some((result) => result.status === "overdue" || result.status === "due_now")) return "overdue";
+  if (results.some((result) => result.needsSetup)) return "setup_required";
   if (results.some((result) => result.status === "due_soon" || result.status === "warning")) return "due_soon";
   return "ok";
 }
@@ -40,6 +42,7 @@ function classify(results: PMResult[]): UnitStatus {
 function statusLabel(status: UnitStatus) {
   if (status === "overdue") return "Gecikmiş";
   if (status === "due_soon") return "Yakında";
+  if (status === "setup_required") return "Kurulum Gerekli";
   return "Tamam";
 }
 
@@ -52,8 +55,8 @@ export default async function MaintenanceUnitsPage({
   const q = String(Array.isArray(params.q) ? params.q[0] : params.q ?? "").trim().toLowerCase();
   const statusFilter = String(Array.isArray(params.status) ? params.status[0] : params.status ?? "all");
   const supabase = await createClient();
-  const [vehiclesRes, rulesRes, statesRes, settingsRes, profilesRes, findingsRes, historyRes] = await Promise.all([
-    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").eq("status", "active").order("unit_number"),
+  const [vehiclesRes, rulesRes, statesRes, settingsRes, profilesRes, findingsRes, historyRes, holdsRes] = await Promise.all([
+    supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("maintenance_rules")
       .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active")
@@ -63,8 +66,9 @@ export default async function MaintenanceUnitsPage({
     supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
     supabase.from("inspection_findings").select("vehicle_id, severity").eq("status", "open").in("severity", ["critical", "do_not_dispatch"]),
     supabase.from("maintenance_records").select("vehicle_id, performed_date").order("performed_date", { ascending: false }).limit(500),
+    supabase.from("vehicle_dispatch_holds").select("vehicle_id").eq("status", "open"),
   ]);
-  const error = vehiclesRes.error ?? rulesRes.error ?? statesRes.error ?? settingsRes.error ?? profilesRes.error ?? findingsRes.error ?? historyRes.error;
+  const error = vehiclesRes.error ?? rulesRes.error ?? statesRes.error ?? settingsRes.error ?? profilesRes.error ?? findingsRes.error ?? historyRes.error ?? holdsRes.error;
   if (error) throw new Error(`Araç bakım listesi yüklenemedi: ${error.message}`);
 
   const settings = settingsRes.data;
@@ -94,6 +98,7 @@ export default async function MaintenanceUnitsPage({
   for (const finding of (findingsRes.data ?? []) as Array<{ vehicle_id: string }>) {
     criticalFindings.set(finding.vehicle_id, (criticalFindings.get(finding.vehicle_id) ?? 0) + 1);
   }
+  const dispatchHolds = new Set(((holdsRes.data ?? []) as Array<{ vehicle_id: string }>).map((hold) => hold.vehicle_id));
   const lastMaintenance = new Map<string, string>();
   for (const row of (historyRes.data ?? []) as Array<{ vehicle_id: string; performed_date: string | null }>) {
     if (row.performed_date && !lastMaintenance.has(row.vehicle_id)) lastMaintenance.set(row.vehicle_id, row.performed_date);
@@ -113,6 +118,7 @@ export default async function MaintenanceUnitsPage({
         engineHours: engineHours.get(vehicle.id) ?? null,
         lastMaintenance: lastMaintenance.get(vehicle.id) ?? null,
         criticalFindings: criticalFindings.get(vehicle.id) ?? 0,
+        dispatchHold: dispatchHolds.has(vehicle.id),
       };
     })
     .filter((row) => !q || row.vehicle.unit_number.toLowerCase().includes(q))
@@ -160,9 +166,10 @@ export default async function MaintenanceUnitsPage({
                   <p className="text-sm text-slate-500">Araç</p>
                   <h3 className="text-xl font-bold">{row.vehicle.unit_number}</h3>
                 </div>
-                <span className={`badge ${row.status === "ok" ? PM_BADGE.ok : row.status === "overdue" ? PM_BADGE.overdue : PM_BADGE.due_soon}`}>
+                <span className={`badge ${row.status === "ok" ? PM_BADGE.ok : row.status === "overdue" ? PM_BADGE.overdue : row.status === "setup_required" ? PM_BADGE.setup_required : PM_BADGE.due_soon}`}>
                   {statusLabel(row.status)}
                 </span>
+                {row.dispatchHold && <span className="badge ml-2 bg-red-700 text-white">SEVKE ÇIKMASIN</span>}
               </div>
               <div className="mt-4 grid gap-3 sm:grid-cols-3">
                 <MiniStat label="Mevcut mileage" value={row.vehicle.current_mileage == null ? "-" : `${Number(row.vehicle.current_mileage).toLocaleString("en-US")} mi`} />

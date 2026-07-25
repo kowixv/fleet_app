@@ -11,6 +11,7 @@ import {
   escapeHtml,
 } from "@/lib/telegram";
 import { parseLoad } from "@/lib/parse";
+import { assertVehicleDispatchable } from "@/lib/dispatch-holds";
 import { usd } from "@/lib/format";
 import { safeEqual, secretMisconfigured } from "@/lib/secure";
 import {
@@ -746,6 +747,14 @@ async function handleCallback(supabase: any, cb: any) {
 
   const vehicleId = selectedVehicleId ?? group?.vehicle_id ?? null;
   const driverId = selectedDriverId ?? group?.driver_id ?? null;
+
+  const dispatchable = await assertVehicleDispatchable(supabase, imp.organization_id, vehicleId);
+  if (!dispatchable.ok) {
+    await supabase.from("imported_loads").update({ status: "pending" }).eq("id", importId);
+    await answerCallbackQuery(cb.id, dispatchable.error);
+    if (chatId && messageId) await editMessageText(chatId, messageId, `⚠️ ${dispatchable.error}`);
+    return;
+  }
 
   const { data: load, error: loadError } = await supabase
     .from("loads")

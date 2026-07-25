@@ -2,18 +2,20 @@ import MaintenanceNav from "@/components/MaintenanceNav";
 import MaintenanceReminderManager, { type ReminderRow } from "@/components/MaintenanceReminderManager";
 import { computePM, type PMThresholds } from "@/lib/maintenance";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 import Link from "next/link";
 
 export const dynamic = "force-dynamic";
 
-type Tab = "all" | "soon" | "overdue" | "inactive";
+type Tab = "all" | "soon" | "overdue" | "setup" | "inactive";
 
 const TABS: Array<{ id: Tab; label: string }> = [
   { id: "all", label: "Tümü" },
   { id: "soon", label: "Yaklaşan" },
   { id: "overdue", label: "Geciken" },
+  { id: "setup", label: "Kurulum Gerekli" },
   { id: "inactive", label: "Pasif" },
 ];
 
@@ -58,7 +60,9 @@ export default async function MaintenanceRemindersPage({
     ]),
   );
   const engineModels = new Map(profileRows.map((profile) => [profile.vehicle_id, profile.engine_model]));
-  const vehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null; status: string | null }>).map((vehicle) => ({
+  const maintenanceVehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; current_mileage: number | null; status: string | null }>)
+    .filter((vehicle) => maintenanceVisibleVehicleStatuses().includes(String(vehicle.status)));
+  const vehicles = maintenanceVehicles.map((vehicle) => ({
     value: vehicle.id,
     label: vehicle.unit_number,
     vehicleType: vehicle.vehicle_type,
@@ -68,7 +72,7 @@ export default async function MaintenanceRemindersPage({
   const vehicleById = new Map(vehicles.map((vehicle) => [vehicle.value, vehicle]));
   const effectiveRows = expandEffectiveMaintenanceRules(
     (rulesRes.data ?? []) as any[],
-    ((vehiclesRes.data ?? []) as any[]).map((vehicle) => ({
+    (maintenanceVehicles as any[]).map((vehicle) => ({
       ...vehicle,
       engine_hours: profiles.get(vehicle.id) ?? null,
     })),
@@ -88,11 +92,12 @@ export default async function MaintenanceRemindersPage({
       vehicle?.engineHours ?? null,
     );
     if (tab === "overdue") return pm.status === "overdue" || pm.status === "due_now";
+    if (tab === "setup") return pm.needsSetup;
     return pm.status === "due_soon" || pm.status === "warning";
   });
   const defaultVehicle = first(params.vehicleId) ? vehicleById.get(first(params.vehicleId)!) : null;
   const installerVehicles = ((vehiclesRes.data ?? []) as Array<{ id: string; unit_number: string; vehicle_type: string; status: string | null }>)
-    .filter((vehicle) => vehicle.status === "active" && (vehicle.vehicle_type === "truck" || vehicle.vehicle_type === "box_truck"))
+    .filter((vehicle) => maintenanceVisibleVehicleStatuses().includes(String(vehicle.status)) && (vehicle.vehicle_type === "truck" || vehicle.vehicle_type === "box_truck"))
     .map((vehicle) => ({
       id: vehicle.id,
       unitNumber: vehicle.unit_number,

@@ -1,6 +1,7 @@
 import MaintenanceHistoryActions from "@/components/MaintenanceHistoryActions";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { usd } from "@/lib/format";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
@@ -20,9 +21,12 @@ export default async function MaintenanceHistoryPage({
   const end = first(params.end) ?? "";
   const service = first(params.service) ?? "";
   const kind = first(params.kind) ?? "all";
+  const archive = first(params.archive) ?? "current";
 
   const supabase = await createClient();
-  const vehiclesRes = await supabase.from("vehicles").select("id, unit_number").eq("status", "active").order("unit_number");
+  let vehiclesQuery = supabase.from("vehicles").select("id, unit_number, status").order("unit_number");
+  if (archive !== "include") vehiclesQuery = vehiclesQuery.in("status", maintenanceVisibleVehicleStatuses());
+  const vehiclesRes = await vehiclesQuery;
   if (vehiclesRes.error) throw new Error(`Unit listesi yüklenemedi: ${vehiclesRes.error.message}`);
 
   let query = supabase
@@ -49,8 +53,22 @@ export default async function MaintenanceHistoryPage({
       parts_cost,
       shop_fees,
       tax_cost,
+      towing_cost,
+      road_service_cost,
+      hotel_travel_cost,
+      diagnostic_cost,
+      freight_shipping_cost,
+      core_charge_cost,
+      environmental_fee_cost,
+      machine_shop_cost,
+      sublet_cost,
+      other_cost,
+      warranty_recovery,
+      refund_credit,
       downtime_start,
       downtime_end,
+      cause,
+      breakdown_occurred,
       vehicles!maintenance_records_vehicle_id_fkey(unit_number),
       maintenance_invoices(file_name, invoice_number)
     `)
@@ -80,7 +98,7 @@ export default async function MaintenanceHistoryPage({
         <p className="mt-1 text-sm text-slate-500">Manuel kayıtlar, invoice kaynaklı kayıtlar ve tamamlanmış servis geçmişi.</p>
       </div>
 
-      <form className="card grid gap-3 md:grid-cols-6">
+      <form className="card grid gap-3 md:grid-cols-7">
         <div>
           <label className="label">Unit</label>
           <select className="input" name="vehicle" defaultValue={vehicle}>
@@ -110,6 +128,13 @@ export default async function MaintenanceHistoryPage({
         </div>
         <div className="flex items-end">
           <button className="btn-primary w-full" type="submit">Filtrele</button>
+        </div>
+        <div>
+          <label className="label">Arşiv</label>
+          <select className="input" name="archive" defaultValue={archive}>
+            <option value="current">Aktif bakım araçları</option>
+            <option value="include">Pasif / arşiv dahil</option>
+          </select>
         </div>
       </form>
 

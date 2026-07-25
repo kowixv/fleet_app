@@ -1,4 +1,4 @@
-export type PMStatus = "ok" | "warning" | "due_soon" | "due_now" | "overdue";
+export type PMStatus = "setup_required" | "ok" | "warning" | "due_soon" | "due_now" | "overdue";
 export type PMUnit = "miles" | "days" | "engine_hours";
 export type DutyCycle = "heavy" | "short_haul" | "normal_otr" | "light";
 
@@ -23,6 +23,8 @@ export interface PMResult {
   nextDue: number | string | null;
   remaining: number | null;
   dimensions: PMDimensionResult[];
+  needsSetup: boolean;
+  missingDimensions: PMUnit[];
   label: string;
 }
 
@@ -41,6 +43,7 @@ export interface DutyCycleRecommendation {
 }
 
 const STATUS_LABEL: Record<PMStatus, string> = {
+  setup_required: "Kurulum gerekli",
   ok: "OK",
   warning: "Yaklaşıyor",
   due_soon: "Yakında",
@@ -53,7 +56,8 @@ const STATUS_PRIORITY: Record<PMStatus, number> = {
   due_now: 1,
   due_soon: 2,
   warning: 3,
-  ok: 4,
+  setup_required: 4,
+  ok: 5,
 };
 
 const UNIT_LABEL: Record<PMUnit, string> = {
@@ -126,8 +130,13 @@ export function computePM(
     thresholds.dueSoonEngineHours ?? DEFAULT_PM_THRESHOLDS.dueSoonEngineHours,
   );
   const dimensions: PMDimensionResult[] = [];
+  const missingDimensions: PMUnit[] = [];
+  const lastDoneDate = rule.last_done_date;
+  const validLastDoneDate = validDateOnly(lastDoneDate) ? lastDoneDate : null;
 
-  if (Number(rule.interval_miles) > 0 && rule.last_done_mileage != null) {
+  if (Number(rule.interval_miles) > 0 && rule.last_done_mileage == null) {
+    missingDimensions.push("miles");
+  } else if (Number(rule.interval_miles) > 0) {
     const interval = Number(rule.interval_miles);
     const nextDue = Number(rule.last_done_mileage) + interval;
     const remaining = nextDue - Number(currentMileage || 0);
@@ -141,9 +150,11 @@ export function computePM(
     });
   }
 
-  if (Number(rule.interval_days) > 0 && validDateOnly(rule.last_done_date) && validDateOnly(today)) {
+  if (Number(rule.interval_days) > 0 && (validLastDoneDate == null || !validDateOnly(today))) {
+    missingDimensions.push("days");
+  } else if (Number(rule.interval_days) > 0 && validLastDoneDate != null) {
     const interval = Number(rule.interval_days);
-    const nextDue = addDaysISO(rule.last_done_date, interval);
+    const nextDue = addDaysISO(validLastDoneDate, interval);
     const remaining = epochDay(nextDue) - epochDay(today);
     const consumedRatio = Math.max(0, (interval - remaining) / interval);
     dimensions.push({
@@ -157,9 +168,10 @@ export function computePM(
 
   if (
     Number(rule.interval_engine_hours) > 0 &&
-    rule.last_done_engine_hours != null &&
-    currentEngineHours != null
+    (rule.last_done_engine_hours == null || currentEngineHours == null)
   ) {
+    missingDimensions.push("engine_hours");
+  } else if (Number(rule.interval_engine_hours) > 0) {
     const interval = Number(rule.interval_engine_hours);
     const nextDue = Number(rule.last_done_engine_hours) + interval;
     const remaining = nextDue - Number(currentEngineHours || 0);
@@ -174,14 +186,17 @@ export function computePM(
   }
 
   if (dimensions.length === 0) {
+    const status: PMStatus = missingDimensions.length > 0 ? "setup_required" : "ok";
     return {
-      status: "ok",
-      unit: "miles",
+      status,
+      unit: missingDimensions[0] ?? "miles",
       triggeredBy: null,
       nextDue: null,
       remaining: null,
       dimensions: [],
-      label: "-",
+      needsSetup: missingDimensions.length > 0,
+      missingDimensions,
+      label: status === "setup_required" ? STATUS_LABEL.setup_required : "-",
     };
   }
 
@@ -193,11 +208,14 @@ export function computePM(
     nextDue: triggered.nextDue,
     remaining: triggered.remaining,
     dimensions,
+    needsSetup: missingDimensions.length > 0,
+    missingDimensions,
     label: STATUS_LABEL[triggered.status],
   };
 }
 
 export function formatPMRemaining(pm: PMResult): string {
+  if (pm.needsSetup && pm.dimensions.length === 0) return `Kurulum gerekli: ${pm.missingDimensions.map((unit) => UNIT_LABEL[unit]).join(", ")}`;
   if (pm.remaining == null || pm.triggeredBy == null) return "-";
   const amount = Math.abs(pm.remaining).toLocaleString("en-US");
   const unit = UNIT_LABEL[pm.triggeredBy];
@@ -258,6 +276,7 @@ export function recommendWetPMInterval(input: DutyCycleRecommendationInput): Dut
 }
 
 export const PM_BADGE: Record<PMStatus, string> = {
+  setup_required: "bg-slate-100 text-slate-700",
   ok: "bg-green-100 text-green-700",
   warning: "bg-yellow-100 text-yellow-700",
   due_soon: "bg-amber-100 text-amber-700",

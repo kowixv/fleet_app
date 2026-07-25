@@ -309,4 +309,16 @@ describe("maintenance cost analytics", () => {
     expect(csv.split("\n")[0]).toContain("direct_maintenance_cost");
     expect(csv.split("\n")[0]).toContain("total_breakdown_impact");
   });
+
+  it("neutralizes spreadsheet formulas while preserving negative numbers", () => {
+    const csv = maintenanceCostRowsToCsv([
+      row({ shop: "=HYPERLINK(\"https://example.invalid\")", mileage_at_service: -12.5 }),
+      row({ shop: "+cmd", service_type: "@SUM(A1:A2)" }),
+    ]);
+    expect(csv).toContain("'=HYPERLINK");
+    expect(csv).toContain("'+cmd");
+    expect(csv).toContain("'@SUM");
+    expect(csv).toContain("-12.5");
+    expect(csv).not.toContain("'-12.5");
+  });
 });

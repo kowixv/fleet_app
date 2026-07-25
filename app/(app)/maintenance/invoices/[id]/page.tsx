@@ -3,6 +3,7 @@ import MaintenanceInvoiceReview from "@/components/MaintenanceInvoiceReview";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import { serviceKey, type ReviewDraftData, type VehicleOption } from "@/lib/maintenance-invoice-review";
 import { createClient } from "@/lib/supabase/server";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 
 export const dynamic = "force-dynamic";
 
@@ -31,7 +32,7 @@ export default async function MaintenanceInvoiceReviewPage({ params }: { params:
     supabase
       .from("vehicles")
       .select("id, unit_number, current_mileage")
-      .eq("status", "active")
+      .in("status", maintenanceVisibleVehicleStatuses())
       .order("unit_number"),
     supabase
       .from("maintenance_rules")

@@ -1,6 +1,7 @@
 import MaintenanceCostDashboard, { normalizeMaintenanceCostFilters } from "@/components/MaintenanceCostDashboard";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import type { MaintenanceCostRow, MileagePeriodSnapshot } from "@/lib/maintenance-cost";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
 
@@ -34,7 +35,7 @@ export default async function MaintenanceCostsPage({
   const supabase = await createClient();
   const [settingsResult, vehiclesResult, costRowsResult, mileageSnapshotsResult] = await Promise.all([
     supabase.from("settings").select("repair_warning_amount").single(),
-    supabase.from("vehicles").select("id, unit_number").eq("status", "active").order("unit_number"),
+    supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("maintenance_cost_fact_v")
       .select("*")

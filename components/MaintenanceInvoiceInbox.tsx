@@ -3,6 +3,11 @@
 import Link from "next/link";
 import { useRef, useState, type DragEvent } from "react";
 import { cancelMaintenanceInvoiceReview, undoMaintenanceInvoiceImport } from "@/app/(app)/maintenance/invoice-actions";
+import {
+  DEFAULT_MAINTENANCE_INVOICE_MAX_BYTES,
+  parseMaintenanceInvoiceUploadResponse,
+  validateMaintenanceInvoiceFileMeta,
+} from "@/lib/maintenance-invoice-upload";
 
 export interface MaintenanceInvoiceInboxRow {
   id: string;
@@ -34,8 +39,9 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
 
   function upload(file: File | null | undefined) {
     if (!file) return;
-    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
-      setMessage({ type: "error", text: "Sadece PDF yükleyin." });
+    const fileError = validateMaintenanceInvoiceFileMeta(file, DEFAULT_MAINTENANCE_INVOICE_MAX_BYTES);
+    if (fileError) {
+      setMessage({ type: "error", text: fileError });
       return;
     }
     const form = new FormData();
@@ -49,11 +55,11 @@ export default function MaintenanceInvoiceInbox({ rows }: { rows: MaintenanceInv
     };
     xhr.onload = () => {
       setProgress(null);
-      const body = JSON.parse(xhr.responseText || "{}");
+      const body = parseMaintenanceInvoiceUploadResponse(xhr.responseText);
       if (xhr.status >= 200 && xhr.status < 300 && body.invoiceId) {
         window.location.href = `/maintenance/invoices/${body.invoiceId}`;
       } else {
-        setMessage({ type: "error", text: body.error ?? "PDF işlenemedi." });
+        setMessage({ type: "error", text: body.error ?? `PDF işlenemedi (HTTP ${xhr.status}).` });
       }
     };
     xhr.onerror = () => {
