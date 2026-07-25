@@ -12,6 +12,8 @@ describe("companies and carriers module", () => {
     expect(page).toContain('"external_carriers"');
     expect(page).toContain("Companies / Carriers");
     expect(page).toContain("External Carriers");
+    expect(page).toContain("paginationParams={{ type: view }}");
+    expect(page).not.toContain("paginationHref={");
   });
 
   it("keeps old carrier links working while exposing one sidebar module", () => {
