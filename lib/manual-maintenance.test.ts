@@ -284,11 +284,12 @@ describe("manual maintenance daily UX contract", () => {
 
   it("does not show raw source ids in the normal cost alert UI", () => {
     const dashboard = readFileSync("components/MaintenanceCostDashboard.tsx", "utf8");
-    expect(dashboard).toContain("Unit {row.unit_number");
-    expect(dashboard).toContain("row.cost_date");
-    expect(dashboard).toContain("row.service_type");
-    expect(dashboard).toContain("row.shop");
+    expect(dashboard).toContain("Unit {unit.unit_number");
+    expect(dashboard).toContain("unit.repeatRepairs");
+    expect(dashboard).toContain("summary.totalCount");
+    expect(dashboard).toContain("summary.byShop");
     expect(dashboard).not.toContain("sourceRecordIds.join");
+    expect(dashboard).not.toContain("source_record_id");
   });
 
   it("keeps unit detail daily actions primary and advanced actions secondary", () => {
