@@ -21,11 +21,22 @@ export async function updateSettings(formData: FormData): Promise<void> {
   const repairWarning = num("repair_warning_amount");
   const allocationTolerance = num("maintenance_invoice_allocation_tolerance");
   const approvalThreshold = num("maintenance_work_order_approval_threshold");
+  const averageDailyContribution = num("maintenance_average_daily_contribution");
+  const replacementCost12mThreshold = num("maintenance_replacement_cost_12m_threshold");
+  const replacementCpmThreshold = num("maintenance_replacement_cpm_threshold");
+  const replacementDowntimeThreshold = num("maintenance_replacement_downtime_days_threshold");
+  const replacementVehicleAgeThreshold = num("maintenance_replacement_vehicle_age_years_threshold");
   const fuelPct = num("fuel_warning_pct");
   const updatesDispatchHoldPolicy = formData.get("dispatch_hold_on_critical_present") === "1";
   const dispatchHoldOnCritical = formData.getAll("dispatch_hold_on_critical").includes("on");
   const updatesApprovalThreshold = formData.get("maintenance_work_order_approval_threshold_present") === "1";
-  const values = [defaultCommission, dueSoonMiles, dueSoonDays, dueSoonEngineHours, repairWarning, allocationTolerance, fuelPct, approvalThreshold];
+  const updatesDecisionThresholds = formData.get("maintenance_decision_thresholds_present") === "1";
+  const values = [
+    defaultCommission, dueSoonMiles, dueSoonDays, dueSoonEngineHours, repairWarning,
+    allocationTolerance, fuelPct, approvalThreshold, averageDailyContribution,
+    replacementCost12mThreshold, replacementCpmThreshold, replacementDowntimeThreshold,
+    replacementVehicleAgeThreshold,
+  ];
   if (values.some((value) => value != null && (!Number.isFinite(value) || value < 0))) {
     throw new Error("Invalid settings value.");
   }
@@ -54,6 +65,13 @@ export async function updateSettings(formData: FormData): Promise<void> {
     fuel_warning_pct: fuelPct != null ? fuelPct / 100 : null,
     ...(updatesDispatchHoldPolicy ? { dispatch_hold_on_critical: dispatchHoldOnCritical } : {}),
     ...(updatesApprovalThreshold ? { maintenance_work_order_approval_threshold: approvalThreshold } : {}),
+    ...(updatesDecisionThresholds ? {
+      maintenance_average_daily_contribution: averageDailyContribution,
+      maintenance_replacement_cost_12m_threshold: replacementCost12mThreshold,
+      maintenance_replacement_cpm_threshold: replacementCpmThreshold,
+      maintenance_replacement_downtime_days_threshold: replacementDowntimeThreshold,
+      maintenance_replacement_vehicle_age_years_threshold: replacementVehicleAgeThreshold,
+    } : {}),
     updated_at: new Date().toISOString(),
   };
 
@@ -64,6 +82,8 @@ export async function updateSettings(formData: FormData): Promise<void> {
   revalidatePath("/maintenance");
   revalidatePath("/maintenance/units");
   revalidatePath("/maintenance/costs");
+  revalidatePath("/maintenance/budgets");
+  revalidatePath("/maintenance/analytics");
 }
 
 const CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";

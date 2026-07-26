@@ -88,6 +88,27 @@ export default async function MaintenanceSettingsPage() {
             <label className="label">Work order onay eşiği ($)</label>
             <input name="maintenance_work_order_approval_threshold" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_work_order_approval_threshold ?? 2500} className="input" />
           </div>
+          <input name="maintenance_decision_thresholds_present" type="hidden" value="1" />
+          <div>
+            <label className="label">Ortalama günlük contribution ($)</label>
+            <input name="maintenance_average_daily_contribution" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_average_daily_contribution ?? 600} className="input" />
+          </div>
+          <div>
+            <label className="label">Replacement 12 ay maliyet eşiği ($)</label>
+            <input name="maintenance_replacement_cost_12m_threshold" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_replacement_cost_12m_threshold ?? 30000} className="input" />
+          </div>
+          <div>
+            <label className="label">Replacement CPM eşiği ($/mi)</label>
+            <input name="maintenance_replacement_cpm_threshold" type="number" step="0.01" min="0" defaultValue={settings?.maintenance_replacement_cpm_threshold ?? 0.35} className="input" />
+          </div>
+          <div>
+            <label className="label">Replacement downtime eşiği (gün)</label>
+            <input name="maintenance_replacement_downtime_days_threshold" type="number" step="0.1" min="0" defaultValue={settings?.maintenance_replacement_downtime_days_threshold ?? 30} className="input" />
+          </div>
+          <div>
+            <label className="label">Replacement araç yaşı eşiği (yıl)</label>
+            <input name="maintenance_replacement_vehicle_age_years_threshold" type="number" step="0.1" min="0" defaultValue={settings?.maintenance_replacement_vehicle_age_years_threshold ?? 8} className="input" />
+          </div>
           <label className="col-span-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
             <input name="dispatch_hold_on_critical_present" type="hidden" value="1" />
             <input

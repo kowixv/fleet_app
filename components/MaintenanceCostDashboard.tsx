@@ -62,6 +62,7 @@ export default function MaintenanceCostDashboard({
   filters,
   repairWarningAmount,
   exportHref,
+  averageDailyContribution,
 }: {
   rows: MaintenanceCostRow[];
   snapshots: MileagePeriodSnapshot[];
@@ -69,9 +70,10 @@ export default function MaintenanceCostDashboard({
   filters: MaintenanceCostFilters;
   repairWarningAmount: number;
   exportHref: string;
+  averageDailyContribution: number;
 }) {
   const filteredRows = filterMaintenanceCostRows(rows, filters);
-  const summary = summarizeMaintenanceCosts(filteredRows, snapshots);
+  const summary = summarizeMaintenanceCosts(filteredRows, snapshots, averageDailyContribution);
   const alerts = buildMaintenanceCostAlerts(filteredRows, summary, repairWarningAmount);
   const shops = [...new Set(rows.map((row) => row.shop).filter(Boolean) as string[])].sort();
 
@@ -141,11 +143,13 @@ export default function MaintenanceCostDashboard({
 
       <div className="grid gap-4 md:grid-cols-4">
         <Stat label="Filo bakım CPM" value={cpm(summary.fleetCpm)} accent={summary.fleetCpm != null} />
-        <Stat label="Direct Maintenance Cost" value={usd(summary.cpmCost)} />
-        <Stat label="Total Breakdown Impact" value={usd(summary.totalBreakdownImpact)} />
+        <Stat label="Direct Maintenance Cost" value={usd(summary.directMaintenanceCost)} />
+        <Stat label="Travel / Hotel Impact" value={usd(summary.travelHotelImpact)} />
+        <Stat label="Towing / Road Service" value={usd(summary.towingRoadServiceCost)} />
+        <Stat label="Estimated Lost Contribution" value={usd(summary.estimatedLostContribution)} />
+        <Stat label="Total Estimated Operational Impact" value={usd(summary.totalEstimatedOperationalImpact)} />
         <Stat label="Planlı / Plansız" value={`${usd(summary.plannedCost)} / ${usd(summary.unscheduledCost)}`} />
         <Stat label="Warranty recovery" value={usd(summary.warrantyRecovery)} />
-        <Stat label="Towing + Road Service" value={usd(summary.towingRoadServiceCost)} />
         <Stat label="Downtime" value={`${summary.downtimeDays.toFixed(1)} days`} />
         <Stat label="Lastik maliyeti / 1.000 mi" value={perUnit(summary.tireCostPerThousand, "/ 1k mi")} />
         <Stat label="Road call / 100k mi" value={perUnit(summary.roadCallsPer100k, "/ 100k mi")} />
