@@ -16,6 +16,7 @@ import {
 import { createClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { maintenanceLog } from "@/lib/maintenance/observability";
 
 function refresh(id?: string) {
   revalidatePath("/maintenance");
@@ -33,11 +34,16 @@ function id(value: FormDataEntryValue | null, label: string): string {
 }
 
 export async function createMaintenanceWorkOrder(formData: FormData): Promise<void> {
-  await requireWriteRole();
+  const profile = await requireWriteRole();
   const payload = parseWorkOrderCreateForm(formData);
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("create_maintenance_work_order", { p_payload: payload });
   if (error) throw new Error(error.message);
+  maintenanceLog("info", "work_order_created", {
+    organization_id: profile.organization_id,
+    work_order_id: data,
+    source_type: payload.source_type,
+  });
   refresh(data as string);
   redirect(`/maintenance/work-orders/${data as string}`);
 }
@@ -48,6 +54,10 @@ export async function createMaintenanceWorkOrderInline(formData: FormData) {
   const supabase = await createClient();
   const { data, error } = await supabase.rpc("create_maintenance_work_order", { p_payload: payload });
   if (error) return { ok: false as const, error: error.message };
+  maintenanceLog("info", "work_order_created", {
+    work_order_id: data,
+    source_type: payload.source_type,
+  });
   refresh(data as string);
   return { ok: true as const, workOrderId: data as string };
 }
@@ -87,6 +97,12 @@ export async function transitionMaintenanceWorkOrder(workOrderId: string, formDa
     p_notes: String(formData.get("notes") ?? "").trim() || null,
   });
   if (error) throw new Error(error.message);
+  maintenanceLog("info", "work_order_transitioned", {
+    organization_id: profile.organization_id,
+    work_order_id: workOrder,
+    from_status: row.status,
+    to_status: toStatus,
+  });
   refresh(workOrder);
 }
 

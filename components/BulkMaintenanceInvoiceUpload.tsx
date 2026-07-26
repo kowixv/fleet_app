@@ -4,7 +4,7 @@ import { useRef, useState } from "react";
 
 interface UploadResult {
   file: string;
-  status: "queued" | "parsing" | "completed" | "duplicate" | "failed";
+  status: "queued" | "uploading" | "duplicate" | "failed";
   invoiceId?: string;
   error?: string;
 }
@@ -26,7 +26,7 @@ export default function BulkMaintenanceInvoiceUpload() {
       const response = await fetch("/api/maintenance/invoices/upload", { method: "POST", body });
       const json = await response.json().catch(() => ({}));
       if (response.ok && json.ok && json.invoiceId) {
-        return { file: file.name, status: "completed", invoiceId: json.invoiceId };
+        return { file: file.name, status: "queued", invoiceId: json.invoiceId };
       }
       if (response.status === 409 && json.invoiceId) {
         return { file: file.name, status: "duplicate", invoiceId: json.invoiceId, error: json.error };
@@ -48,7 +48,7 @@ export default function BulkMaintenanceInvoiceUpload() {
       while (cursor < queue.length) {
         const index = cursor;
         cursor += 1;
-        setItems((current) => current.map((item, i) => i === index ? { ...item, status: "parsing" } : item));
+        setItems((current) => current.map((item, i) => i === index ? { ...item, status: "uploading" } : item));
         const result = await uploadOne(queue[index]);
         setItems((current) => current.map((item, i) => i === index ? result : item));
       }
@@ -58,18 +58,17 @@ export default function BulkMaintenanceInvoiceUpload() {
     setRunning(false);
   }
 
-  const completed = items.filter((item) => item.status === "completed").length;
+  const completed = items.filter((item) => item.status === "queued").length;
   const duplicate = items.filter((item) => item.status === "duplicate").length;
-  const parsing = items.filter((item) => item.status === "parsing").length;
+  const uploading = items.filter((item) => item.status === "uploading").length;
   const failed = items.filter((item) => item.status === "failed").length;
-  const ids = items.filter((item) => item.invoiceId && item.status === "completed").map((item) => item.invoiceId);
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="font-semibold">Toplu Geçmiş Invoice Yükle</h3>
-          <p className="mt-1 text-sm text-slate-500">Birden fazla PDF seçin; her invoice ayrı parse edilip toplu inceleme ekranında gruplanır.</p>
+          <p className="mt-1 text-sm text-slate-500">Birden fazla PDF seçin; dosyalar hızlıca kuyruğa alınır ve işleme durumu Invoice Inbox&apos;ta izlenir.</p>
         </div>
         <button type="button" className="btn-ghost" disabled={running} onClick={() => inputRef.current?.click()}>
           Toplu Geçmiş Invoice Yükle
@@ -87,16 +86,11 @@ export default function BulkMaintenanceInvoiceUpload() {
       {items.length > 0 && (
         <div className="mt-4 space-y-3">
           <div className="grid gap-2 text-sm sm:grid-cols-4">
-            <Progress label="Yüklendi" value={`${completed} / ${items.length}`} />
-            <Progress label="Parsing" value={String(parsing)} />
+            <Progress label="Sıraya alındı" value={`${completed} / ${items.length}`} />
+            <Progress label="Yükleniyor" value={String(uploading)} />
             <Progress label="Duplicate" value={String(duplicate)} />
             <Progress label="Hatalı" value={String(failed)} />
           </div>
-          {ids.length > 0 && !running && (
-            <a className="btn-primary inline-flex" href={`/maintenance/invoices/bulk?ids=${ids.join(",")}`}>
-              Toplu incelemeye geç
-            </a>
-          )}
           <details className="text-sm">
             <summary className="cursor-pointer text-brand">Detay</summary>
             <div className="mt-2 space-y-1">

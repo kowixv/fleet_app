@@ -3,15 +3,11 @@ import { usd } from "@/lib/format";
 import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import {
   MAINTENANCE_COST_CATEGORIES,
-  buildMaintenanceCostAlerts,
-  filterMaintenanceCostRows,
-  summarizeMaintenanceCosts,
   type MaintenanceCostCategory,
   type MaintenanceCostFilters,
-  type MaintenanceCostRow,
-  type MileagePeriodSnapshot,
   type PlannedFilter,
 } from "@/lib/maintenance-cost";
+import type { MaintenanceAnalytics } from "@/lib/maintenance/domain";
 
 export interface MaintenanceCostVehicleOption {
   id: string;
@@ -26,122 +22,109 @@ function perUnit(value: number | null, suffix: string): string {
   return value == null ? "Mileage verisi yetersiz" : `${value.toFixed(2)} ${suffix}`;
 }
 
-function formatCategory(category: string): string {
-  return formatMaintenanceCategory(category);
-}
-
 function filterValue(value: string | null | undefined, fallback = "") {
   return value ?? fallback;
 }
 
-function AlertSources({ ids, rows }: { ids: string[]; rows: MaintenanceCostRow[] }) {
-  const sources = ids
-    .map((id) => rows.find((row) => row.source_record_id === id))
-    .filter(Boolean)
-    .slice(0, 5) as MaintenanceCostRow[];
-  if (sources.length === 0) return null;
-  return (
-    <details className="mt-2 text-xs text-slate-500">
-      <summary className="cursor-pointer text-brand">Kaynak kayıtlar</summary>
-      <div className="mt-2 space-y-1">
-        {sources.map((row) => (
-          <div key={row.source_record_id} className="rounded border border-slate-100 bg-slate-50 p-2">
-            Unit {row.unit_number ?? "-"} · {row.cost_date ?? "-"} · {row.service_type ?? "-"} · {row.shop ?? "Shop yok"} · {usd(Number(row.total_cost ?? 0))}
-            {row.invoice_id && <span> · Invoice bağlı</span>}
-          </div>
-        ))}
-      </div>
-    </details>
-  );
-}
-
 export default function MaintenanceCostDashboard({
-  rows,
-  snapshots,
+  summary,
   vehicles,
   filters,
-  repairWarningAmount,
   exportHref,
-  averageDailyContribution,
 }: {
-  rows: MaintenanceCostRow[];
-  snapshots: MileagePeriodSnapshot[];
+  summary: MaintenanceAnalytics;
   vehicles: MaintenanceCostVehicleOption[];
   filters: MaintenanceCostFilters;
-  repairWarningAmount: number;
   exportHref: string;
-  averageDailyContribution: number;
 }) {
-  const filteredRows = filterMaintenanceCostRows(rows, filters);
-  const summary = summarizeMaintenanceCosts(filteredRows, snapshots, averageDailyContribution);
-  const alerts = buildMaintenanceCostAlerts(filteredRows, summary, repairWarningAmount);
-  const shops = [...new Set(rows.map((row) => row.shop).filter(Boolean) as string[])].sort();
+  const alerts = summary.unitRanking.flatMap((unit) => {
+    const items: Array<{ key: string; title: string; explanation: string }> = [];
+    if (summary.aboveFleetAverage.some((item) => item.vehicle_id === unit.vehicle_id)) {
+      items.push({
+        key: `${unit.vehicle_id}-cpm`,
+        title: `Unit ${unit.unit_number} · Filo ortalamasının üzerinde CPM`,
+        explanation: `${cpm(unit.cpm)}; filo CPM değeri ${cpm(summary.fleetCpm)}.`,
+      });
+    }
+    if (unit.repeatRepairs > 0) {
+      items.push({
+        key: `${unit.vehicle_id}-repeat`,
+        title: `Unit ${unit.unit_number} · Tekrar eden tamir`,
+        explanation: `Seçilen dönemde 30 gün içinde tekrarlanan ${unit.repeatRepairs} servis kaydı bulundu.`,
+      });
+    }
+    return items;
+  });
 
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="font-semibold">Bakım Maliyetleri</h2>
-          <p className="mt-1 text-sm text-slate-500">Finansal toplamlar, CPM, downtime ve tekrar eden tamir uyarıları. Operasyonel bakım uyarıları ayrı tutulur.</p>
+          <p className="mt-1 text-sm text-slate-500">
+            Sunucu tarafında hesaplanan finansal toplamlar, CPM, downtime ve tekrar eden tamir göstergeleri.
+          </p>
         </div>
         <Link className="btn-ghost" href={exportHref}>CSV indir</Link>
       </div>
 
+      {!summary.dataComplete && summary.partialDataWarning && (
+        <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          {summary.partialDataWarning}
+        </p>
+      )}
+      {(summary.mileageEstimatedVehicleCount > 0 || summary.mileageUnavailableVehicleCount > 0) && (
+        <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+          Mileage: {summary.mileageEstimatedVehicleCount} unit için dönem sınırları interpolate/prorate edildi
+          {summary.mileageUnavailableVehicleCount > 0
+            ? `; ${summary.mileageUnavailableVehicleCount} unit için veri kullanılamadı.`
+            : "."}
+        </p>
+      )}
+
       <form className="card grid gap-3 md:grid-cols-6">
-        <div>
-          <label className="label">Başlangıç</label>
-          <input className="input" type="date" name="cost_start" defaultValue={filterValue(filters.start)} />
-        </div>
-        <div>
-          <label className="label">Bitiş</label>
-          <input className="input" type="date" name="cost_end" defaultValue={filterValue(filters.end)} />
-        </div>
-        <div>
-          <label className="label">Araç</label>
+        <Filter label="Başlangıç"><input className="input" type="date" name="cost_start" defaultValue={filterValue(filters.start)} /></Filter>
+        <Filter label="Bitiş"><input className="input" type="date" name="cost_end" defaultValue={filterValue(filters.end)} /></Filter>
+        <Filter label="Araç">
           <select className="input" name="cost_vehicle" defaultValue={filterValue(filters.vehicleId, "all")}>
             <option value="all">Hepsi</option>
             {vehicles.map((vehicle) => <option key={vehicle.id} value={vehicle.id}>{vehicle.unit_number}</option>)}
           </select>
-        </div>
-        <div>
-          <label className="label">Kategori</label>
+        </Filter>
+        <Filter label="Kategori">
           <select className="input" name="cost_category" defaultValue={filterValue(filters.category, "all")}>
             <option value="all">Hepsi</option>
             {MAINTENANCE_COST_CATEGORIES.map((category) => (
-              <option key={category} value={category}>{formatCategory(category)}</option>
+              <option key={category} value={category}>{formatMaintenanceCategory(category)}</option>
             ))}
           </select>
-        </div>
-        <div>
-          <label className="label">Plan</label>
+        </Filter>
+        <Filter label="Plan">
           <select className="input" name="cost_planned" defaultValue={filterValue(filters.planned, "all")}>
             <option value="all">Hepsi</option>
             <option value="planned">Planlı</option>
             <option value="unscheduled">Plansız</option>
           </select>
-        </div>
-        <div>
-          <label className="label">Shop</label>
+        </Filter>
+        <Filter label="Shop">
           <select className="input" name="cost_shop" defaultValue={filterValue(filters.shop, "all")}>
             <option value="all">Hepsi</option>
-            {shops.map((shop) => <option key={shop} value={shop}>{shop}</option>)}
+            {summary.shopOptions.map((shop) => <option key={shop} value={shop}>{shop}</option>)}
           </select>
-        </div>
-        <div>
-          <label className="label">Durum</label>
+        </Filter>
+        <Filter label="Durum">
           <select className="input" name="cost_status" defaultValue={filterValue(filters.status, "all")}>
             <option value="all">Hepsi</option>
             <option value="completed">Tamamlandı</option>
             <option value="open">Açık</option>
             <option value="cancelled">İptal edildi</option>
           </select>
-        </div>
-        <div className="flex items-end">
-          <button className="btn-primary w-full" type="submit">Filtrele</button>
-        </div>
+        </Filter>
+        <div className="flex items-end"><button className="btn-primary w-full" type="submit">Filtrele</button></div>
       </form>
 
       <div className="grid gap-4 md:grid-cols-4">
+        <Stat label="Filtrelenen kayıt" value={summary.totalCount.toLocaleString("tr-TR")} />
         <Stat label="Filo bakım CPM" value={cpm(summary.fleetCpm)} accent={summary.fleetCpm != null} />
         <Stat label="Direct Maintenance Cost" value={usd(summary.directMaintenanceCost)} />
         <Stat label="Travel / Hotel Impact" value={usd(summary.travelHotelImpact)} />
@@ -156,7 +139,7 @@ export default function MaintenanceCostDashboard({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Breakdown title="Kategoriye göre maliyet" rows={summary.byCategory.map((row) => ({ label: formatCategory(row.category), value: row.totalCost }))} />
+        <Breakdown title="Kategoriye göre maliyet" rows={summary.byCategory.map((row) => ({ label: formatMaintenanceCategory(row.category), value: row.totalCost }))} />
         <Breakdown title="Shop'a göre maliyet" rows={summary.byShop.map((row) => ({ label: row.shop, value: row.totalCost }))} />
       </div>
 
@@ -164,14 +147,9 @@ export default function MaintenanceCostDashboard({
         <table className="w-full">
           <thead className="border-b border-slate-200 bg-slate-50">
             <tr>
-              <th className="th">Araç CPM sıralaması</th>
-              <th className="th">Miles</th>
-              <th className="th">CPM</th>
-              <th className="th">Total</th>
-              <th className="th">Planlı</th>
-              <th className="th">Plansız</th>
-              <th className="th">Downtime</th>
-              <th className="th">Repeat</th>
+              <th className="th">Araç CPM sıralaması</th><th className="th">Miles</th><th className="th">CPM</th>
+              <th className="th">Total</th><th className="th">Planlı</th><th className="th">Plansız</th>
+              <th className="th">Downtime</th><th className="th">Repeat</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -179,14 +157,14 @@ export default function MaintenanceCostDashboard({
               <tr><td className="td text-slate-400" colSpan={8}>Bakım maliyet verisi yok.</td></tr>
             ) : summary.unitRanking.map((unit) => (
               <tr key={unit.vehicle_id} className={summary.aboveFleetAverage.some((item) => item.vehicle_id === unit.vehicle_id) ? "bg-amber-50/50" : ""}>
-                <td className="td font-medium">Unit {unit.unit_number}</td>
+                <td className="td font-medium">
+                  Unit {unit.unit_number}
+                  {unit.mileageEstimated && <span className="ml-2 badge bg-blue-100 text-blue-700">Tahmini mileage</span>}
+                </td>
                 <td className="td">{unit.milesDriven > 0 ? unit.milesDriven.toLocaleString("en-US") : "Mileage verisi yetersiz"}</td>
-                <td className="td">{cpm(unit.cpm)}</td>
-                <td className="td">{usd(unit.totalCost)}</td>
-                <td className="td">{usd(unit.plannedCost)}</td>
-                <td className="td">{usd(unit.unscheduledCost)}</td>
-                <td className="td">{unit.downtimeDays.toFixed(1)} days</td>
-                <td className="td">{unit.repeatRepairs}</td>
+                <td className="td">{cpm(unit.cpm)}</td><td className="td">{usd(unit.totalCost)}</td>
+                <td className="td">{usd(unit.plannedCost)}</td><td className="td">{usd(unit.unscheduledCost)}</td>
+                <td className="td">{unit.downtimeDays.toFixed(1)} days</td><td className="td">{unit.repeatRepairs}</td>
               </tr>
             ))}
           </tbody>
@@ -194,16 +172,15 @@ export default function MaintenanceCostDashboard({
       </div>
 
       <div className="card">
-        <h3 className="font-semibold">Yüksek maliyet ve tekrar eden tamir uyarıları</h3>
+        <h3 className="font-semibold">Yüksek CPM ve tekrar eden tamir uyarıları</h3>
         {alerts.length === 0 ? (
           <p className="mt-2 text-sm text-slate-400">Seçilen dönem için maliyet uyarısı yok.</p>
         ) : (
           <div className="mt-3 space-y-2">
-            {alerts.slice(0, 12).map((alert, index) => (
-              <div key={`${alert.type}-${index}`} className="rounded-lg border border-slate-200 p-3 text-sm">
-                <div className="font-medium">{alert.unit_number ? `Unit ${alert.unit_number} - ` : ""}{alert.title}</div>
+            {alerts.slice(0, 12).map((alert) => (
+              <div key={alert.key} className="rounded-lg border border-slate-200 p-3 text-sm">
+                <div className="font-medium">{alert.title}</div>
                 <p className="mt-1 text-slate-600">{alert.explanation}</p>
-                <AlertSources ids={alert.sourceRecordIds} rows={filteredRows} />
               </div>
             ))}
           </div>
@@ -228,27 +205,23 @@ export function normalizeMaintenanceCostFilters(params: Record<string, string | 
   };
 }
 
+function Filter({ label, children }: { label: string; children: React.ReactNode }) {
+  return <div><label className="label">{label}</label>{children}</div>;
+}
+
 function Stat({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div className="card">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className={`mt-1 text-lg font-bold ${accent ? "text-brand" : ""}`}>{value}</p>
-    </div>
-  );
+  return <div className="card"><p className="text-xs text-slate-500">{label}</p><p className={`mt-1 text-lg font-bold ${accent ? "text-brand" : ""}`}>{value}</p></div>;
 }
 
 function Breakdown({ title, rows }: { title: string; rows: Array<{ label: string; value: number }> }) {
   return (
     <div className="card">
       <h3 className="font-semibold">{title}</h3>
-      {rows.length === 0 ? (
-        <p className="mt-2 text-sm text-slate-400">Veri yok.</p>
-      ) : (
+      {rows.length === 0 ? <p className="mt-2 text-sm text-slate-400">Veri yok.</p> : (
         <div className="mt-3 space-y-2 text-sm">
           {rows.slice(0, 8).map((row) => (
             <div key={row.label} className="flex justify-between gap-3 border-b border-slate-100 pb-2">
-              <span>{row.label}</span>
-              <span className="font-medium">{usd(row.value)}</span>
+              <span>{row.label}</span><span className="font-medium">{usd(row.value)}</span>
             </div>
           ))}
         </div>

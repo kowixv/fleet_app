@@ -27,8 +27,6 @@ function maintenanceRevalidate() {
   revalidatePath("/maintenance");
   revalidatePath("/maintenance/units");
   revalidatePath("/maintenance/costs");
-  revalidatePath("/vehicles");
-  revalidatePath("/");
 }
 
 export async function updateMileage(vehicleId: string, mileage: number | string) {

@@ -4,13 +4,11 @@ import { requireProfile, requireWriteRole } from "@/lib/auth";
 import { parseInspectionDraftPayload, parseInspectionDraftResults } from "@/lib/inspection-draft";
 import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
+import { maintenanceLog } from "@/lib/maintenance/observability";
+import { revalidateMaintenance } from "@/lib/maintenance/cache";
 
-function revalidateInspectionPaths() {
-  revalidatePath("/maintenance");
-  revalidatePath("/maintenance/inspections");
-  revalidatePath("/maintenance/units");
-  revalidatePath("/vehicles");
-  revalidatePath("/");
+function revalidateInspectionPaths(vehicleId?: string) {
+  revalidateMaintenance({ kind: "inspection", vehicleId });
 }
 
 export async function startVehicleInspection(input: {
@@ -31,7 +29,7 @@ export async function startVehicleInspection(input: {
     p_maintenance_record_id: input.maintenanceRecordId ?? null,
   });
   if (error) return { ok: false as const, error: error.message };
-  revalidateInspectionPaths();
+  revalidateInspectionPaths(input.vehicleId);
   return { ok: true as const, inspectionId: data as string };
 }
 
@@ -52,11 +50,11 @@ export async function saveVehicleInspectionDraft(inspectionId: string, payload: 
   if (error) return { ok: false as const, error: error.message };
   const { data: inspection, error: readError } = await supabase
     .from("vehicle_inspections")
-    .select("updated_at")
+    .select("updated_at, vehicle_id")
     .eq("id", inspectionId)
     .maybeSingle();
   if (readError) return { ok: false as const, error: readError.message };
-  revalidateInspectionPaths();
+  revalidateInspectionPaths(inspection?.vehicle_id ?? undefined);
   return { ok: true as const, updatedAt: inspection?.updated_at as string | null };
 }
 
@@ -93,7 +91,7 @@ export async function loadVehicleInspectionDraft(inspectionId: string) {
 }
 
 export async function completeVehicleInspection(inspectionId: string, payload: unknown) {
-  await requireWriteRole();
+  const profile = await requireWriteRole();
   if (!inspectionId) return { ok: false as const, error: "Inspection taslağı gerekli." };
   let parsedPayload;
   try {
@@ -107,7 +105,31 @@ export async function completeVehicleInspection(inspectionId: string, payload: u
     p_payload: parsedPayload,
   });
   if (error) return { ok: false as const, error: error.message };
-  revalidateInspectionPaths();
+  const inspectionResult = await supabase
+    .from("vehicle_inspections")
+    .select("vehicle_id")
+    .eq("id", inspectionId)
+    .maybeSingle();
+  const holdResult = inspectionResult.data?.vehicle_id
+    ? await supabase
+        .from("vehicle_dispatch_holds")
+        .select("id", { count: "exact", head: true })
+        .eq("vehicle_id", inspectionResult.data.vehicle_id)
+        .eq("status", "open")
+    : { count: 0, error: null };
+  maintenanceLog("info", "inspection_completed", {
+    organization_id: profile.organization_id,
+    inspection_id: inspectionId,
+    open_dispatch_holds: holdResult.count ?? 0,
+  });
+  if ((holdResult.count ?? 0) > 0) {
+    maintenanceLog("warn", "dispatch_hold_present_after_inspection", {
+      organization_id: profile.organization_id,
+      inspection_id: inspectionId,
+      hold_count: holdResult.count ?? 0,
+    });
+  }
+  revalidateInspectionPaths(inspectionResult.data?.vehicle_id ?? undefined);
   return { ok: true as const, inspectionId: data as string };
 }
 
@@ -159,7 +181,7 @@ export async function signedInspectionFileUrl(resultId: string) {
 }
 
 export async function clearVehicleDispatchHold(formData: FormData) {
-  await requireWriteRole();
+  const profile = await requireWriteRole();
   const holdId = String(formData.get("hold_id") ?? "").trim();
   const notes = String(formData.get("clearance_notes") ?? "").trim();
   if (!holdId) return { ok: false as const, error: "Dispatch hold gerekli." };
@@ -170,6 +192,10 @@ export async function clearVehicleDispatchHold(formData: FormData) {
     p_clearance_notes: notes,
   });
   if (error) return { ok: false as const, error: error.message };
+  maintenanceLog("info", "dispatch_hold_cleared", {
+    organization_id: profile.organization_id,
+    hold_id: data,
+  });
   revalidateInspectionPaths();
   return { ok: true as const, holdId: data as string };
 }

@@ -5,6 +5,7 @@ import { sendMessage, escapeHtml } from "@/lib/telegram";
 import { safeEqual, secretMisconfigured } from "@/lib/secure";
 import { todayISO } from "@/lib/tz";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
+import { maintenanceLog } from "@/lib/maintenance/observability";
 
 export const runtime = "nodejs";
 
@@ -19,6 +20,7 @@ export async function GET(req: Request) {
   }
 
   const supabase = createServiceClient();
+  maintenanceLog("info", "pm_check_started");
   const [rulesResult, statesResult, vehiclesResult, settingsResult, groupsResult, profilesResult] = await Promise.all([
     supabase
       .from("maintenance_rules")
@@ -33,7 +35,7 @@ export async function GET(req: Request) {
 
   const queryError = rulesResult.error ?? statesResult.error ?? vehiclesResult.error ?? settingsResult.error ?? groupsResult.error ?? profilesResult.error;
   if (queryError) {
-    console.error("pm-check query failed", queryError);
+    maintenanceLog("error", "pm_check_query_failed", { error_code: queryError.code });
     return Response.json({ ok: false, error: queryError.message }, { status: 500 });
   }
 
@@ -101,15 +103,15 @@ export async function GET(req: Request) {
   }
 
   let messagesSent = 0;
-  const failures: Array<{ chatId: string; error: string }> = [];
+  const failures: Array<{ error: string }> = [];
   for (const { chatId, lines } of linesByChat.values()) {
     try {
       await sendMessage(chatId, `🔧 <b>Bakım Uyarısı</b>\n${lines.join("\n")}`);
       messagesSent++;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      failures.push({ chatId, error: message });
-      console.error("pm-check Telegram delivery failed", { chatId, message });
+      failures.push({ error: message.slice(0, 160) });
+      maintenanceLog("error", "pm_notification_delivery_failed", { error_type: error instanceof Error ? error.name : "unknown" });
     }
   }
 
@@ -120,5 +122,11 @@ export async function GET(req: Request) {
     messagesSent,
     failures,
   };
+  maintenanceLog(failures.length ? "warn" : "info", "pm_check_completed", {
+    alerts_found: alertsFound,
+    alerts_mapped: alertsMapped,
+    messages_sent: messagesSent,
+    failure_count: failures.length,
+  });
   return Response.json(payload, { status: failures.length > 0 ? 502 : 200 });
 }

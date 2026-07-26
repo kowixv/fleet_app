@@ -1,4 +1,5 @@
 import MaintenanceNav from "@/components/MaintenanceNav";
+import MaintenancePagination from "@/components/MaintenancePagination";
 import {
   WORK_ORDER_PRIORITIES,
   WORK_ORDER_STATUSES,
@@ -12,6 +13,13 @@ import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-sta
 import { createClient } from "@/lib/supabase/server";
 import Link from "next/link";
 import { createMaintenanceWorkOrder } from "./actions";
+import {
+  decodeMaintenanceCursor,
+  maintenanceKeysetFilter,
+  maintenancePageHref,
+  MAINTENANCE_PAGE_SIZE,
+  nextMaintenanceCursor,
+} from "@/lib/maintenance/pagination";
 
 export const dynamic = "force-dynamic";
 const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
@@ -24,23 +32,42 @@ export default async function WorkOrdersPage({ searchParams }: { searchParams: P
   const vehicleId = first(params.vehicle);
   const assigneeId = first(params.assignee);
   const view = first(params.view) === "list" ? "list" : "board";
-  let query = supabase.from("maintenance_work_orders").select("*").order("updated_at", { ascending: false });
+  const cursor = decodeMaintenanceCursor(params.cursor);
+  let query = supabase
+    .from("maintenance_work_orders")
+    .select("*", { count: "exact" })
+    .order("updated_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(MAINTENANCE_PAGE_SIZE + 1);
   if (status && isWorkOrderStatus(status)) query = query.eq("status", status);
   if (priority && WORK_ORDER_PRIORITIES.includes(priority as any)) query = query.eq("priority", priority);
   if (vehicleId) query = query.eq("vehicle_id", vehicleId);
   if (assigneeId) query = query.eq("assigned_user_id", assigneeId);
-  const [workOrdersRes, vehiclesRes, profilesRes] = await Promise.all([
+  let totalQuery = supabase
+    .from("maintenance_work_orders")
+    .select("id", { count: "exact", head: true });
+  if (status && isWorkOrderStatus(status)) totalQuery = totalQuery.eq("status", status);
+  if (priority && WORK_ORDER_PRIORITIES.includes(priority as any)) totalQuery = totalQuery.eq("priority", priority);
+  if (vehicleId) totalQuery = totalQuery.eq("vehicle_id", vehicleId);
+  if (assigneeId) totalQuery = totalQuery.eq("assigned_user_id", assigneeId);
+  if (cursor) query = query.or(maintenanceKeysetFilter("updated_at", cursor));
+  const [workOrdersRes, totalRes, vehiclesRes, profilesRes] = await Promise.all([
     query,
+    totalQuery,
     supabase.from("vehicles").select("id, unit_number, status").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase.from("profiles").select("id, full_name, email").order("full_name"),
   ]);
-  const error = workOrdersRes.error ?? vehiclesRes.error ?? profilesRes.error;
+  const error = workOrdersRes.error ?? totalRes.error ?? vehiclesRes.error ?? profilesRes.error;
   if (error) throw new Error(`Work orders yüklenemedi: ${error.message}`);
-  const workOrders = (workOrdersRes.data ?? []) as any[];
+  const page = nextMaintenanceCursor(workOrdersRes.data ?? [], (row) => row.updated_at);
+  const workOrders = page.rows as any[];
   const vehicles = (vehiclesRes.data ?? []) as any[];
   const profiles = (profilesRes.data ?? []) as any[];
   const vehicleById = new Map(vehicles.map((row) => [row.id, row.unit_number]));
   const profileById = new Map(profiles.map((row) => [row.id, row.full_name || row.email || "Kullanıcı"]));
+  const nextHref = page.nextCursor
+    ? maintenancePageHref("/maintenance/work-orders", params, "cursor", page.nextCursor)
+    : null;
 
   return <div className="space-y-5">
     <MaintenanceNav title="Bakım Merkezi" />
@@ -88,6 +115,7 @@ export default async function WorkOrdersPage({ searchParams }: { searchParams: P
       </section>)}</div>
     )}
     {!workOrders.length && <div className="rounded-lg border border-dashed border-slate-300 p-10 text-center text-sm text-slate-500">Filtreye uygun work order yok.</div>}
+    <MaintenancePagination totalCount={totalRes.count ?? workOrders.length} shownCount={workOrders.length} nextHref={nextHref} />
   </div>;
 }
 

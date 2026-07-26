@@ -1,17 +1,12 @@
-import { createClient, createServiceClient } from "@/lib/supabase/server";
 import { requireWriteRole } from "@/lib/auth";
-import {
-  createReviewDraftData,
-  type ServiceDefault,
-  type VehicleOption,
-} from "@/lib/maintenance-invoice-review";
-import { maintenanceInvoiceHash, parseMaintenanceInvoice } from "@/lib/maintenance-invoice";
+import { maintenanceInvoiceHash } from "@/lib/maintenance-invoice";
 import {
   hasPdfMagicBytes,
   maintenanceInvoiceMaxBytes,
   validateMaintenanceInvoiceFileMeta,
 } from "@/lib/maintenance-invoice-upload";
-import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
+import { maintenanceLog } from "@/lib/maintenance/observability";
+import { createClient, createServiceClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
 const MAX_MAINTENANCE_INVOICE_BYTES = maintenanceInvoiceMaxBytes(process.env.MAINTENANCE_INVOICE_MAX_BYTES);
@@ -20,31 +15,36 @@ export async function POST(request: Request) {
   const profile = await requireWriteRole();
   const form = await request.formData();
   const file = form.get("file");
-  if (!(file instanceof File)) return Response.json({ ok: false, error: "PDF dosyası gerekli." }, { status: 400 });
+  if (!(file instanceof File)) {
+    return Response.json({ ok: false, error: "PDF dosyası gerekli." }, { status: 400 });
+  }
   const fileError = validateMaintenanceInvoiceFileMeta(file, MAX_MAINTENANCE_INVOICE_BYTES);
   if (fileError) return Response.json({ ok: false, error: fileError }, { status: 400 });
 
   const bytes = new Uint8Array(await file.arrayBuffer());
-  if (!hasPdfMagicBytes(bytes)) return Response.json({ ok: false, error: "PDF imzası geçersiz." }, { status: 400 });
+  if (!hasPdfMagicBytes(bytes)) {
+    return Response.json({ ok: false, error: "PDF imzası geçersiz." }, { status: 400 });
+  }
 
   const hash = maintenanceInvoiceHash(bytes);
   const supabase = await createClient();
   const service = createServiceClient();
-
-  const { data: duplicate, error: duplicateError } = await supabase
+  const duplicateResult = await supabase
     .from("maintenance_invoices")
-    .select("id, status, file_name")
+    .select("id, pipeline_status, file_name")
     .eq("organization_id", profile.organization_id)
     .eq("file_hash", hash)
     .maybeSingle();
-  if (duplicateError) return Response.json({ ok: false, error: duplicateError.message }, { status: 500 });
-  if (duplicate) {
+  if (duplicateResult.error) {
+    return Response.json({ ok: false, error: duplicateResult.error.message }, { status: 500 });
+  }
+  if (duplicateResult.data) {
     return Response.json({
       ok: false,
       duplicate: true,
-      status: "duplicate",
-      invoiceId: duplicate.id,
-      error: `Bu PDF daha önce yüklendi: ${duplicate.file_name ?? duplicate.id}`,
+      status: duplicateResult.data.pipeline_status,
+      invoiceId: duplicateResult.data.id,
+      error: `Bu PDF daha önce yüklendi: ${duplicateResult.data.file_name ?? duplicateResult.data.id}`,
     }, { status: 409 });
   }
 
@@ -52,69 +52,75 @@ export async function POST(request: Request) {
   const upload = await service.storage
     .from("maintenance-invoices")
     .upload(storagePath, bytes, { contentType: "application/pdf", upsert: false });
-  if (upload.error) return Response.json({ ok: false, error: upload.error.message }, { status: 500 });
-
-  try {
-    const [{ parsed, rawText, parser }, vehiclesRes, defaultsRes] = await Promise.all([
-      parseMaintenanceInvoice(bytes),
-      supabase
-        .from("vehicles")
-        .select("id, unit_number, current_mileage")
-        .in("status", maintenanceVisibleVehicleStatuses())
-        .order("unit_number"),
-      supabase
-        .from("maintenance_service_defaults")
-        .select("service_key, service_type, default_mode, interval_type, interval_miles, interval_days"),
-    ]);
-
-    if (vehiclesRes.error) throw new Error(vehiclesRes.error.message);
-    if (defaultsRes.error) throw new Error(defaultsRes.error.message);
-
-    const review = createReviewDraftData({
-      organizationId: profile.organization_id,
-      parsed,
-      parser,
-      vehicles: (vehiclesRes.data ?? []) as VehicleOption[],
-      defaults: (defaultsRes.data ?? []) as ServiceDefault[],
-    });
-
-    const insert = await service
+  if (upload.error) {
+    const concurrent = await supabase
       .from("maintenance_invoices")
-      .insert({
-        organization_id: profile.organization_id,
-        vehicle_id: review.suggested_vehicle_id,
-        invoice_number: parsed.invoice_number,
-        invoice_date: parsed.invoice_date,
-        shop_name: parsed.shop_name,
-        file_name: file.name,
-        storage_path: storagePath,
-        file_hash: hash,
-        raw_text: rawText,
-        parsed_data: { parsed, review },
-        parser_confidence: parser.confidence,
-        parser_warnings: review.warnings,
-        status: "pending_review",
-        created_by: profile.id,
-      })
-      .select("id")
-      .single();
-
-    if (insert.error) throw new Error(insert.error.message);
-    return Response.json({ ok: true, invoiceId: insert.data.id, status: "pending_review" });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    await service
-      .from("maintenance_invoices")
-      .insert({
-        organization_id: profile.organization_id,
-        file_name: file.name,
-        storage_path: storagePath,
-        file_hash: hash,
-        parsed_data: {},
-        parser_warnings: [message],
-        status: "failed",
-        created_by: profile.id,
-      });
-    return Response.json({ ok: false, error: message }, { status: 422 });
+      .select("id, pipeline_status")
+      .eq("organization_id", profile.organization_id)
+      .eq("file_hash", hash)
+      .maybeSingle();
+    if (concurrent.data) {
+      return Response.json({
+        ok: false,
+        duplicate: true,
+        status: concurrent.data.pipeline_status,
+        invoiceId: concurrent.data.id,
+        error: "Bu PDF daha önce yüklendi.",
+      }, { status: 409 });
+    }
+    return Response.json({ ok: false, error: upload.error.message }, { status: 500 });
   }
+
+  const insert = await supabase
+    .from("maintenance_invoices")
+    .insert({
+      organization_id: profile.organization_id,
+      file_name: file.name.slice(0, 255),
+      storage_path: storagePath,
+      file_hash: hash,
+      parsed_data: {},
+      parser_warnings: [],
+      status: "failed",
+      pipeline_status: "queued",
+      queued_at: new Date().toISOString(),
+      next_attempt_at: new Date().toISOString(),
+      created_by: profile.id,
+    })
+    .select("id, pipeline_status")
+    .single();
+
+  if (insert.error) {
+    await service.storage.from("maintenance-invoices").remove([storagePath]);
+    const concurrent = await supabase
+      .from("maintenance_invoices")
+      .select("id, pipeline_status")
+      .eq("organization_id", profile.organization_id)
+      .eq("file_hash", hash)
+      .maybeSingle();
+    if (concurrent.data) {
+      return Response.json({
+        ok: false,
+        duplicate: true,
+        status: concurrent.data.pipeline_status,
+        invoiceId: concurrent.data.id,
+        error: "Bu PDF daha önce yüklendi.",
+      }, { status: 409 });
+    }
+    maintenanceLog("error", "invoice_upload_enqueue_failed", {
+      organization_id: profile.organization_id,
+      error_code: insert.error.code,
+    });
+    return Response.json({ ok: false, error: insert.error.message }, { status: 500 });
+  }
+
+  maintenanceLog("info", "invoice_uploaded_and_queued", {
+    organization_id: profile.organization_id,
+    invoice_id: insert.data.id,
+    size_bytes: bytes.byteLength,
+  });
+  return Response.json({
+    ok: true,
+    invoiceId: insert.data.id,
+    status: insert.data.pipeline_status,
+  }, { status: 202 });
 }
