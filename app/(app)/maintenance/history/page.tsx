@@ -1,6 +1,14 @@
 import MaintenanceHistoryActions from "@/components/MaintenanceHistoryActions";
 import MaintenanceNav from "@/components/MaintenanceNav";
+import MaintenancePagination from "@/components/MaintenancePagination";
 import { usd } from "@/lib/format";
+import {
+  decodeMaintenanceCursor,
+  maintenanceKeysetFilter,
+  maintenancePageHref,
+  MAINTENANCE_PAGE_SIZE,
+  nextMaintenanceCursor,
+} from "@/lib/maintenance/pagination";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
@@ -22,6 +30,7 @@ export default async function MaintenanceHistoryPage({
   const service = first(params.service) ?? "";
   const kind = first(params.kind) ?? "all";
   const archive = first(params.archive) ?? "current";
+  const cursor = decodeMaintenanceCursor(params.cursor);
 
   const supabase = await createClient();
   let vehiclesQuery = supabase.from("vehicles").select("id, unit_number, status").order("unit_number");
@@ -33,6 +42,7 @@ export default async function MaintenanceHistoryPage({
     .from("maintenance_records")
     .select(`
       id,
+      created_at,
       rule_id,
       service_type,
       performed_date,
@@ -71,11 +81,12 @@ export default async function MaintenanceHistoryPage({
       breakdown_occurred,
       vehicles!maintenance_records_vehicle_id_fkey(unit_number),
       maintenance_invoices(file_name, invoice_number)
-    `)
+    `, { count: "exact" })
     .is("deleted_at", null)
-    .order("performed_date", { ascending: false })
+    .is("undone_at", null)
     .order("created_at", { ascending: false })
-    .limit(250);
+    .order("id", { ascending: false })
+    .limit(MAINTENANCE_PAGE_SIZE + 1);
 
   if (vehicle !== "all") query = query.eq("vehicle_id", vehicle);
   if (start) query = query.gte("performed_date", start);
@@ -83,12 +94,29 @@ export default async function MaintenanceHistoryPage({
   if (service) query = query.ilike("service_type", `%${service}%`);
   if (kind === "periodic") query = query.eq("planned", true);
   if (kind === "repair") query = query.eq("planned", false);
+  let totalQuery = supabase
+    .from("maintenance_records")
+    .select("id", { count: "exact", head: true })
+    .is("deleted_at", null)
+    .is("undone_at", null);
+  if (vehicle !== "all") totalQuery = totalQuery.eq("vehicle_id", vehicle);
+  if (start) totalQuery = totalQuery.gte("performed_date", start);
+  if (end) totalQuery = totalQuery.lte("performed_date", end);
+  if (service) totalQuery = totalQuery.ilike("service_type", `%${service}%`);
+  if (kind === "periodic") totalQuery = totalQuery.eq("planned", true);
+  if (kind === "repair") totalQuery = totalQuery.eq("planned", false);
+  if (cursor) query = query.or(maintenanceKeysetFilter("created_at", cursor));
 
-  const historyRes = await query;
-  if (historyRes.error) throw new Error(`Bakım geçmişi yüklenemedi: ${historyRes.error.message}`);
+  const [historyRes, totalRes] = await Promise.all([query, totalQuery]);
+  const historyError = historyRes.error ?? totalRes.error;
+  if (historyError) throw new Error(`Bakım geçmişi yüklenemedi: ${historyError.message}`);
 
-  const rows = historyRes.data ?? [];
+  const page = nextMaintenanceCursor(historyRes.data ?? [], (row) => row.created_at);
+  const rows = page.rows;
   const vehicles = vehiclesRes.data ?? [];
+  const nextHref = page.nextCursor
+    ? maintenancePageHref("/maintenance/history", params, "cursor", page.nextCursor)
+    : null;
 
   return (
     <div className="space-y-5">
@@ -171,6 +199,11 @@ export default async function MaintenanceHistoryPage({
           })}
         </div>
       )}
+      <MaintenancePagination
+        totalCount={totalRes.count ?? rows.length}
+        shownCount={rows.length}
+        nextHref={nextHref}
+      />
     </div>
   );
 }

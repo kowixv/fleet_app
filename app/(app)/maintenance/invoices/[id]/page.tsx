@@ -5,6 +5,11 @@ import { serviceKey, type ReviewDraftData, type VehicleOption } from "@/lib/main
 import { createClient } from "@/lib/supabase/server";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createMaintenanceWorkOrder } from "@/app/(app)/maintenance/work-orders/actions";
+import {
+  MAINTENANCE_INVOICE_PIPELINE_LABELS,
+  maintenanceInvoicePipelineTone,
+} from "@/lib/maintenance/presentation";
+import { isMaintenanceInvoicePipelineStatus } from "@/lib/maintenance/validators";
 
 export const dynamic = "force-dynamic";
 
@@ -27,7 +32,7 @@ export default async function MaintenanceInvoiceReviewPage({ params }: { params:
   const [invoiceRes, vehiclesRes, rulesRes, settingsRes] = await Promise.all([
     supabase
       .from("maintenance_invoices")
-      .select("id, vehicle_id, status, file_hash, file_name, parsed_data")
+      .select("id, vehicle_id, status, pipeline_status, retry_count, last_error, file_hash, file_name, parsed_data")
       .eq("id", id)
       .single(),
     supabase
@@ -48,6 +53,46 @@ export default async function MaintenanceInvoiceReviewPage({ params }: { params:
   const error = invoiceRes.error ?? vehiclesRes.error ?? rulesRes.error ?? settingsRes.error;
   if (error) throw new Error(`Invoice inceleme ekranı yüklenemedi: ${error.message}`);
   if (!invoiceRes.data) throw new Error("Invoice bulunamadı.");
+
+  const pipelineStatus = isMaintenanceInvoicePipelineStatus(invoiceRes.data.pipeline_status)
+    ? invoiceRes.data.pipeline_status
+    : invoiceRes.data.status === "completed"
+      ? "completed"
+      : invoiceRes.data.status === "pending_review"
+        ? "pending_review"
+        : "queued";
+
+  if (pipelineStatus !== "pending_review" && pipelineStatus !== "completed") {
+    return (
+      <div className="space-y-5">
+        <MaintenanceNav title="Bakım Merkezi" />
+        <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-bold">Maintenance Invoice</h1>
+              <p className="mt-1 text-sm text-slate-500">{invoiceRes.data.file_name}</p>
+            </div>
+            <span className={`rounded-full px-3 py-1 text-xs font-semibold ${maintenanceInvoicePipelineTone(pipelineStatus)}`}>
+              {MAINTENANCE_INVOICE_PIPELINE_LABELS[pipelineStatus]}
+            </span>
+          </div>
+          <p className="mt-4 text-sm text-slate-600">
+            Bu fatura henüz incelemeye hazır değil. İşleme durumu inbox ekranından izlenebilir.
+          </p>
+          {invoiceRes.data.last_error ? (
+            <p className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-700">
+              Son hata: {invoiceRes.data.last_error}
+              {" "}(deneme {Number(invoiceRes.data.retry_count ?? 0)})
+            </p>
+          ) : null}
+          <div className="mt-4 flex gap-3 text-sm">
+            <Link className="text-brand hover:underline" href="/maintenance/invoices">Inbox&apos;a dön</Link>
+            <Link className="text-brand hover:underline" href={`/api/maintenance/invoices/${id}`} target="_blank">PDF aç</Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const existingRules = (rulesRes.data ?? []).map((rule) => ({
     vehicle_id: rule.vehicle_id as string,

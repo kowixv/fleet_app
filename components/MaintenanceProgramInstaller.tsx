@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  installMaintenanceProgram,
+  installMaintenanceProgramBulk as installMaintenanceProgram,
   type MaintenanceProgramInstallResult,
   type MaintenanceProgramSelectionInput,
-} from "@/app/(app)/maintenance/actions";
+} from "@/app/(app)/maintenance/program-actions";
 import {
   MAINTENANCE_PROGRAM_REFERENCES,
   MAINTENANCE_PROGRAM_VEHICLE_OPTIONS,

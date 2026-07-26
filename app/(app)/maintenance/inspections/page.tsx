@@ -1,12 +1,43 @@
 import MaintenanceInspectionWorkflow from "@/components/MaintenanceInspectionWorkflow";
 import MaintenanceNav from "@/components/MaintenanceNav";
+import MaintenancePagination from "@/components/MaintenancePagination";
+import {
+  decodeMaintenanceCursor,
+  maintenanceKeysetFilter,
+  maintenancePageHref,
+  MAINTENANCE_PAGE_SIZE,
+  nextMaintenanceCursor,
+} from "@/lib/maintenance/pagination";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
 export const dynamic = "force-dynamic";
 
-export default async function MaintenanceInspectionsPage() {
+export default async function MaintenanceInspectionsPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const findingCursor = decodeMaintenanceCursor(params.finding_cursor);
+  const inspectionCursor = decodeMaintenanceCursor(params.inspection_cursor);
   const supabase = await createClient();
+  let findingsQuery = supabase
+    .from("inspection_findings")
+    .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, created_at, vehicles!inspection_findings_vehicle_id_fkey(unit_number)", { count: "exact" })
+    .eq("status", "open")
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(MAINTENANCE_PAGE_SIZE + 1);
+  if (findingCursor) findingsQuery = findingsQuery.or(maintenanceKeysetFilter("created_at", findingCursor));
+  let completedQuery = supabase
+    .from("vehicle_inspections")
+    .select("id, vehicle_id, inspection_type, inspection_date, mileage, engine_hours, inspector, shop, status, created_at, vehicles!vehicle_inspections_vehicle_id_fkey(unit_number)", { count: "exact" })
+    .in("status", ["completed", "failed"])
+    .order("created_at", { ascending: false })
+    .order("id", { ascending: false })
+    .limit(MAINTENANCE_PAGE_SIZE + 1);
+  if (inspectionCursor) completedQuery = completedQuery.or(maintenanceKeysetFilter("created_at", inspectionCursor));
   const [
     vehiclesResult,
     inspectionTemplatesResult,
@@ -15,6 +46,8 @@ export default async function MaintenanceInspectionsPage() {
     inspectionTrendsResult,
     rulesResult,
     completedResult,
+    findingTotalResult,
+    inspectionTotalResult,
   ] = await Promise.all([
     supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
@@ -48,12 +81,7 @@ export default async function MaintenanceInspectionsPage() {
       .eq("status", "draft")
       .order("updated_at", { ascending: false })
       .limit(25),
-    supabase
-      .from("inspection_findings")
-      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
-      .eq("status", "open")
-      .order("created_at", { ascending: false })
-      .limit(50),
+    findingsQuery,
     supabase
       .from("vehicle_inspection_results")
       .select("id, label, axle_position, value_number, unit_of_measure, created_at, vehicle_inspections!vehicle_inspection_results_inspection_same_org_fk(vehicle_id, vehicles!vehicle_inspections_vehicle_id_fkey(unit_number))")
@@ -61,12 +89,15 @@ export default async function MaintenanceInspectionsPage() {
       .order("created_at", { ascending: false })
       .limit(150),
     supabase.from("maintenance_rules").select("id, vehicle_id, service_type").eq("active", true),
+    completedQuery,
+    supabase
+      .from("inspection_findings")
+      .select("id", { count: "exact", head: true })
+      .eq("status", "open"),
     supabase
       .from("vehicle_inspections")
-      .select("id, vehicle_id, inspection_type, inspection_date, mileage, engine_hours, inspector, shop, status, vehicles!vehicle_inspections_vehicle_id_fkey(unit_number)")
-      .in("status", ["completed", "failed"])
-      .order("inspection_date", { ascending: false })
-      .limit(100),
+      .select("id", { count: "exact", head: true })
+      .in("status", ["completed", "failed"]),
   ]);
 
   const error =
@@ -76,8 +107,18 @@ export default async function MaintenanceInspectionsPage() {
     inspectionFindingsResult.error ??
     inspectionTrendsResult.error ??
     rulesResult.error ??
-    completedResult.error;
+    completedResult.error ??
+    findingTotalResult.error ??
+    inspectionTotalResult.error;
   if (error) throw new Error(`Inspection verisi yüklenemedi: ${error.message}`);
+  const findingsPage = nextMaintenanceCursor(inspectionFindingsResult.data ?? [], (row) => row.created_at);
+  const inspectionsPage = nextMaintenanceCursor(completedResult.data ?? [], (row) => row.created_at);
+  const findingsNextHref = findingsPage.nextCursor
+    ? maintenancePageHref("/maintenance/inspections", params, "finding_cursor", findingsPage.nextCursor)
+    : null;
+  const inspectionsNextHref = inspectionsPage.nextCursor
+    ? maintenancePageHref("/maintenance/inspections", params, "inspection_cursor", inspectionsPage.nextCursor)
+    : null;
 
   return (
     <div className="space-y-5">
@@ -98,9 +139,15 @@ export default async function MaintenanceInspectionsPage() {
         }))}
         drafts={(inspectionDraftsResult.data ?? []) as any}
         rules={(rulesResult.data ?? []) as any}
-        findings={(inspectionFindingsResult.data ?? []) as any}
+        findings={findingsPage.rows as any}
         trends={(inspectionTrendsResult.data ?? []) as any}
         revalidatePath="/maintenance/inspections"
+      />
+      <MaintenancePagination
+        totalCount={findingTotalResult.count ?? findingsPage.rows.length}
+        shownCount={findingsPage.rows.length}
+        nextHref={findingsNextHref}
+        label="açık bulgu"
       />
 
       <div className="card overflow-x-auto p-0">
@@ -120,9 +167,9 @@ export default async function MaintenanceInspectionsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {(completedResult.data ?? []).length === 0 ? (
+            {inspectionsPage.rows.length === 0 ? (
               <tr><td className="td text-slate-400" colSpan={7}>Tamamlanan inspection yok.</td></tr>
-            ) : (completedResult.data ?? []).map((inspection: any) => (
+            ) : inspectionsPage.rows.map((inspection: any) => (
               <tr key={inspection.id}>
                 <td className="td">{inspection.inspection_date}</td>
                 <td className="td font-medium">Unit {inspection.vehicles?.unit_number ?? "-"}</td>
@@ -136,6 +183,12 @@ export default async function MaintenanceInspectionsPage() {
           </tbody>
         </table>
       </div>
+      <MaintenancePagination
+        totalCount={inspectionTotalResult.count ?? inspectionsPage.rows.length}
+        shownCount={inspectionsPage.rows.length}
+        nextHref={inspectionsNextHref}
+        label="tamamlanan inspection"
+      />
     </div>
   );
 }

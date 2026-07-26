@@ -1,6 +1,6 @@
 import MaintenanceCostDashboard, { normalizeMaintenanceCostFilters } from "@/components/MaintenanceCostDashboard";
 import MaintenanceNav from "@/components/MaintenanceNav";
-import type { MaintenanceCostRow, MileagePeriodSnapshot } from "@/lib/maintenance-cost";
+import { getMaintenanceCostAnalytics } from "@/lib/maintenance/service";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
@@ -33,35 +33,27 @@ export default async function MaintenanceCostsPage({
   if (costFilters.status) exportParams.set("status", costFilters.status);
 
   const supabase = await createClient();
-  const [settingsResult, vehiclesResult, costRowsResult, mileageSnapshotsResult] = await Promise.all([
-    supabase.from("settings").select("repair_warning_amount, maintenance_average_daily_contribution").single(),
+  const [settingsResult, vehiclesResult] = await Promise.all([
+    supabase.from("settings").select("maintenance_average_daily_contribution").single(),
     supabase.from("vehicles").select("id, unit_number").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
-    supabase
-      .from("maintenance_cost_fact_v")
-      .select("*")
-      .gte("cost_date", costStart)
-      .lte("cost_date", costEnd)
-      .order("cost_date", { ascending: false })
-      .limit(1000),
-    supabase
-      .from("vehicle_mileage_period_snapshots")
-      .select("vehicle_id, period_start, period_end, miles_driven")
-      .gte("period_start", costStart)
-      .lte("period_end", costEnd),
   ]);
-  const error = settingsResult.error ?? vehiclesResult.error ?? costRowsResult.error ?? mileageSnapshotsResult.error;
+  const error = settingsResult.error ?? vehiclesResult.error;
   if (error) throw new Error(`Bakım maliyet analizi yüklenemedi: ${error.message}`);
+
+  const analytics = await getMaintenanceCostAnalytics(supabase, {
+    ...costFilters,
+    start: costStart,
+    end: costEnd,
+    averageDailyContribution: Number(settingsResult.data?.maintenance_average_daily_contribution ?? 600),
+  });
 
   return (
     <div className="space-y-5">
       <MaintenanceNav title="Bakım Merkezi" />
       <MaintenanceCostDashboard
-        rows={(costRowsResult.data ?? []) as unknown as MaintenanceCostRow[]}
-        snapshots={(mileageSnapshotsResult.data ?? []) as unknown as MileagePeriodSnapshot[]}
-        vehicles={(vehiclesResult.data ?? []) as any}
+        summary={analytics}
+        vehicles={vehiclesResult.data ?? []}
         filters={{ ...costFilters, start: costStart, end: costEnd }}
-        repairWarningAmount={Number(settingsResult.data?.repair_warning_amount ?? 5_000)}
-        averageDailyContribution={Number(settingsResult.data?.maintenance_average_daily_contribution ?? 600)}
         exportHref={`/api/maintenance/costs/export?${exportParams.toString()}`}
       />
     </div>

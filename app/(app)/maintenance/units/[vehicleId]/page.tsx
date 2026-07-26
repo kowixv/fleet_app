@@ -14,18 +14,20 @@ import {
   type PMStatus,
 } from "@/lib/maintenance";
 import { expandEffectiveMaintenanceRules } from "@/lib/maintenance-reminders";
-import {
-  filterMaintenanceCostRows,
-  filterMileagePeriodSnapshots,
-  summarizeMaintenanceCosts,
-  type MaintenanceCostRow,
-  type MileagePeriodSnapshot,
-} from "@/lib/maintenance-cost";
 import { usd } from "@/lib/format";
 import { MAINTENANCE_TERMS } from "@/lib/maintenance-terminology";
 import { findingSeverityLabel } from "@/lib/inspection";
 import { createClient } from "@/lib/supabase/server";
 import { todayISO } from "@/lib/tz";
+import { getMaintenanceCostAnalytics } from "@/lib/maintenance/service";
+import MaintenancePagination from "@/components/MaintenancePagination";
+import {
+  decodeMaintenanceCursor,
+  maintenanceKeysetFilter,
+  maintenancePageHref,
+  MAINTENANCE_PAGE_SIZE,
+  nextMaintenanceCursor,
+} from "@/lib/maintenance/pagination";
 
 export const dynamic = "force-dynamic";
 
@@ -165,25 +167,83 @@ export default async function MaintenanceUnitDetailPage({
     );
   } else if (tab === "history") {
     const first = (value: string | string[] | undefined) => Array.isArray(value) ? value[0] : value;
+    const historyCursor = decodeMaintenanceCursor(query.history_cursor);
     let historyQuery = supabase
       .from("maintenance_records")
-      .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)")
+      .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)", { count: "exact" })
       .eq("vehicle_id", vehicleId)
       .is("deleted_at", null)
-      .order("performed_date", { ascending: false })
+      .is("undone_at", null)
       .order("created_at", { ascending: false })
-      .limit(100);
+      .order("id", { ascending: false })
+      .limit(MAINTENANCE_PAGE_SIZE + 1);
     if (first(query.history_start)) historyQuery = historyQuery.gte("performed_date", first(query.history_start)!);
     if (first(query.history_end)) historyQuery = historyQuery.lte("performed_date", first(query.history_end)!);
     if (first(query.history_category) && first(query.history_category) !== "all") historyQuery = historyQuery.eq("category", first(query.history_category)!);
     if (first(query.history_shop)) historyQuery = historyQuery.ilike("shop_name", `%${first(query.history_shop)}%`);
     if (first(query.history_invoice) === "yes") historyQuery = historyQuery.not("invoice_id", "is", null);
     if (first(query.history_invoice) === "no") historyQuery = historyQuery.is("invoice_id", null);
-    const historyRes = await historyQuery;
-    if (historyRes.error) throw new Error(`Bakım geçmişi yüklenemedi: ${historyRes.error.message}`);
-    content = <HistoryPanel rows={(historyRes.data ?? []) as any[]} params={query} />;
+    let historyTotalQuery = supabase
+      .from("maintenance_records")
+      .select("id", { count: "exact", head: true })
+      .eq("vehicle_id", vehicleId)
+      .is("deleted_at", null)
+      .is("undone_at", null);
+    if (first(query.history_start)) historyTotalQuery = historyTotalQuery.gte("performed_date", first(query.history_start)!);
+    if (first(query.history_end)) historyTotalQuery = historyTotalQuery.lte("performed_date", first(query.history_end)!);
+    if (first(query.history_category) && first(query.history_category) !== "all") historyTotalQuery = historyTotalQuery.eq("category", first(query.history_category)!);
+    if (first(query.history_shop)) historyTotalQuery = historyTotalQuery.ilike("shop_name", `%${first(query.history_shop)}%`);
+    if (first(query.history_invoice) === "yes") historyTotalQuery = historyTotalQuery.not("invoice_id", "is", null);
+    if (first(query.history_invoice) === "no") historyTotalQuery = historyTotalQuery.is("invoice_id", null);
+    if (historyCursor) historyQuery = historyQuery.or(maintenanceKeysetFilter("created_at", historyCursor));
+    const [historyRes, historyTotalRes] = await Promise.all([historyQuery, historyTotalQuery]);
+    const historyError = historyRes.error ?? historyTotalRes.error;
+    if (historyError) throw new Error(`Bakım geçmişi yüklenemedi: ${historyError.message}`);
+    const historyPage = nextMaintenanceCursor(historyRes.data ?? [], (row) => row.created_at);
+    const historyNextHref = historyPage.nextCursor
+      ? maintenancePageHref(`/maintenance/units/${vehicleId}`, query, "history_cursor", historyPage.nextCursor)
+      : null;
+    content = (
+      <section className="space-y-4">
+        <HistoryPanel rows={historyPage.rows as any[]} params={query} />
+        <MaintenancePagination
+          totalCount={historyTotalRes.count ?? historyPage.rows.length}
+          shownCount={historyPage.rows.length}
+          nextHref={historyNextHref}
+        />
+      </section>
+    );
   } else if (tab === "inspections") {
-    const [templatesInspectionRes, draftsRes, inspectionRulesRes, findingsRes, trendsRes, completedRes] = await Promise.all([
+    const findingCursor = decodeMaintenanceCursor(query.finding_cursor);
+    const inspectionCursor = decodeMaintenanceCursor(query.inspection_cursor);
+    let unitFindingsQuery = supabase
+      .from("inspection_findings")
+      .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, created_at, vehicles!inspection_findings_vehicle_id_fkey(unit_number)", { count: "exact" })
+      .eq("vehicle_id", vehicleId)
+      .eq("status", "open")
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(MAINTENANCE_PAGE_SIZE + 1);
+    if (findingCursor) unitFindingsQuery = unitFindingsQuery.or(maintenanceKeysetFilter("created_at", findingCursor));
+    let unitCompletedQuery = supabase
+      .from("vehicle_inspections")
+      .select("id, inspection_type, inspection_date, mileage, engine_hours, inspector, shop, status, created_at", { count: "exact" })
+      .eq("vehicle_id", vehicleId)
+      .in("status", ["completed", "failed"])
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .limit(MAINTENANCE_PAGE_SIZE + 1);
+    if (inspectionCursor) unitCompletedQuery = unitCompletedQuery.or(maintenanceKeysetFilter("created_at", inspectionCursor));
+    const [
+      templatesInspectionRes,
+      draftsRes,
+      inspectionRulesRes,
+      findingsRes,
+      trendsRes,
+      completedRes,
+      findingTotalRes,
+      inspectionTotalRes,
+    ] = await Promise.all([
       supabase
         .from("inspection_templates")
         .select(`
@@ -217,29 +277,43 @@ export default async function MaintenanceUnitDetailPage({
         .order("updated_at", { ascending: false })
         .limit(25),
       supabase.from("maintenance_rules").select("id, vehicle_id, service_type").eq("vehicle_id", vehicleId).eq("active", true),
-      supabase
-        .from("inspection_findings")
-        .select("id, vehicle_id, severity, status, label, notes, recommended_action, work_order_status, work_order_id, vehicles!inspection_findings_vehicle_id_fkey(unit_number)")
-        .eq("vehicle_id", vehicleId)
-        .eq("status", "open")
-        .order("created_at", { ascending: false })
-        .limit(50),
+      unitFindingsQuery,
       supabase
         .from("vehicle_inspection_results")
         .select("id, label, axle_position, value_number, unit_of_measure, created_at, vehicle_inspections!vehicle_inspection_results_inspection_same_org_fk(vehicle_id, vehicles!vehicle_inspections_vehicle_id_fkey(unit_number))")
         .not("value_number", "is", null)
         .order("created_at", { ascending: false })
         .limit(150),
+      unitCompletedQuery,
+      supabase
+        .from("inspection_findings")
+        .select("id", { count: "exact", head: true })
+        .eq("vehicle_id", vehicleId)
+        .eq("status", "open"),
       supabase
         .from("vehicle_inspections")
-        .select("id, inspection_type, inspection_date, mileage, engine_hours, inspector, shop, status")
+        .select("id", { count: "exact", head: true })
         .eq("vehicle_id", vehicleId)
-        .in("status", ["completed", "failed"])
-        .order("inspection_date", { ascending: false })
-        .limit(50),
+        .in("status", ["completed", "failed"]),
     ]);
-    const error = templatesInspectionRes.error ?? draftsRes.error ?? inspectionRulesRes.error ?? findingsRes.error ?? trendsRes.error ?? completedRes.error;
+    const error =
+      templatesInspectionRes.error ??
+      draftsRes.error ??
+      inspectionRulesRes.error ??
+      findingsRes.error ??
+      trendsRes.error ??
+      completedRes.error ??
+      findingTotalRes.error ??
+      inspectionTotalRes.error;
     if (error) throw new Error(`Inspection verisi yüklenemedi: ${error.message}`);
+    const findingsPage = nextMaintenanceCursor(findingsRes.data ?? [], (row) => row.created_at);
+    const inspectionsPage = nextMaintenanceCursor(completedRes.data ?? [], (row) => row.created_at);
+    const findingsNextHref = findingsPage.nextCursor
+      ? maintenancePageHref(`/maintenance/units/${vehicleId}`, query, "finding_cursor", findingsPage.nextCursor)
+      : null;
+    const inspectionsNextHref = inspectionsPage.nextCursor
+      ? maintenancePageHref(`/maintenance/units/${vehicleId}`, query, "inspection_cursor", inspectionsPage.nextCursor)
+      : null;
     content = (
       <section className="space-y-4">
         <MaintenanceInspectionWorkflow
@@ -247,35 +321,66 @@ export default async function MaintenanceUnitDetailPage({
           templates={(templatesInspectionRes.data ?? []).map((template: any) => ({ ...template, items: template.items ?? [] }))}
           drafts={(draftsRes.data ?? []) as any}
           rules={(inspectionRulesRes.data ?? []) as any}
-          findings={(findingsRes.data ?? []) as any}
+          findings={findingsPage.rows as any}
           trends={(trendsRes.data ?? []) as any}
           revalidatePath={`/maintenance/units/${vehicleId}?tab=inspections`}
         />
-        <SimpleInspectionHistory rows={(completedRes.data ?? []) as any[]} />
+        <MaintenancePagination
+          totalCount={findingTotalRes.count ?? findingsPage.rows.length}
+          shownCount={findingsPage.rows.length}
+          nextHref={findingsNextHref}
+          label="açık bulgu"
+        />
+        <SimpleInspectionHistory rows={inspectionsPage.rows as any[]} />
+        <MaintenancePagination
+          totalCount={inspectionTotalRes.count ?? inspectionsPage.rows.length}
+          shownCount={inspectionsPage.rows.length}
+          nextHref={inspectionsNextHref}
+          label="tamamlanan inspection"
+        />
       </section>
     );
   } else if (tab === "costs") {
-    const [costsRes, snapshotsRes] = await Promise.all([
-      supabase.from("maintenance_cost_fact_v").select("*").eq("vehicle_id", vehicleId).order("cost_date", { ascending: false }).limit(1000),
-      supabase.from("vehicle_mileage_period_snapshots").select("vehicle_id, period_start, period_end, miles_driven").eq("vehicle_id", vehicleId),
+    const end = todayISO();
+    const base = { vehicleId, end, averageDailyContribution: 0, planned: "all" as const };
+    const [summary30, summary90, summary365, allTime] = await Promise.all([
+      getMaintenanceCostAnalytics(supabase, { ...base, start: daysAgo(30) }),
+      getMaintenanceCostAnalytics(supabase, { ...base, start: daysAgo(90) }),
+      getMaintenanceCostAnalytics(supabase, { ...base, start: daysAgo(365) }),
+      getMaintenanceCostAnalytics(supabase, { ...base, start: "2000-01-01" }),
     ]);
-    const error = costsRes.error ?? snapshotsRes.error;
-    if (error) throw new Error(`Maliyet verisi yüklenemedi: ${error.message}`);
     content = (
       <VehicleMaintenanceCostPanel
         unitNumber={vehicle.unit_number}
-        rows={(costsRes.data ?? []) as unknown as MaintenanceCostRow[]}
-        snapshots={(snapshotsRes.data ?? []) as unknown as MileagePeriodSnapshot[]}
+        summary30={summary30}
+        summary90={summary90}
+        summary365={summary365}
+        allTime={allTime}
       />
     );
   } else if (tab === "mileage") {
-    const logsRes = await supabase
+    const mileageCursor = decodeMaintenanceCursor(query.mileage_cursor);
+    let logsQuery = supabase
       .from("vehicle_mileage_logs")
-      .select("id, mileage, logged_at, source")
+      .select("id, mileage, logged_at, source", { count: "exact" })
       .eq("vehicle_id", vehicleId)
       .order("logged_at", { ascending: false })
-      .limit(100);
-    if (logsRes.error) throw new Error(`Mileage logları yüklenemedi: ${logsRes.error.message}`);
+      .order("id", { ascending: false })
+      .limit(MAINTENANCE_PAGE_SIZE + 1);
+    if (mileageCursor) logsQuery = logsQuery.or(maintenanceKeysetFilter("logged_at", mileageCursor));
+    const [logsRes, logsTotalRes] = await Promise.all([
+      logsQuery,
+      supabase
+        .from("vehicle_mileage_logs")
+        .select("id", { count: "exact", head: true })
+        .eq("vehicle_id", vehicleId),
+    ]);
+    const logsError = logsRes.error ?? logsTotalRes.error;
+    if (logsError) throw new Error(`Mileage logları yüklenemedi: ${logsError.message}`);
+    const mileagePage = nextMaintenanceCursor(logsRes.data ?? [], (row) => row.logged_at);
+    const mileageNextHref = mileagePage.nextCursor
+      ? maintenancePageHref(`/maintenance/units/${vehicleId}`, query, "mileage_cursor", mileagePage.nextCursor)
+      : null;
     content = (
       <section className="space-y-4">
         <div className="card">
@@ -285,11 +390,16 @@ export default async function MaintenanceUnitDetailPage({
             <UnitMileageInline vehicleId={vehicle.id} unitNumber={vehicle.unit_number} currentMileage={vehicle.current_mileage} />
           </div>
         </div>
-        <MileageHistory rows={(logsRes.data ?? []) as any[]} />
+        <MileageHistory rows={mileagePage.rows as any[]} />
+        <MaintenancePagination
+          totalCount={logsTotalRes.count ?? mileagePage.rows.length}
+          shownCount={mileagePage.rows.length}
+          nextHref={mileageNextHref}
+        />
       </section>
     );
   } else {
-    const [historyRes, findingsRes, costs90Res, snapshots90Res] = await Promise.all([
+    const [historyRes, findingsRes, cost90] = await Promise.all([
       supabase
         .from("maintenance_records")
         .select("*, vehicles!maintenance_records_vehicle_id_fkey(unit_number), maintenance_invoices(file_name, invoice_number)")
@@ -305,15 +415,16 @@ export default async function MaintenanceUnitDetailPage({
         .eq("status", "open")
         .order("created_at", { ascending: false })
         .limit(10),
-      supabase.from("maintenance_cost_fact_v").select("*").eq("vehicle_id", vehicleId).gte("cost_date", daysAgo(90)).limit(1000),
-      supabase.from("vehicle_mileage_period_snapshots").select("vehicle_id, period_start, period_end, miles_driven").eq("vehicle_id", vehicleId).gte("period_start", daysAgo(90)),
+      getMaintenanceCostAnalytics(supabase, {
+        vehicleId,
+        start: daysAgo(90),
+        end: todayISO(),
+        averageDailyContribution: 0,
+        planned: "all",
+      }),
     ]);
-    const error = historyRes.error ?? findingsRes.error ?? costs90Res.error ?? snapshots90Res.error;
+    const error = historyRes.error ?? findingsRes.error;
     if (error) throw new Error(`Unit özet yüklenemedi: ${error.message}`);
-    const cost90 = summarizeMaintenanceCosts(
-      filterMaintenanceCostRows((costs90Res.data ?? []) as unknown as MaintenanceCostRow[], { start: daysAgo(90), vehicleId }),
-      filterMileagePeriodSnapshots((snapshots90Res.data ?? []) as unknown as MileagePeriodSnapshot[], { start: daysAgo(90), vehicleId }),
-    );
     content = (
       <section className="grid gap-4 xl:grid-cols-2">
         <SummaryList title="Sıradaki 3 Bakım" rows={firstRelevantRules(rulesWithPm, 3)} />
