@@ -1,7 +1,12 @@
 "use server";
 
+import {
+  installVehicleMaintenanceSetup,
+  type VehicleMaintenanceSetupResult,
+} from "@/app/(app)/vehicles/maintenance-setup-actions";
 import { requireWriteRole } from "@/lib/auth";
 import { createClient } from "@/lib/supabase/server";
+import { parseVehicleMaintenanceSetupInput } from "@/lib/vehicle-maintenance-setup";
 import {
   isGeneratedUnitNumberCollision,
   isVehicleFormType,
@@ -31,6 +36,13 @@ function intOrNull(value: unknown, label: string): number | null {
 function vehicleId(value: unknown): string | null {
   const cleaned = optionalText(value);
   return cleaned && /^[0-9a-f-]{36}$/i.test(cleaned) ? cleaned : null;
+}
+
+function requestKey(value: unknown): string | null {
+  const cleaned = optionalText(value);
+  return cleaned && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(cleaned)
+    ? cleaned
+    : null;
 }
 
 function manualUnitNumber(value: unknown): string {
@@ -109,9 +121,16 @@ export async function saveVehicleWithManualUnitFromForm(input: Record<string, un
   const profile = await requireWriteRole();
   const id = vehicleId(input.id);
   let payload: ReturnType<typeof buildVehicleFormPayload>;
+  let maintenanceSetup: ReturnType<typeof parseVehicleMaintenanceSetupInput> | null = null;
+  let creationRequestKey: string | null = null;
 
   try {
     payload = buildVehicleFormPayload(input);
+    if (!id) {
+      creationRequestKey = requestKey(input.creation_request_key);
+      if (!creationRequestKey) throw new Error("Araç oluşturma isteği geçersiz. Formu kapatıp yeniden açın.");
+      maintenanceSetup = parseVehicleMaintenanceSetupInput(input);
+    }
     await Promise.all([
       assertDriverInOrg(payload.vehicle.assigned_driver_id, profile.organization_id),
       assertOwnerInOrg(payload.vehicle.owner_id, profile.organization_id),
@@ -123,6 +142,7 @@ export async function saveVehicleWithManualUnitFromForm(input: Record<string, un
   const supabase = await createClient();
   let vehicleRecordId = id;
   let existingProfile = false;
+  let created = false;
 
   if (vehicleRecordId) {
     const existing = await supabase
@@ -152,14 +172,28 @@ export async function saveVehicleWithManualUnitFromForm(input: Record<string, un
   } else {
     const { data, error } = await supabase
       .from("vehicles")
-      .insert({
+      .upsert({
         ...payload.vehicle,
         organization_id: profile.organization_id,
-      })
+        creation_request_key: creationRequestKey,
+      }, { onConflict: "organization_id,creation_request_key", ignoreDuplicates: true })
       .select("id")
-      .single();
+      .maybeSingle();
     if (error) return { ok: false as const, error: friendlyUnitNumberError(error) };
-    vehicleRecordId = String(data.id);
+    if (data?.id) {
+      vehicleRecordId = String(data.id);
+      created = true;
+    } else {
+      const retry = await supabase
+        .from("vehicles")
+        .select("id")
+        .eq("organization_id", profile.organization_id)
+        .eq("creation_request_key", creationRequestKey)
+        .maybeSingle();
+      if (retry.error) return { ok: false as const, error: retry.error.message };
+      if (!retry.data) return { ok: false as const, error: "Araç oluşturma isteği tamamlanamadı." };
+      vehicleRecordId = String(retry.data.id);
+    }
   }
 
   const hasEngineInput = payload.profile.engine_model !== null || payload.profile.engine_hours !== null;
@@ -177,9 +211,77 @@ export async function saveVehicleWithManualUnitFromForm(input: Record<string, un
         },
         { onConflict: "organization_id,vehicle_id" },
       );
-    if (error) return { ok: false as const, error: error.message };
+    if (error) {
+      if (id) return { ok: false as const, error: error.message };
+      const maintenance: VehicleMaintenanceSetupResult = {
+        vehicleId: vehicleRecordId,
+        mode: maintenanceSetup?.mode ?? "none",
+        baselineMode: maintenanceSetup?.baselineMode ?? "current",
+        ok: false,
+        created: 0,
+        skipped: 0,
+        failed: 1,
+        results: [{
+          presetId: "vehicle-profile",
+          title: "Araç bakım profili",
+          vehicleId: vehicleRecordId,
+          status: "failed",
+          message: error.message,
+        }],
+        needsInformation: [],
+        error: error.message,
+      };
+      revalidateVehicleMaintenance();
+      return {
+        ok: true as const,
+        vehicleId: vehicleRecordId,
+        unitNumber: payload.vehicle.unit_number,
+        created,
+        maintenance,
+      };
+    }
   }
 
   revalidateVehicleMaintenance();
-  return { ok: true as const, vehicleId: vehicleRecordId, unitNumber: payload.vehicle.unit_number };
+  if (id || !maintenanceSetup) {
+    return { ok: true as const, vehicleId: vehicleRecordId, unitNumber: payload.vehicle.unit_number, created: false };
+  }
+
+  let maintenance: VehicleMaintenanceSetupResult;
+  try {
+    maintenance = await installVehicleMaintenanceSetup({
+      vehicleId: vehicleRecordId,
+      mode: maintenanceSetup.mode,
+      baselineMode: maintenanceSetup.baselineMode,
+      sourceVehicleId: maintenanceSetup.sourceVehicleId,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Bakım kurulumu tamamlanamadı.";
+    maintenance = {
+      vehicleId: vehicleRecordId,
+      mode: maintenanceSetup.mode,
+      baselineMode: maintenanceSetup.baselineMode,
+      ok: false,
+      created: 0,
+      skipped: 0,
+      failed: 1,
+      results: [{
+        presetId: "maintenance-setup",
+        title: "Bakım kurulumu",
+        vehicleId: vehicleRecordId,
+        status: "failed",
+        message,
+      }],
+      needsInformation: [],
+      error: message,
+    };
+  }
+  revalidateVehicleMaintenance();
+  return {
+    ok: true as const,
+    vehicleId: vehicleRecordId,
+    unitNumber: payload.vehicle.unit_number,
+    created,
+    maintenance,
+  };
 }

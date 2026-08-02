@@ -1,14 +1,27 @@
 "use client";
 
 import { saveVehicleWithManualUnitFromForm } from "@/app/(app)/vehicles/manual-unit-actions";
+import {
+  installVehicleMaintenanceSetup,
+  type VehicleMaintenanceSetupResult,
+} from "@/app/(app)/vehicles/maintenance-setup-actions";
 import VehicleRemovalActions from "@/components/VehicleRemovalActions";
 import VehicleThumbnail from "@/components/VehicleThumbnail";
+import VehicleMaintenanceSetupSection, {
+  type MaintenanceCopyVehicleOption,
+} from "@/components/VehicleMaintenanceSetupSection";
 import {
   ENGINE_TYPE_SUGGESTIONS,
   TRUCK_COLOR_SUGGESTIONS,
   VEHICLE_STATUS_OPTIONS,
   VEHICLE_TYPE_OPTIONS,
 } from "@/lib/vehicle-form";
+import {
+  defaultVehicleMaintenanceSetup,
+  type VehicleMaintenanceBaselineMode,
+  type VehicleMaintenanceDefaults,
+  type VehicleMaintenanceSetupMode,
+} from "@/lib/vehicle-maintenance-setup";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 
@@ -87,6 +100,9 @@ export default function VehicleResourceManager({
   pagination,
   includeInactive,
   canPermanentDelete,
+  canWrite,
+  maintenanceDefaults,
+  maintenanceCopyVehicles,
 }: {
   rows: VehicleFormRow[];
   drivers: PersonOption[];
@@ -94,12 +110,22 @@ export default function VehicleResourceManager({
   pagination: Pagination;
   includeInactive: boolean;
   canPermanentDelete: boolean;
+  canWrite: boolean;
+  maintenanceDefaults: VehicleMaintenanceDefaults;
+  maintenanceCopyVehicles: MaintenanceCopyVehicleOption[];
 }) {
   const router = useRouter();
+  const initialSetup = defaultVehicleMaintenanceSetup("truck", maintenanceDefaults);
   const [editing, setEditing] = useState<VehicleFormRow | null>(null);
   const [previewVehicle, setPreviewVehicle] = useState<ThumbnailPreviewVehicle>(() => previewFromRow(null));
   const [open, setOpen] = useState(false);
   const [error, setError] = useState("");
+  const [creationRequestKey, setCreationRequestKey] = useState("");
+  const [setupMode, setSetupMode] = useState<VehicleMaintenanceSetupMode>(initialSetup.mode);
+  const [baselineMode, setBaselineMode] = useState<VehicleMaintenanceBaselineMode>(initialSetup.baselineMode);
+  const [sourceVehicleId, setSourceVehicleId] = useState("");
+  const [setupEngineModel, setSetupEngineModel] = useState<string | null>(null);
+  const [maintenanceResult, setMaintenanceResult] = useState<VehicleMaintenanceSetupResult | null>(null);
   const [isPending, startTransition] = useTransition();
 
   function paginationHref(nextPage: number) {
@@ -107,9 +133,16 @@ export default function VehicleResourceManager({
   }
 
   function startAdd() {
+    const nextSetup = defaultVehicleMaintenanceSetup("truck", maintenanceDefaults);
     setEditing(null);
     setPreviewVehicle(previewFromRow(null));
     setError("");
+    setCreationRequestKey(crypto.randomUUID());
+    setSetupMode(nextSetup.mode);
+    setBaselineMode(nextSetup.baselineMode);
+    setSourceVehicleId("");
+    setSetupEngineModel(null);
+    setMaintenanceResult(null);
     setOpen(true);
   }
 
@@ -117,11 +150,23 @@ export default function VehicleResourceManager({
     setEditing(row);
     setPreviewVehicle(previewFromRow(row));
     setError("");
+    setCreationRequestKey("");
+    setSetupEngineModel(row.engine_model);
+    setMaintenanceResult(null);
     setOpen(true);
   }
 
   function updatePreviewField(field: keyof ThumbnailPreviewVehicle, value: string) {
     setPreviewVehicle((current) => ({ ...current, [field]: value || null }));
+  }
+
+  function updateVehicleType(value: string) {
+    updatePreviewField("vehicle_type", value);
+    if (!editing) {
+      const nextSetup = defaultVehicleMaintenanceSetup(value, maintenanceDefaults);
+      setSetupMode(nextSetup.mode);
+      setSourceVehicleId("");
+    }
   }
 
   function onSubmit(formData: FormData) {
@@ -135,7 +180,26 @@ export default function VehicleResourceManager({
         setError(result.error);
         return;
       }
-      setOpen(false);
+      if (editing || !("maintenance" in result) || !result.maintenance) {
+        setOpen(false);
+      } else {
+        setMaintenanceResult(result.maintenance);
+      }
+      router.refresh();
+    });
+  }
+
+  function retryMaintenanceSetup() {
+    if (!maintenanceResult) return;
+    setError("");
+    startTransition(async () => {
+      const result = await installVehicleMaintenanceSetup({
+        vehicleId: maintenanceResult.vehicleId,
+        mode: setupMode,
+        baselineMode,
+        sourceVehicleId: sourceVehicleId || null,
+      });
+      setMaintenanceResult(result);
       router.refresh();
     });
   }
@@ -144,7 +208,7 @@ export default function VehicleResourceManager({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-bold">Vehicles / Units</h1>
-        <button onClick={startAdd} className="btn-primary">
+        <button onClick={startAdd} className="btn-primary" disabled={!canWrite} title={canWrite ? undefined : "Viewer rolü araç oluşturamaz."}>
           + Araç
         </button>
       </div>
@@ -262,6 +326,7 @@ export default function VehicleResourceManager({
             </div>
 
             <form action={onSubmit} className="space-y-5">
+              {!editing && <input type="hidden" name="creation_request_key" value={creationRequestKey} />}
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold text-slate-900">Araç Bilgileri</h3>
                 <div className="grid gap-3 md:grid-cols-3">
@@ -282,7 +347,7 @@ export default function VehicleResourceManager({
                       className="input"
                       required
                       defaultValue={editing?.vehicle_type ?? "truck"}
-                      onChange={(event) => updatePreviewField("vehicle_type", event.target.value)}
+                      onChange={(event) => updateVehicleType(event.target.value)}
                     >
                       {VEHICLE_TYPE_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -409,7 +474,13 @@ export default function VehicleResourceManager({
                   </div>
                   <div>
                     <label className="label">Engine Type</label>
-                    <input name="engine_model" list="engine-type-suggestions" className="input" defaultValue={editing?.engine_model ?? ""} />
+                    <input
+                      name="engine_model"
+                      list="engine-type-suggestions"
+                      className="input"
+                      defaultValue={editing?.engine_model ?? ""}
+                      onChange={(event) => setSetupEngineModel(event.target.value || null)}
+                    />
                     <datalist id="engine-type-suggestions">
                       {ENGINE_TYPE_SUGGESTIONS.map((engine) => <option key={engine} value={engine} />)}
                     </datalist>
@@ -420,6 +491,27 @@ export default function VehicleResourceManager({
                   </div>
                 </div>
               </section>
+
+              {!editing && (
+                <VehicleMaintenanceSetupSection
+                  vehicleType={previewVehicle.vehicle_type ?? "truck"}
+                  engineModel={setupEngineModel}
+                  defaults={maintenanceDefaults}
+                  copyVehicles={maintenanceCopyVehicles}
+                  mode={setupMode}
+                  baselineMode={baselineMode}
+                  sourceVehicleId={sourceVehicleId}
+                  result={maintenanceResult}
+                  isPending={isPending}
+                  onModeChange={(mode) => {
+                    setSetupMode(mode);
+                    if (mode !== "copy") setSourceVehicleId("");
+                  }}
+                  onBaselineModeChange={setBaselineMode}
+                  onSourceVehicleChange={setSourceVehicleId}
+                  onRetry={retryMaintenanceSetup}
+                />
+              )}
 
               <section className="space-y-3">
                 <h3 className="text-sm font-semibold text-slate-900">Notlar</h3>
@@ -434,8 +526,8 @@ export default function VehicleResourceManager({
                 <button type="button" onClick={() => setOpen(false)} className="btn-ghost">
                   İptal
                 </button>
-                <button type="submit" disabled={isPending} className="btn-primary">
-                  {isPending ? "Kaydediliyor..." : "Kaydet"}
+                <button type="submit" disabled={isPending || Boolean(maintenanceResult)} className="btn-primary">
+                  {maintenanceResult ? "Araç Oluşturuldu" : isPending ? "Kaydediliyor..." : "Kaydet"}
                 </button>
               </div>
             </form>

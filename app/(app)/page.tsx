@@ -29,6 +29,9 @@ interface DashboardRule {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
   vehicles: { id?: string; unit_number: string; vehicle_type?: string; current_mileage: number | null } | null;
 }
 
@@ -62,7 +65,7 @@ export default async function Dashboard() {
         .from("maintenance_rules")
         .select("*")
         .eq("active", true),
-      supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
+      supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours"),
       supabase
         .from("settings")
         .select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount")

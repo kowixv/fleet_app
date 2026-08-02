@@ -3,6 +3,7 @@ import Link from "next/link";
 import MaintenanceNav from "@/components/MaintenanceNav";
 import MileageSnapshotControls from "@/components/MileageSnapshotControls";
 import { updateSettings } from "@/app/(app)/settings/actions";
+import { updateVehicleMaintenanceDefaults } from "@/app/(app)/vehicles/maintenance-setup-actions";
 import { MAINTENANCE_COST_CATEGORIES } from "@/lib/maintenance-cost";
 import { formatMaintenanceCategory } from "@/lib/maintenance-terminology";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
@@ -121,6 +122,47 @@ export default async function MaintenanceSettingsPage() {
           </label>
           <div className="col-span-2">
             <button type="submit" className="btn-primary">Kaydet</button>
+          </div>
+        </form>
+      </AdminSection>
+
+      <AdminSection title="Yeni Araç Bakım Varsayılanları" defaultOpen>
+        <form action={updateVehicleMaintenanceDefaults} className="grid max-w-2xl gap-4 md:grid-cols-2">
+          <label className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white p-3 text-sm md:col-span-2">
+            <input
+              name="new_vehicle_auto_maintenance_setup"
+              type="checkbox"
+              defaultChecked={settings?.new_vehicle_auto_maintenance_setup ?? true}
+              className="mt-0.5 h-4 w-4 accent-brand"
+            />
+            <span>
+              <span className="block font-medium">Yeni araçlarda otomatik bakım kurulumu açık</span>
+              <span className="mt-0.5 block text-xs text-slate-500">Kapalıysa yeni araç formu “Şimdilik Bakım Kurma” ile açılır.</span>
+            </span>
+          </label>
+          <div>
+            <label className="label">Yeni Semi Truck varsayılan paketi</label>
+            <select name="new_truck_maintenance_package" className="input" defaultValue={settings?.new_truck_maintenance_package ?? "basic"}>
+              <option value="basic">Temel Bakım Paketi</option>
+              <option value="full">Tam Bakım Programı</option>
+            </select>
+          </div>
+          <div>
+            <label className="label">Yeni Box Truck varsayılan paketi</label>
+            <select name="new_box_truck_maintenance_package" className="input" defaultValue={settings?.new_box_truck_maintenance_package ?? "basic"}>
+              <option value="basic">Temel Bakım Paketi</option>
+              <option value="full">Tam Bakım Programı</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <label className="label">Varsayılan takip başlangıcı</label>
+            <select name="new_vehicle_maintenance_baseline_mode" className="input" defaultValue={settings?.new_vehicle_maintenance_baseline_mode ?? "current"}>
+              <option value="current">Mevcut mileage, engine hours ve bugünden başlat</option>
+              <option value="manual">Son bakım bilgilerini daha sonra gireceğim</option>
+            </select>
+          </div>
+          <div className="md:col-span-2">
+            <button type="submit" className="btn-primary">Varsayılanları Kaydet</button>
           </div>
         </form>
       </AdminSection>

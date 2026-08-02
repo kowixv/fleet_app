@@ -36,13 +36,13 @@ export default async function MaintenanceRemindersPage({
   const [rulesRes, vehiclesRes, profilesRes, settingsRes, statesRes] = await Promise.all([
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, vehicle_type, service_type, interval_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active, created_at")
+      .select("id, vehicle_id, vehicle_type, service_type, interval_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours, active, created_at")
       .order("active", { ascending: false })
       .order("created_at", { ascending: false }),
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").order("unit_number"),
     supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours, engine_model"),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours").single(),
-    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
+    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours"),
   ]);
   const error = rulesRes.error ?? vehiclesRes.error ?? profilesRes.error ?? settingsRes.error ?? statesRes.error;
   if (error) throw new Error(`Bakım hatırlatıcıları yüklenemedi: ${error.message}`);

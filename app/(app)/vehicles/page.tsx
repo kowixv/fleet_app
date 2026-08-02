@@ -1,7 +1,9 @@
 import VehicleResourceManager, { type VehicleFormRow } from "@/components/VehicleResourceManager";
 import { requireProfile } from "@/lib/auth";
 import { DEFAULT_PAGE_SIZE, fetchOptions, parsePage } from "@/lib/data";
+import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
+import { parseVehicleMaintenanceDefaults } from "@/lib/vehicle-maintenance-setup";
 
 export const dynamic = "force-dynamic";
 
@@ -25,8 +27,14 @@ export default async function VehiclesPage({
     .range(from, from + DEFAULT_PAGE_SIZE - 1);
   if (!includeInactive) vehiclesQuery = vehiclesQuery.in("status", ["active", "in_repair", "yard_hometime"]);
 
-  const [vehiclesRes, opts] = await Promise.all([vehiclesQuery, fetchOptions()]);
-  if (vehiclesRes.error) throw new Error(`Vehicle data failed to load: ${vehiclesRes.error.message}`);
+  const [vehiclesRes, opts, settingsRes, copyVehiclesRes] = await Promise.all([
+    vehiclesQuery,
+    fetchOptions(),
+    supabase.from("settings").select("new_vehicle_auto_maintenance_setup, new_truck_maintenance_package, new_box_truck_maintenance_package, new_vehicle_maintenance_baseline_mode").eq("organization_id", profile.organization_id).maybeSingle(),
+    supabase.from("vehicles").select("id, unit_number, vehicle_type").eq("organization_id", profile.organization_id).in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
+  ]);
+  const pageError = vehiclesRes.error ?? settingsRes.error ?? copyVehiclesRes.error;
+  if (pageError) throw new Error(`Vehicle data failed to load: ${pageError.message}`);
 
   const vehicles = (vehiclesRes.data ?? []) as Array<Record<string, any>>;
   const vehicleIds = vehicles.map((vehicle) => vehicle.id);
@@ -57,6 +65,13 @@ export default async function VehiclesPage({
       pagination={{ page: currentPage, pageSize: DEFAULT_PAGE_SIZE, total: vehiclesRes.count ?? 0 }}
       includeInactive={includeInactive}
       canPermanentDelete={canPermanentDelete}
+      canWrite={profile.role !== "viewer"}
+      maintenanceDefaults={parseVehicleMaintenanceDefaults(settingsRes.data as Record<string, unknown> | null)}
+      maintenanceCopyVehicles={(copyVehiclesRes.data ?? []).map((vehicle) => ({
+        id: vehicle.id,
+        unitNumber: vehicle.unit_number,
+        vehicleType: vehicle.vehicle_type,
+      }))}
     />
   );
 }

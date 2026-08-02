@@ -26,7 +26,7 @@ export async function GET(req: Request) {
       .from("maintenance_rules")
       .select("*")
       .eq("active", true),
-    supabase.from("maintenance_rule_vehicle_states").select("id, organization_id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
+    supabase.from("maintenance_rule_vehicle_states").select("id, organization_id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours"),
     supabase.from("vehicles").select("id, organization_id, unit_number, vehicle_type, current_mileage, status").in("status", maintenanceVisibleVehicleStatuses()),
     supabase.from("settings").select("organization_id, pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours"),
     supabase.from("telegram_groups").select("organization_id, chat_id, vehicle_id, active"),

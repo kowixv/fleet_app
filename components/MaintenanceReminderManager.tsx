@@ -34,6 +34,9 @@ export interface ReminderRow {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
   active: boolean;
   vehicles: { id: string; unit_number: string; vehicle_type: string; current_mileage: number | null } | null;
 }
@@ -81,16 +84,19 @@ function formatLastDone(row: ReminderRow) {
 
 function formatNextDue(row: ReminderRow) {
   const parts = [];
-  if (row.interval_miles != null && row.last_done_mileage != null) {
-    parts.push(`${(Number(row.last_done_mileage) + Number(row.interval_miles)).toLocaleString("en-US")} mil`);
+  const startMileage = row.last_done_mileage ?? row.tracking_baseline_mileage;
+  const startDate = row.last_done_date ?? row.tracking_baseline_date;
+  const startEngineHours = row.last_done_engine_hours ?? row.tracking_baseline_engine_hours;
+  if (row.interval_miles != null && startMileage != null) {
+    parts.push(`${(Number(startMileage) + Number(row.interval_miles)).toLocaleString("en-US")} mil`);
   }
-  if (row.interval_days != null && row.last_done_date) {
-    const [year, month, day] = row.last_done_date.split("-").map(Number);
+  if (row.interval_days != null && startDate) {
+    const [year, month, day] = startDate.split("-").map(Number);
     const date = new Date(Date.UTC(year, month - 1, day + Number(row.interval_days)));
     parts.push(date.toISOString().slice(0, 10));
   }
-  if (row.interval_engine_hours != null && row.last_done_engine_hours != null) {
-    parts.push(`${(Number(row.last_done_engine_hours) + Number(row.interval_engine_hours)).toLocaleString("en-US")} saat`);
+  if (row.interval_engine_hours != null && startEngineHours != null) {
+    parts.push(`${(Number(startEngineHours) + Number(row.interval_engine_hours)).toLocaleString("en-US")} saat`);
   }
   return parts.join(" / ") || "-";
 }
@@ -244,7 +250,7 @@ export default function MaintenanceReminderManager({
                       {isType ? vehicleTypeLabel(rule.vehicle_type) : `Unit ${rule.vehicles?.unit_number ?? "-"}`} · {rule.service_type}
                     </h2>
                     <span className={`badge ${rule.active ? PM_BADGE[summary.status] : "bg-slate-100 text-slate-600"}`}>
-                      {rule.active ? (summary.overdue > 0 ? "Gecikmiş" : summary.setup > 0 ? "Kurulum Gerekli" : summary.soon > 0 ? "Yaklaşan" : "Tamam") : "Pasif"}
+                      {rule.active ? (summary.overdue > 0 ? "Gecikmiş" : summary.setup > 0 ? "Kurulum Gerekli" : summary.soon > 0 ? "Yaklaşan" : "Takipte") : "Pasif"}
                     </span>
                   </div>
                   <p className="mt-1 text-sm text-slate-600">

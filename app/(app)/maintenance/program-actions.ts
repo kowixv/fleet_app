@@ -8,11 +8,18 @@ import {
   isMaintenanceProgramVehicleType,
   maintenanceProgramPreset,
   presetIsInPackage,
-  summarizeMaintenanceProgramStatuses,
   validateMaintenanceProgramIntervals,
   type MaintenancePackageLevel,
   type MaintenanceProgramVehicleType,
 } from "@/lib/maintenance-program-presets";
+import {
+  installMaintenanceProgramItems,
+  summarizeMaintenanceProgramInstall,
+  type MaintenanceProgramBulkItem,
+  type MaintenanceProgramInstallItemResult,
+  type MaintenanceProgramInstallResult,
+  type MaintenanceProgramRpcClient,
+} from "@/lib/maintenance/program-installation";
 import { maintenanceVisibleVehicleStatuses } from "@/lib/maintenance-vehicle-status";
 import { createClient } from "@/lib/supabase/server";
 
@@ -30,64 +37,7 @@ export interface MaintenanceProgramInstallInput {
   selections: MaintenanceProgramSelectionInput[];
 }
 
-export interface MaintenanceProgramInstallItemResult {
-  presetId: string;
-  title: string;
-  vehicleId?: string;
-  unitNumber?: string;
-  status: "created" | "skipped" | "failed";
-  message: string;
-}
-
-export interface MaintenanceProgramInstallResult {
-  ok: boolean;
-  created: number;
-  skipped: number;
-  failed: number;
-  results: MaintenanceProgramInstallItemResult[];
-  error?: string;
-}
-
-interface BulkItem {
-  preset_id: string;
-  title: string;
-  vehicle_id: string | null;
-  vehicle_type: MaintenanceProgramVehicleType;
-  service_type: string;
-  interval_miles: number | null;
-  interval_days: number | null;
-  interval_engine_hours: number | null;
-}
-
-function resultFromUnknown(value: unknown): MaintenanceProgramInstallItemResult[] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error("Toplu kurulum yanıtı geçersiz.");
-  }
-  const payload = value as Record<string, unknown>;
-  if (!Array.isArray(payload.results)) throw new Error("Toplu kurulum sonuçları eksik.");
-  return payload.results.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) {
-      throw new Error("Toplu kurulum sonucu geçersiz.");
-    }
-    const row = item as Record<string, unknown>;
-    const status = row.status;
-    if (status !== "created" && status !== "skipped" && status !== "failed") {
-      throw new Error("Toplu kurulum statusu geçersiz.");
-    }
-    return {
-      presetId: typeof row.presetId === "string" ? row.presetId : "unknown",
-      title: typeof row.title === "string" ? row.title : "Bakım",
-      vehicleId: typeof row.vehicleId === "string" ? row.vehicleId : undefined,
-      unitNumber: typeof row.unitNumber === "string" ? row.unitNumber : undefined,
-      status,
-      message: typeof row.message === "string" ? row.message : "-",
-    };
-  });
-}
-
-function summary(results: MaintenanceProgramInstallItemResult[], error?: string): MaintenanceProgramInstallResult {
-  return { ...summarizeMaintenanceProgramStatuses(results), results, ...(error ? { ok: false, error } : {}) };
-}
+export type { MaintenanceProgramInstallItemResult, MaintenanceProgramInstallResult };
 
 export async function installMaintenanceProgramBulk(
   input: MaintenanceProgramInstallInput,
@@ -122,7 +72,7 @@ export async function installMaintenanceProgramBulk(
     if (profilesResult.error) throw new Error(profilesResult.error.message);
     const engineByVehicle = new Map((profilesResult.data ?? []).map((row) => [row.vehicle_id, row.engine_model]));
     const hasReliableEngineData = vehicles.some((vehicle) => Boolean(engineByVehicle.get(vehicle.id)?.trim()));
-    const items: BulkItem[] = [];
+    const items: MaintenanceProgramBulkItem[] = [];
 
     for (const selection of selections) {
       const preset = maintenanceProgramPreset(selection.presetId);
@@ -186,17 +136,19 @@ export async function installMaintenanceProgramBulk(
       }
     }
 
-    if (!items.length) return summary(preflight);
-    const rpc = await supabase.rpc("install_maintenance_program_bulk", {
-      p_payload: { items },
-    });
-    if (rpc.error) return summary(preflight, rpc.error.message);
-    const results = [...preflight, ...resultFromUnknown(rpc.data)];
-    if (results.some((item) => item.status === "created")) {
+    const result = await installMaintenanceProgramItems(
+      supabase as unknown as MaintenanceProgramRpcClient,
+      items,
+      preflight,
+    );
+    if (result.results.some((item) => item.status === "created")) {
       revalidateMaintenance({ kind: "costs" });
     }
-    return summary(results);
+    return result;
   } catch (error) {
-    return summary(preflight, error instanceof Error ? error.message : "Toplu bakım kurulamadı.");
+    return summarizeMaintenanceProgramInstall(
+      preflight,
+      error instanceof Error ? error.message : "Toplu bakım kurulamadı.",
+    );
   }
 }
