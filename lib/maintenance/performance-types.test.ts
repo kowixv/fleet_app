@@ -32,6 +32,10 @@ const programAction = readFileSync(
   new URL("../../app/(app)/maintenance/program-actions.ts", import.meta.url),
   "utf8",
 );
+const programInstallerService = readFileSync(
+  new URL("./program-installation.ts", import.meta.url),
+  "utf8",
+);
 const invoiceActions = readFileSync(
   new URL("../../app/(app)/maintenance/invoice-actions.ts", import.meta.url),
   "utf8",
@@ -137,7 +141,8 @@ describe("maintenance performance and type-safety contracts", () => {
   });
 
   it("installs maintenance programs through one bulk RPC", () => {
-    expect(programAction).toContain('.rpc("install_maintenance_program_bulk"');
+    expect(programAction).toContain("installMaintenanceProgramItems(");
+    expect(programInstallerService).toContain('client.rpc("install_maintenance_program_bulk"');
     expect(programAction).not.toContain('.rpc("save_vehicle_maintenance_reminder"');
     expect(programAction).not.toContain('.rpc("save_maintenance_reminder"');
     expect(migration).toContain("exception when others");

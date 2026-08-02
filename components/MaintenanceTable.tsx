@@ -22,6 +22,9 @@ export interface MaintenanceRuleRow {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
   vehicle_id: string;
   active: boolean;
   vehicles: { unit_number: string; current_mileage: number | null } | null;

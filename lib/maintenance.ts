@@ -74,6 +74,9 @@ interface Rule {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours?: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
 }
 
 export const DEFAULT_PM_THRESHOLDS: Required<PMThresholds> = {
@@ -131,14 +134,17 @@ export function computePM(
   );
   const dimensions: PMDimensionResult[] = [];
   const missingDimensions: PMUnit[] = [];
-  const lastDoneDate = rule.last_done_date;
+  const startMileage = rule.last_done_mileage ?? rule.tracking_baseline_mileage ?? null;
+  const startDate = rule.last_done_date ?? rule.tracking_baseline_date ?? null;
+  const startEngineHours = rule.last_done_engine_hours ?? rule.tracking_baseline_engine_hours ?? null;
+  const lastDoneDate = startDate;
   const validLastDoneDate = validDateOnly(lastDoneDate) ? lastDoneDate : null;
 
-  if (Number(rule.interval_miles) > 0 && rule.last_done_mileage == null) {
+  if (Number(rule.interval_miles) > 0 && startMileage == null) {
     missingDimensions.push("miles");
   } else if (Number(rule.interval_miles) > 0) {
     const interval = Number(rule.interval_miles);
-    const nextDue = Number(rule.last_done_mileage) + interval;
+    const nextDue = Number(startMileage) + interval;
     const remaining = nextDue - Number(currentMileage || 0);
     const consumedRatio = Math.max(0, (interval - remaining) / interval);
     dimensions.push({
@@ -168,12 +174,12 @@ export function computePM(
 
   if (
     Number(rule.interval_engine_hours) > 0 &&
-    (rule.last_done_engine_hours == null || currentEngineHours == null)
+    (startEngineHours == null || currentEngineHours == null)
   ) {
     missingDimensions.push("engine_hours");
   } else if (Number(rule.interval_engine_hours) > 0) {
     const interval = Number(rule.interval_engine_hours);
-    const nextDue = Number(rule.last_done_engine_hours) + interval;
+    const nextDue = Number(startEngineHours) + interval;
     const remaining = nextDue - Number(currentEngineHours || 0);
     const consumedRatio = Math.max(0, (interval - remaining) / interval);
     dimensions.push({

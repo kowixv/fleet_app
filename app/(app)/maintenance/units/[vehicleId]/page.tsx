@@ -74,7 +74,7 @@ function statusPriority(status: PMStatus) {
 
 function overallStatus(results: PMResult[]) {
   const status = [...results].sort((a, b) => statusPriority(a.status) - statusPriority(b.status))[0]?.status ?? "ok";
-  return { status, label: status === "ok" ? "Tamam" : status === "warning" ? "Yaklaşıyor" : status === "due_soon" ? "Yakında" : status === "due_now" ? "Bugün" : status === "setup_required" ? "Kurulum Gerekli" : "Gecikmiş" };
+  return { status, label: status === "ok" ? "Takipte" : status === "warning" ? "Yaklaşıyor" : status === "due_soon" ? "Yakında" : status === "due_now" ? "Bugün" : status === "setup_required" ? "Kurulum Gerekli" : "Gecikmiş" };
 }
 
 function triggerText(pm: PMResult) {
@@ -106,7 +106,7 @@ export default async function MaintenanceUnitDetailPage({
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, vin, year, make, model, truck_color, status").eq("id", vehicleId).single(),
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, vehicle_type, service_type, active, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours")
+      .select("id, vehicle_id, vehicle_type, service_type, active, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours")
       .order("created_at", { ascending: false }),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours, repair_warning_amount").single(),
     supabase.from("vehicle_maintenance_profiles").select("*").eq("vehicle_id", vehicleId).maybeSingle(),
@@ -138,7 +138,7 @@ export default async function MaintenanceUnitDetailPage({
   };
   const statesRes = await supabase
     .from("maintenance_rule_vehicle_states")
-    .select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours")
+    .select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours")
     .eq("vehicle_id", vehicleId);
   if (statesRes.error) throw new Error(`Araç hatırlatıcı state yüklenemedi: ${statesRes.error.message}`);
   const rules = expandEffectiveMaintenanceRules(

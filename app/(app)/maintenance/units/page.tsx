@@ -28,6 +28,9 @@ interface RuleRow {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
 }
 
 type UnitStatus = "ok" | "setup_required" | "due_soon" | "overdue";
@@ -43,7 +46,7 @@ function statusLabel(status: UnitStatus) {
   if (status === "overdue") return "Gecikmiş";
   if (status === "due_soon") return "Yakında";
   if (status === "setup_required") return "Kurulum Gerekli";
-  return "Tamam";
+  return "Takipte";
 }
 
 export default async function MaintenanceUnitsPage({
@@ -59,9 +62,9 @@ export default async function MaintenanceUnitsPage({
     supabase.from("vehicles").select("id, unit_number, vehicle_type, current_mileage, status").in("status", maintenanceVisibleVehicleStatuses()).order("unit_number"),
     supabase
       .from("maintenance_rules")
-      .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, active")
+      .select("id, vehicle_id, vehicle_type, service_type, interval_miles, interval_days, interval_engine_hours, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours, active")
       .eq("active", true),
-    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours"),
+    supabase.from("maintenance_rule_vehicle_states").select("id, rule_id, vehicle_id, last_done_mileage, last_done_date, last_done_engine_hours, tracking_baseline_mileage, tracking_baseline_date, tracking_baseline_engine_hours"),
     supabase.from("settings").select("pm_due_soon_miles, pm_due_soon_days, pm_due_soon_engine_hours").single(),
     supabase.from("vehicle_maintenance_profiles").select("vehicle_id, engine_hours"),
     supabase.from("inspection_findings").select("vehicle_id, severity").eq("status", "open").in("severity", ["critical", "do_not_dispatch"]),
@@ -143,7 +146,7 @@ export default async function MaintenanceUnitsPage({
             <option value="all">Hepsi</option>
             <option value="overdue">Gecikmiş</option>
             <option value="due_soon">Yakında</option>
-            <option value="ok">Tamam</option>
+            <option value="ok">Takipte</option>
           </select>
         </div>
         <div className="flex items-end">

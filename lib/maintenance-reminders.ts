@@ -34,6 +34,9 @@ export interface ReminderRule {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
   active: boolean;
   created_at?: string | null;
 }
@@ -45,6 +48,9 @@ export interface ReminderState {
   last_done_mileage: number | null;
   last_done_date: string | null;
   last_done_engine_hours: number | null;
+  tracking_baseline_mileage?: number | null;
+  tracking_baseline_date?: string | null;
+  tracking_baseline_engine_hours?: number | null;
 }
 
 export interface EffectiveReminderRow extends ReminderRule {
@@ -115,6 +121,9 @@ export function expandEffectiveMaintenanceRules(
         last_done_mileage: state?.last_done_mileage ?? null,
         last_done_date: state?.last_done_date ?? null,
         last_done_engine_hours: state?.last_done_engine_hours ?? null,
+        tracking_baseline_mileage: state?.tracking_baseline_mileage ?? null,
+        tracking_baseline_date: state?.tracking_baseline_date ?? null,
+        tracking_baseline_engine_hours: state?.tracking_baseline_engine_hours ?? null,
         vehicles: {
           id: vehicle.id,
           unit_number: vehicle.unit_number,
